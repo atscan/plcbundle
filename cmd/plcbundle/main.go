@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yourusername/plc-bundle-lib/bundle"
-	"github.com/yourusername/plc-bundle-lib/plc"
+	"github.com/atscan/plcbundle/bundle"
+	"github.com/atscan/plcbundle/plc"
 )
 
 const version = "0.1.0"

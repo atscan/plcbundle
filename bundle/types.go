@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/yourusername/plc-bundle-lib/plc"
+	"github.com/atscan/plcbundle/plc"
 )
 
 const (

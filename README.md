@@ -14,13 +14,13 @@ A Go library and CLI tool for managing [DID PLC Directory](https://plc.directory
 ## Installation
 
 ```bash
-go get github.com/yourusername/plc-bundle-lib
+go get github.com/atscan/plcbundle
 ```
 
 For the CLI tool:
 
 ```bash
-go install github.com/yourusername/plc-bundle-lib/cmd/plcbundle@latest
+go install github.com/atscan/plcbundle/cmd/plcbundle@latest
 ```
 
 ## Quick Start (Library)
@@ -33,7 +33,7 @@ import (
     "log"
     "time"
     
-    plcbundle "github.com/yourusername/plc-bundle-lib"
+    plcbundle "github.com/atscan/plcbundle"
 )
 
 func main() {
@@ -63,7 +63,7 @@ func main() {
 ```go
 import (
     "context"
-    plcbundle "github.com/yourusername/plc-bundle-lib"
+    plcbundle "github.com/atscan/plcbundle"
 )
 
 // Create manager with defaults
@@ -78,8 +78,8 @@ defer mgr.Close()
 
 ```go
 import (
-    "github.com/yourusername/plc-bundle-lib/bundle"
-    "github.com/yourusername/plc-bundle-lib/plc"
+    "github.com/atscan/plcbundle/bundle"
+    "github.com/atscan/plcbundle/plc"
 )
 
 // Custom config
@@ -111,7 +111,7 @@ import (
     "log"
     "time"
     
-    plcbundle "github.com/yourusername/plc-bundle-lib"
+    plcbundle "github.com/atscan/plcbundle"
 )
 
 type PLCSync struct {
@@ -362,7 +362,7 @@ import (
     "syscall"
     "time"
     
-    plcbundle "github.com/yourusername/plc-bundle-lib"
+    plcbundle "github.com/atscan/plcbundle"
 )
 
 type PLCService struct {

@@ -10,8 +10,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/atscan/plcbundle/plc"
 	"github.com/klauspost/compress/zstd"
-	"github.com/yourusername/plc-bundle-lib/plc"
 )
 
 // Operations handles low-level bundle file operations

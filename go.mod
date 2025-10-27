@@ -1,5 +1,5 @@
-module github.com/yourusername/plc-bundle-lib
+module github.com/atscan/plcbundle
 
-go 1.21
+go 1.23
 
-require github.com/klauspost/compress v1.17.9
+require github.com/klauspost/compress v1.18.1

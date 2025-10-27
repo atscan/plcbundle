@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/yourusername/plc-bundle-lib/bundle"
-	"github.com/yourusername/plc-bundle-lib/plc"
+	"github.com/atscan/plcbundle/bundle"
+	"github.com/atscan/plcbundle/plc"
 )
 
 // Re-export commonly used types for convenience

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yourusername/plc-bundle-lib/plc"
+	"github.com/atscan/plcbundle/plc"
 )
 
 // defaultLogger is a simple logger implementation
