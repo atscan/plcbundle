@@ -3,6 +3,7 @@ package bundle
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -829,4 +830,49 @@ func (m *Manager) ValidateMempool() error {
 		return fmt.Errorf("mempool not initialized")
 	}
 	return m.mempool.Validate()
+}
+
+// StreamBundleRaw streams the raw compressed bundle file
+func (m *Manager) StreamBundleRaw(ctx context.Context, bundleNumber int) (io.ReadCloser, error) {
+	// Get metadata from index
+	meta, err := m.index.GetBundle(bundleNumber)
+	if err != nil {
+		return nil, fmt.Errorf("bundle not in index: %w", err)
+	}
+
+	// Build file path
+	path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", bundleNumber))
+	if !m.operations.FileExists(path) {
+		return nil, fmt.Errorf("bundle file not found: %s", path)
+	}
+
+	// Optionally verify hash before streaming
+	if m.config.VerifyOnLoad {
+		valid, actualHash, err := m.operations.VerifyHash(path, meta.CompressedHash)
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify hash: %w", err)
+		}
+		if !valid {
+			return nil, fmt.Errorf("hash mismatch: expected %s, got %s", meta.CompressedHash, actualHash)
+		}
+	}
+
+	return m.operations.StreamRaw(path)
+}
+
+// StreamBundleDecompressed streams the decompressed bundle data as JSONL
+func (m *Manager) StreamBundleDecompressed(ctx context.Context, bundleNumber int) (io.ReadCloser, error) {
+	// Get metadata from index
+	_, err := m.index.GetBundle(bundleNumber)
+	if err != nil {
+		return nil, fmt.Errorf("bundle not in index: %w", err)
+	}
+
+	// Build file path
+	path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", bundleNumber))
+	if !m.operations.FileExists(path) {
+		return nil, fmt.Errorf("bundle file not found: %s", path)
+	}
+
+	return m.operations.StreamDecompressed(path)
 }

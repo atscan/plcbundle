@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -351,4 +352,49 @@ func (op *Operations) CalculateMetadata(bundleNumber int, path string, operation
 		PrevBundleHash:   prevBundleHash,
 		CreatedAt:        time.Now().UTC(),
 	}, nil
+}
+
+// StreamRaw returns a reader for the raw compressed bundle file
+func (op *Operations) StreamRaw(path string) (io.ReadCloser, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open bundle: %w", err)
+	}
+	return file, nil
+}
+
+// StreamDecompressed returns a reader for decompressed bundle data
+func (op *Operations) StreamDecompressed(path string) (io.ReadCloser, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open bundle: %w", err)
+	}
+
+	// Create a new decoder for this stream
+	decoder, err := zstd.NewReader(file)
+	if err != nil {
+		file.Close()
+		return nil, fmt.Errorf("failed to create decompressor: %w", err)
+	}
+
+	// Return a wrapper that closes both the decoder and file
+	return &decompressedReader{
+		decoder: decoder,
+		file:    file,
+	}, nil
+}
+
+// decompressedReader wraps a zstd decoder and underlying file
+type decompressedReader struct {
+	decoder *zstd.Decoder
+	file    *os.File
+}
+
+func (dr *decompressedReader) Read(p []byte) (int, error) {
+	return dr.decoder.Read(p)
+}
+
+func (dr *decompressedReader) Close() error {
+	dr.decoder.Close()
+	return dr.file.Close()
 }

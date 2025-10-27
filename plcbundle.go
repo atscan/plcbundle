@@ -2,6 +2,7 @@ package plcbundle
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/atscan/plcbundle/bundle"
@@ -140,4 +141,14 @@ func (bm *BundleManager) ScanBundle(path string, bundleNumber int) (*BundleMetad
 // IsBundleIndexed checks if a bundle is in the index
 func (bm *BundleManager) IsBundleIndexed(bundleNumber int) bool {
 	return bm.mgr.IsBundleIndexed(bundleNumber)
+}
+
+// StreamRaw streams raw compressed bundle data
+func (bm *BundleManager) StreamRaw(ctx context.Context, bundleNumber int) (io.ReadCloser, error) {
+	return bm.mgr.StreamBundleRaw(ctx, bundleNumber)
+}
+
+// StreamDecompressed streams decompressed bundle data
+func (bm *BundleManager) StreamDecompressed(ctx context.Context, bundleNumber int) (io.ReadCloser, error) {
+	return bm.mgr.StreamBundleDecompressed(ctx, bundleNumber)
 }
