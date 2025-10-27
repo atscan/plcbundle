@@ -70,22 +70,30 @@ func (b *Bundle) CompressionRatio() float64 {
 	return float64(b.UncompressedSize) / float64(b.CompressedSize)
 }
 
-// Validate performs basic validation on the bundle
-func (b *Bundle) Validate() error {
+// ValidateForSave performs validation before saving (no hash required)
+func (b *Bundle) ValidateForSave() error {
 	if b.BundleNumber < 1 {
 		return fmt.Errorf("invalid bundle number: %d", b.BundleNumber)
 	}
 	if len(b.Operations) != BUNDLE_SIZE {
 		return fmt.Errorf("invalid operation count: expected %d, got %d", BUNDLE_SIZE, len(b.Operations))
 	}
+	if b.StartTime.After(b.EndTime) {
+		return fmt.Errorf("start_time is after end_time")
+	}
+	return nil
+}
+
+// Validate performs full validation (including hashes)
+func (b *Bundle) Validate() error {
+	if err := b.ValidateForSave(); err != nil {
+		return err
+	}
 	if b.Hash == "" {
 		return fmt.Errorf("missing hash")
 	}
 	if b.CompressedHash == "" {
 		return fmt.Errorf("missing compressed hash")
-	}
-	if b.StartTime.After(b.EndTime) {
-		return fmt.Errorf("start_time is after end_time")
 	}
 	return nil
 }

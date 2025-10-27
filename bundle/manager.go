@@ -153,7 +153,8 @@ func (m *Manager) LoadBundle(ctx context.Context, bundleNumber int) (*Bundle, er
 
 // SaveBundle saves a bundle to disk and updates the index
 func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
-	if err := bundle.Validate(); err != nil {
+	// Use ValidateForSave instead of Validate
+	if err := bundle.ValidateForSave(); err != nil {
 		return fmt.Errorf("bundle validation failed: %w", err)
 	}
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/yourusername/plc-bundle-lib/bundle"
@@ -151,7 +152,7 @@ func getManager(plcURL string) (*bundle.Manager, string, error) {
 func cmdFetch() {
 	fs := flag.NewFlagSet("fetch", flag.ExitOnError)
 	plcURL := fs.String("plc", "https://plc.directory", "PLC directory URL")
-	count := fs.Int("count", 1, "number of bundles to fetch")
+	count := fs.Int("count", 0, "number of bundles to fetch (0 = fetch all available)")
 	fs.Parse(os.Args[2:])
 
 	mgr, dir, err := getManager(*plcURL)
@@ -165,23 +166,109 @@ func cmdFetch() {
 
 	ctx := context.Background()
 
-	for i := 0; i < *count; i++ {
-		fmt.Printf("Fetching bundle %d/%d...\n", i+1, *count)
+	// Get starting bundle info
+	index := mgr.GetIndex()
+	lastBundle := index.GetLastBundle()
+	startBundle := 1
+	if lastBundle != nil {
+		startBundle = lastBundle.BundleNumber + 1
+	}
+
+	fmt.Printf("Starting from bundle %06d\n", startBundle)
+
+	if *count > 0 {
+		fmt.Printf("Fetching %d bundles...\n", *count)
+	} else {
+		fmt.Printf("Fetching all available bundles...\n")
+	}
+
+	fetchedCount := 0
+	consecutiveErrors := 0
+	maxConsecutiveErrors := 3
+
+	for {
+		// Check if we've reached the requested count
+		if *count > 0 && fetchedCount >= *count {
+			break
+		}
+
+		currentBundle := startBundle + fetchedCount
+
+		if *count > 0 {
+			fmt.Printf("Fetching bundle %d/%d (bundle %06d)...\n", fetchedCount+1, *count, currentBundle)
+		} else {
+			fmt.Printf("Fetching bundle %06d...\n", currentBundle)
+		}
 
 		b, err := mgr.FetchNextBundle(ctx)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error fetching bundle: %v\n", err)
-			os.Exit(1)
+			// Check if we've reached the end (insufficient operations)
+			if isEndOfDataError(err) {
+				fmt.Printf("\n✓ Caught up! No more complete bundles available.\n")
+				fmt.Printf("  Last bundle: %06d\n", currentBundle-1)
+				break
+			}
+
+			// Handle other errors
+			consecutiveErrors++
+			fmt.Fprintf(os.Stderr, "Error fetching bundle %06d: %v\n", currentBundle, err)
+
+			if consecutiveErrors >= maxConsecutiveErrors {
+				fmt.Fprintf(os.Stderr, "Too many consecutive errors, stopping.\n")
+				os.Exit(1)
+			}
+
+			// Wait a bit before retrying
+			fmt.Printf("Waiting 5 seconds before retry...\n")
+			time.Sleep(5 * time.Second)
+			continue
 		}
+
+		// Reset error counter on success
+		consecutiveErrors = 0
 
 		if err := mgr.SaveBundle(ctx, b); err != nil {
-			fmt.Fprintf(os.Stderr, "Error saving bundle: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error saving bundle %06d: %v\n", b.BundleNumber, err)
 			os.Exit(1)
 		}
 
+		fetchedCount++
 		fmt.Printf("✓ Saved bundle %06d (%d operations, %d DIDs)\n",
 			b.BundleNumber, len(b.Operations), b.DIDCount)
 	}
+
+	if fetchedCount > 0 {
+		fmt.Printf("\n✓ Fetch complete: %d bundles retrieved\n", fetchedCount)
+		fmt.Printf("  Current range: %06d - %06d\n", startBundle, startBundle+fetchedCount-1)
+	} else {
+		fmt.Printf("\n✓ Already up to date!\n")
+	}
+}
+
+// isEndOfDataError checks if the error indicates we've reached the end of available data
+func isEndOfDataError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errMsg := err.Error()
+
+	// Check for insufficient operations error
+	if strings.Contains(errMsg, "insufficient operations") {
+		return true
+	}
+
+	// Check for "no more operations available"
+	if strings.Contains(errMsg, "no more operations available") {
+		return true
+	}
+
+	// Check for "reached latest data"
+	if strings.Contains(errMsg, "reached latest data") {
+		return true
+	}
+
+	return false
 }
 
 func cmdScan() {
@@ -380,6 +467,7 @@ func computeHash(data []byte) string {
 func cmdVerify() {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	bundleNum := fs.Int("bundle", 0, "specific bundle to verify (0 = verify chain)")
+	verbose := fs.Bool("v", false, "verbose output")
 	fs.Parse(os.Args[2:])
 
 	mgr, dir, err := getManager("")
@@ -395,6 +483,8 @@ func cmdVerify() {
 
 	if *bundleNum > 0 {
 		// Verify specific bundle
+		fmt.Printf("Verifying bundle %06d...\n", *bundleNum)
+
 		result, err := mgr.VerifyBundle(ctx, *bundleNum)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Verification failed: %v\n", err)
@@ -403,27 +493,111 @@ func cmdVerify() {
 
 		if result.Valid {
 			fmt.Printf("✓ Bundle %06d is valid\n", *bundleNum)
-			fmt.Printf("  Hash: %s\n", result.LocalHash[:16]+"...")
+			if *verbose {
+				fmt.Printf("  File exists: %v\n", result.FileExists)
+				fmt.Printf("  Hash match: %v\n", result.HashMatch)
+				fmt.Printf("  Hash: %s\n", result.LocalHash[:16]+"...")
+			}
 		} else {
 			fmt.Printf("✗ Bundle %06d is invalid\n", *bundleNum)
 			if result.Error != nil {
 				fmt.Printf("  Error: %v\n", result.Error)
 			}
+			if !result.FileExists {
+				fmt.Printf("  File not found\n")
+			}
+			if !result.HashMatch && result.FileExists {
+				fmt.Printf("  Expected hash: %s...\n", result.ExpectedHash[:16])
+				fmt.Printf("  Actual hash:   %s...\n", result.LocalHash[:16])
+			}
 			os.Exit(1)
 		}
 	} else {
 		// Verify entire chain
-		result, err := mgr.VerifyChain(ctx)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Chain verification failed: %v\n", err)
-			os.Exit(1)
+		index := mgr.GetIndex()
+		bundles := index.GetBundles()
+
+		if len(bundles) == 0 {
+			fmt.Println("No bundles to verify")
+			return
 		}
 
-		if result.Valid {
-			fmt.Printf("✓ Chain is valid (%d bundles verified)\n", result.ChainLength)
+		fmt.Printf("Verifying chain of %d bundles...\n", len(bundles))
+		fmt.Println()
+
+		verifiedCount := 0
+		errorCount := 0
+		lastPercent := -1
+
+		for i, meta := range bundles {
+			bundleNum := meta.BundleNumber
+
+			// Show progress
+			percent := (i * 100) / len(bundles)
+			if percent != lastPercent || *verbose {
+				if *verbose {
+					fmt.Printf("  [%3d%%] Verifying bundle %06d...", percent, bundleNum)
+				} else if percent%10 == 0 && percent != lastPercent {
+					fmt.Printf("  [%3d%%] Verified %d/%d bundles...\n", percent, i, len(bundles))
+				}
+				lastPercent = percent
+			}
+
+			// Verify file hash
+			result, err := mgr.VerifyBundle(ctx, bundleNum)
+			if err != nil {
+				if *verbose {
+					fmt.Printf(" ERROR\n")
+				}
+				fmt.Printf("\n✗ Failed to verify bundle %06d: %v\n", bundleNum, err)
+				errorCount++
+				continue
+			}
+
+			if !result.Valid {
+				if *verbose {
+					fmt.Printf(" INVALID\n")
+				}
+				fmt.Printf("\n✗ Bundle %06d hash verification failed\n", bundleNum)
+				if result.Error != nil {
+					fmt.Printf("  Error: %v\n", result.Error)
+				}
+				errorCount++
+				continue
+			}
+
+			// Verify chain link (prev_bundle_hash)
+			if i > 0 {
+				prevMeta := bundles[i-1]
+				if meta.PrevBundleHash != prevMeta.Hash {
+					if *verbose {
+						fmt.Printf(" CHAIN BROKEN\n")
+					}
+					fmt.Printf("\n✗ Chain broken at bundle %06d\n", bundleNum)
+					fmt.Printf("  Expected prev_hash: %s...\n", prevMeta.Hash[:16])
+					fmt.Printf("  Actual prev_hash:   %s...\n", meta.PrevBundleHash[:16])
+					errorCount++
+					continue
+				}
+			}
+
+			if *verbose {
+				fmt.Printf(" ✓\n")
+			}
+			verifiedCount++
+		}
+
+		// Final summary
+		fmt.Println()
+		if errorCount == 0 {
+			fmt.Printf("✓ Chain is valid (%d bundles verified)\n", verifiedCount)
+			fmt.Printf("  First bundle: %06d\n", bundles[0].BundleNumber)
+			fmt.Printf("  Last bundle:  %06d\n", bundles[len(bundles)-1].BundleNumber)
+			fmt.Printf("  Chain head:   %s...\n", bundles[len(bundles)-1].Hash[:16])
 		} else {
-			fmt.Printf("✗ Chain is broken at bundle %06d\n", result.BrokenAt)
-			fmt.Printf("  Error: %s\n", result.Error)
+			fmt.Printf("✗ Chain verification failed\n")
+			fmt.Printf("  Verified: %d/%d bundles\n", verifiedCount, len(bundles))
+			fmt.Printf("  Errors: %d\n", errorCount)
 			os.Exit(1)
 		}
 	}
