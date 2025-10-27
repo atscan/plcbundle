@@ -112,11 +112,6 @@ func (bm *BundleManager) VerifyChain(ctx context.Context) (*ChainVerificationRes
 	return bm.mgr.VerifyChain(ctx)
 }
 
-// Scan scans the directory and rebuilds the index
-func (bm *BundleManager) Scan() (*DirectoryScanResult, error) {
-	return bm.mgr.ScanDirectory()
-}
-
 // GetIndex returns the index
 func (bm *BundleManager) GetIndex() *Index {
 	return bm.mgr.GetIndex()
