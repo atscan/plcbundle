@@ -36,6 +36,8 @@ func main() {
 		cmdInfo()
 	case "export":
 		cmdExport()
+	case "backfill":
+		cmdBackfill()
 	case "version":
 		fmt.Printf("plcbundle version %s\n", version)
 	default:
@@ -57,6 +59,7 @@ Commands:
   verify     Verify bundle integrity
   info       Show bundle information
   export     Export operations from bundles
+  backfill   Fetch/load all bundles and stream to stdout
   version    Show version
 
 The tool works with the current directory or nearest bundle directory.
@@ -73,32 +76,6 @@ func findBundleDir() (string, error) {
 	// Check current directory
 	if isBundleDir(cwd) {
 		return cwd, nil
-	}
-
-	// Check for common subdirectories
-	candidates := []string{
-		filepath.Join(cwd, "plc_bundles"),
-		filepath.Join(cwd, "bundles"),
-		filepath.Join(cwd, "data"),
-	}
-
-	for _, dir := range candidates {
-		if isBundleDir(dir) {
-			return dir, nil
-		}
-	}
-
-	// Walk up parent directories (like git)
-	dir := cwd
-	for {
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break // Reached root
-		}
-		if isBundleDir(parent) {
-			return parent, nil
-		}
-		dir = parent
 	}
 
 	// Default to current directory (will be auto-created)
@@ -691,4 +668,106 @@ func cmdExport() {
 	}
 
 	fmt.Fprintf(os.Stderr, "Exported %d operations\n", len(ops))
+}
+
+func cmdBackfill() {
+	fs := flag.NewFlagSet("backfill", flag.ExitOnError)
+	plcURL := fs.String("plc", "https://plc.directory", "PLC directory URL")
+	startFrom := fs.Int("start", 1, "bundle number to start from")
+	endAt := fs.Int("end", 0, "bundle number to end at (0 = until caught up)")
+	fs.Parse(os.Args[2:])
+
+	mgr, dir, err := getManager(*plcURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer mgr.Close()
+
+	fmt.Fprintf(os.Stderr, "Starting backfill from: %s\n", dir)
+	fmt.Fprintf(os.Stderr, "Starting from bundle: %06d\n", *startFrom)
+	if *endAt > 0 {
+		fmt.Fprintf(os.Stderr, "Ending at bundle: %06d\n", *endAt)
+	} else {
+		fmt.Fprintf(os.Stderr, "Ending: when caught up\n")
+	}
+	fmt.Fprintf(os.Stderr, "\n")
+
+	ctx := context.Background()
+
+	currentBundle := *startFrom
+	processedCount := 0
+	fetchedCount := 0
+	loadedCount := 0
+	operationCount := 0
+
+	for {
+		// Check if we've reached the end bundle
+		if *endAt > 0 && currentBundle > *endAt {
+			break
+		}
+
+		fmt.Fprintf(os.Stderr, "Processing bundle %06d... ", currentBundle)
+
+		// Try to load from disk first
+		bundle, err := mgr.LoadBundle(ctx, currentBundle)
+
+		if err != nil {
+			// Bundle doesn't exist, try to fetch it
+			fmt.Fprintf(os.Stderr, "fetching... ")
+
+			bundle, err = mgr.FetchNextBundle(ctx)
+			if err != nil {
+				if isEndOfDataError(err) {
+					fmt.Fprintf(os.Stderr, "\n✓ Caught up! No more complete bundles available.\n")
+					break
+				}
+				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+
+				// If we can't fetch, we're done
+				break
+			}
+
+			// Save the fetched bundle
+			if err := mgr.SaveBundle(ctx, bundle); err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR saving: %v\n", err)
+				os.Exit(1)
+			}
+
+			fetchedCount++
+			fmt.Fprintf(os.Stderr, "saved... ")
+		} else {
+			loadedCount++
+		}
+
+		// Output operations to stdout (JSONL)
+		for _, op := range bundle.Operations {
+			if len(op.RawJSON) > 0 {
+				fmt.Println(string(op.RawJSON))
+			}
+		}
+
+		operationCount += len(bundle.Operations)
+		processedCount++
+
+		fmt.Fprintf(os.Stderr, "✓ (%d ops, %d DIDs)\n", len(bundle.Operations), bundle.DIDCount)
+
+		currentBundle++
+
+		// Show progress summary every 100 bundles
+		if processedCount%100 == 0 {
+			fmt.Fprintf(os.Stderr, "\n--- Progress: %d bundles processed (%d fetched, %d loaded) ---\n",
+				processedCount, fetchedCount, loadedCount)
+			fmt.Fprintf(os.Stderr, "    Total operations: %d\n\n", operationCount)
+		}
+	}
+
+	// Final summary
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "✓ Backfill complete\n")
+	fmt.Fprintf(os.Stderr, "  Bundles processed: %d\n", processedCount)
+	fmt.Fprintf(os.Stderr, "  Newly fetched: %d\n", fetchedCount)
+	fmt.Fprintf(os.Stderr, "  Loaded from disk: %d\n", loadedCount)
+	fmt.Fprintf(os.Stderr, "  Total operations: %d\n", operationCount)
+	fmt.Fprintf(os.Stderr, "  Range: %06d - %06d\n", *startFrom, currentBundle-1)
 }
