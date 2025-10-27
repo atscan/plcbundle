@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,6 +40,8 @@ func main() {
 		cmdBackfill()
 	case "mempool":
 		cmdMempool()
+	case "serve":
+		cmdServe()
 	case "version":
 		fmt.Printf("plcbundle version %s\n", version)
 	default:
@@ -62,6 +65,7 @@ Commands:
   export     Export operations from bundles
   backfill   Fetch/load all bundles and stream to stdout
   mempool    Show mempool status and operations
+  serve      Start HTTP server to serve bundle data
   version    Show version
 
 The tool works with the current directory.
@@ -801,4 +805,37 @@ func cmdMempool() {
 	// Show mempool file
 	mempoolFilename := fmt.Sprintf("plc_mempool_%06d.jsonl", targetBundle)
 	fmt.Printf("File: %s\n", filepath.Join(dir, mempoolFilename))
+}
+
+func cmdServe() {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	port := fs.String("port", "8080", "HTTP server port")
+	host := fs.String("host", "127.0.0.1", "HTTP server host")
+	fs.Parse(os.Args[2:])
+
+	mgr, dir, err := getManager("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer mgr.Close()
+
+	addr := fmt.Sprintf("%s:%s", *host, *port)
+
+	fmt.Printf("Starting plcbundle HTTP server...\n")
+	fmt.Printf("  Directory: %s\n", dir)
+	fmt.Printf("  Listening: http://%s\n", addr)
+	fmt.Printf("\nPress Ctrl+C to stop\n\n")
+
+	server := &http.Server{
+		Addr:         addr,
+		Handler:      newServerHandler(mgr, dir),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+
+	if err := server.ListenAndServe(); err != nil {
+		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
+		os.Exit(1)
+	}
 }
