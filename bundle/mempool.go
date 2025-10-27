@@ -230,22 +230,15 @@ func (m *Mempool) Stats() map[string]interface{} {
 		"can_create_bundle": count >= BUNDLE_SIZE,
 	}
 
-	if count > 0 {
-		stats["first_time"] = m.operations[0].CreatedAt
-		stats["last_time"] = m.operations[len(m.operations)-1].CreatedAt
+	stats["first_time"] = m.operations[0].CreatedAt
+	stats["last_time"] = m.operations[len(m.operations)-1].CreatedAt
 
-		// Calculate size
-		totalSize := 0
-		for _, op := range m.operations {
-			totalSize += len(op.RawJSON)
-		}
-		stats["size_bytes"] = totalSize
-
-		// Debug: log current state
-		m.logger.Printf("Mempool stats: %d operations, %d bytes", count, totalSize)
-	} else {
-		m.logger.Printf("Mempool stats: empty")
+	// Calculate size
+	totalSize := 0
+	for _, op := range m.operations {
+		totalSize += len(op.RawJSON)
 	}
+	stats["size_bytes"] = totalSize
 
 	return stats
 }
