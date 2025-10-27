@@ -354,6 +354,21 @@ func (m *Manager) GetMempoolStats() map[string]interface{} {
 	return m.mempool.Stats()
 }
 
+// GetMempoolOperations returns all operations currently in mempool
+func (m *Manager) GetMempoolOperations() ([]plc.PLCOperation, error) {
+	if m.mempool == nil {
+		return nil, fmt.Errorf("mempool not initialized")
+	}
+
+	// Use Peek to get operations without removing them
+	count := m.mempool.Count()
+	if count == 0 {
+		return []plc.PLCOperation{}, nil
+	}
+
+	return m.mempool.Peek(count), nil
+}
+
 // VerifyBundle verifies a bundle's integrity
 func (m *Manager) VerifyBundle(ctx context.Context, bundleNumber int) (*VerificationResult, error) {
 	result := &VerificationResult{
