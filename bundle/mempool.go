@@ -223,12 +223,14 @@ func (m *Mempool) Stats() map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	count := len(m.operations)
+
 	stats := map[string]interface{}{
-		"count":             len(m.operations),
-		"can_create_bundle": len(m.operations) >= BUNDLE_SIZE,
+		"count":             count,
+		"can_create_bundle": count >= BUNDLE_SIZE,
 	}
 
-	if len(m.operations) > 0 {
+	if count > 0 {
 		stats["first_time"] = m.operations[0].CreatedAt
 		stats["last_time"] = m.operations[len(m.operations)-1].CreatedAt
 
@@ -238,6 +240,11 @@ func (m *Mempool) Stats() map[string]interface{} {
 			totalSize += len(op.RawJSON)
 		}
 		stats["size_bytes"] = totalSize
+
+		// Debug: log current state
+		m.logger.Printf("Mempool stats: %d operations, %d bytes", count, totalSize)
+	} else {
+		m.logger.Printf("Mempool stats: empty")
 	}
 
 	return stats

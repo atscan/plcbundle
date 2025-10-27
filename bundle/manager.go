@@ -272,6 +272,7 @@ func (m *Manager) FetchNextBundle(ctx context.Context) (*Bundle, error) {
 	return bundle, nil
 }
 
+// fetchToMempool fetches operations and adds them to mempool
 func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoundaryCIDs map[string]bool, target int) ([]plc.PLCOperation, error) {
 	seenCIDs := make(map[string]bool)
 
@@ -325,6 +326,11 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 			added := m.mempool.Add(uniqueOps)
 			totalAdded += added
 			m.logger.Printf("  Added %d new operations to mempool (now: %d)", added, m.mempool.Count())
+
+			// IMPORTANT: Save after each batch
+			if err := m.mempool.Save(); err != nil {
+				m.logger.Printf("Warning: failed to save mempool: %v", err)
+			}
 		}
 
 		// Update cursor
@@ -342,6 +348,11 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 		if m.mempool.Count() >= BUNDLE_SIZE {
 			break
 		}
+	}
+
+	// Final save
+	if err := m.mempool.Save(); err != nil {
+		m.logger.Printf("Warning: failed to save mempool: %v", err)
 	}
 
 	m.logger.Printf("✓ Fetch complete: mempool has %d operations", m.mempool.Count())
@@ -737,4 +748,12 @@ func (m *Manager) calculateBundleMetadata(bundleNumber int, path string, operati
 func (m *Manager) IsBundleIndexed(bundleNumber int) bool {
 	_, err := m.index.GetBundle(bundleNumber)
 	return err == nil
+}
+
+// RefreshMempool reloads mempool from disk (useful for debugging)
+func (m *Manager) RefreshMempool() error {
+	if m.mempool == nil {
+		return fmt.Errorf("mempool not initialized")
+	}
+	return m.mempool.Load()
 }
