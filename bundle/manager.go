@@ -225,40 +225,32 @@ func (m *Manager) FetchNextBundle(ctx context.Context) (*Bundle, error) {
 
 	m.logger.Printf("Preparing bundle %06d (mempool: %d ops)...", nextBundleNum, m.mempool.Count())
 
-	// Check if mempool already has enough operations
-	if m.mempool.Count() >= BUNDLE_SIZE {
-		m.logger.Printf("Creating bundle %06d from mempool", nextBundleNum)
-		operations := m.mempool.Take(BUNDLE_SIZE)
-		bundle := m.operations.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash)
+	// Keep fetching until we have enough operations
+	for m.mempool.Count() < BUNDLE_SIZE {
+		m.logger.Printf("Fetching more operations (have %d/%d)...", m.mempool.Count(), BUNDLE_SIZE)
 
-		// Save mempool state
-		if err := m.mempool.Save(); err != nil {
-			m.logger.Printf("Warning: failed to save mempool: %v", err)
+		err := m.fetchToMempool(ctx, afterTime, prevBoundaryCIDs, BUNDLE_SIZE-m.mempool.Count())
+		if err != nil {
+			// If we can't fetch more, check if we have enough
+			if m.mempool.Count() >= BUNDLE_SIZE {
+				break // We have enough now
+			}
+			// Save current state and return error
+			m.mempool.Save()
+			return nil, fmt.Errorf("insufficient operations: have %d, need %d", m.mempool.Count(), BUNDLE_SIZE)
 		}
 
-		return bundle, nil
-	}
-
-	// Need to fetch more operations
-	m.logger.Printf("Fetching operations from PLC directory...")
-
-	// Fetch operations to fill mempool
-	operations, err := m.fetchToMempool(ctx, afterTime, prevBoundaryCIDs, BUNDLE_SIZE-m.mempool.Count())
-	if err != nil {
-		return nil, err
-	}
-
-	// Check if we have enough now
-	if m.mempool.Count() < BUNDLE_SIZE {
-		// Save mempool and return error
-		if err := m.mempool.Save(); err != nil {
-			m.logger.Printf("Warning: failed to save mempool: %v", err)
+		// Check if we made progress
+		if m.mempool.Count() < BUNDLE_SIZE {
+			// Didn't get enough, but got some - save and return error
+			m.mempool.Save()
+			return nil, fmt.Errorf("insufficient operations: have %d, need %d (no more available)", m.mempool.Count(), BUNDLE_SIZE)
 		}
-		return nil, fmt.Errorf("insufficient operations: have %d, need %d", m.mempool.Count(), BUNDLE_SIZE)
 	}
 
 	// Create bundle from mempool
-	operations = m.mempool.Take(BUNDLE_SIZE)
+	m.logger.Printf("Creating bundle %06d from mempool", nextBundleNum)
+	operations := m.mempool.Take(BUNDLE_SIZE)
 	bundle := m.operations.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash)
 
 	// Save mempool state
@@ -272,8 +264,8 @@ func (m *Manager) FetchNextBundle(ctx context.Context) (*Bundle, error) {
 	return bundle, nil
 }
 
-// fetchToMempool fetches operations and adds them to mempool
-func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoundaryCIDs map[string]bool, target int) ([]plc.PLCOperation, error) {
+// fetchToMempool fetches operations and adds them to mempool (returns error if no progress)
+func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoundaryCIDs map[string]bool, target int) error {
 	seenCIDs := make(map[string]bool)
 
 	// Mark previous boundary CIDs as seen
@@ -290,14 +282,21 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 	currentAfter := afterTime
 	maxFetches := 20
 	totalAdded := 0
+	startingCount := m.mempool.Count()
 
-	for fetchNum := 0; fetchNum < maxFetches && totalAdded < target; fetchNum++ {
+	for fetchNum := 0; fetchNum < maxFetches; fetchNum++ {
+		// Calculate batch size
+		remaining := target - (m.mempool.Count() - startingCount)
+		if remaining <= 0 {
+			break
+		}
+
 		batchSize := 1000
-		if remaining := target - totalAdded; remaining < 500 {
+		if remaining < 500 {
 			batchSize = 200
 		}
 
-		m.logger.Printf("  Fetch #%d: requesting %d operations (have %d)",
+		m.logger.Printf("  Fetch #%d: requesting %d operations (mempool: %d)",
 			fetchNum+1, batchSize, m.mempool.Count())
 
 		batch, err := m.plcClient.Export(ctx, plc.ExportOptions{
@@ -305,12 +304,19 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 			After: currentAfter,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("export failed: %w", err)
+			// Save what we have
+			m.mempool.Save()
+			return fmt.Errorf("export failed: %w", err)
 		}
 
 		if len(batch) == 0 {
 			m.logger.Printf("  No more operations available from PLC")
-			break
+			m.mempool.Save()
+			// Return success if we added anything
+			if totalAdded > 0 {
+				return nil
+			}
+			return fmt.Errorf("no operations available")
 		}
 
 		// Deduplicate and add to mempool
@@ -325,11 +331,11 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 		if len(uniqueOps) > 0 {
 			added := m.mempool.Add(uniqueOps)
 			totalAdded += added
-			m.logger.Printf("  Added %d new operations to mempool (now: %d)", added, m.mempool.Count())
+			m.logger.Printf("  Added %d new operations (mempool now: %d)", added, m.mempool.Count())
 
-			// IMPORTANT: Save after each batch
+			// Save after each successful addition
 			if err := m.mempool.Save(); err != nil {
-				m.logger.Printf("Warning: failed to save mempool: %v", err)
+				m.logger.Printf("  Warning: failed to save mempool: %v", err)
 			}
 		}
 
@@ -340,24 +346,20 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 
 		// Stop if we got less than requested (caught up)
 		if len(batch) < batchSize {
-			m.logger.Printf("  Received incomplete batch, caught up to latest")
-			break
-		}
-
-		// Stop if mempool has enough
-		if m.mempool.Count() >= BUNDLE_SIZE {
+			m.logger.Printf("  Received incomplete batch (%d/%d), caught up to latest", len(batch), batchSize)
 			break
 		}
 	}
 
 	// Final save
-	if err := m.mempool.Save(); err != nil {
-		m.logger.Printf("Warning: failed to save mempool: %v", err)
+	m.mempool.Save()
+
+	if totalAdded > 0 {
+		m.logger.Printf("✓ Fetch complete: added %d operations (mempool: %d)", totalAdded, m.mempool.Count())
+		return nil
 	}
 
-	m.logger.Printf("✓ Fetch complete: mempool has %d operations", m.mempool.Count())
-
-	return nil, nil
+	return fmt.Errorf("no new operations added")
 }
 
 // GetMempoolStats returns mempool statistics
