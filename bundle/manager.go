@@ -759,3 +759,27 @@ func (m *Manager) RefreshMempool() error {
 	}
 	return m.mempool.Load()
 }
+
+// ClearMempool clears all operations from the mempool and saves
+func (m *Manager) ClearMempool() error {
+	if m.mempool == nil {
+		return fmt.Errorf("mempool not initialized")
+	}
+
+	m.logger.Printf("Clearing mempool...")
+
+	// Get count before clearing
+	count := m.mempool.Count()
+
+	// Clear the mempool
+	m.mempool.Clear()
+
+	// Save the empty state (this will delete the file since it's empty)
+	if err := m.mempool.Save(); err != nil {
+		return fmt.Errorf("failed to save mempool: %w", err)
+	}
+
+	m.logger.Printf("Cleared %d operations from mempool", count)
+
+	return nil
+}

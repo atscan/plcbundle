@@ -37,6 +37,8 @@ func main() {
 		cmdExport()
 	case "backfill":
 		cmdBackfill()
+	case "mempool":
+		cmdMempool()
 	case "version":
 		fmt.Printf("plcbundle version %s\n", version)
 	default:
@@ -59,6 +61,7 @@ Commands:
   info       Show bundle information
   export     Export operations from bundles
   backfill   Fetch/load all bundles and stream to stdout
+  mempool    Show mempool status and operations
   version    Show version
 
 The tool works with the current directory.
@@ -617,4 +620,147 @@ func cmdBackfill() {
 	fmt.Fprintf(os.Stderr, "  Loaded from disk: %d\n", loadedCount)
 	fmt.Fprintf(os.Stderr, "  Total operations: %d\n", operationCount)
 	fmt.Fprintf(os.Stderr, "  Range: %06d - %06d\n", *startFrom, currentBundle-1)
+}
+
+func cmdMempool() {
+	fs := flag.NewFlagSet("mempool", flag.ExitOnError)
+	clear := fs.Bool("clear", false, "clear the mempool")
+	export := fs.Bool("export", false, "export mempool operations as JSONL to stdout")
+	refresh := fs.Bool("refresh", false, "reload mempool from disk")
+	verbose := fs.Bool("v", false, "verbose output")
+	fs.Parse(os.Args[2:])
+
+	mgr, dir, err := getManager("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer mgr.Close()
+
+	fmt.Printf("Working in: %s\n", dir)
+	fmt.Println()
+
+	// Handle refresh
+	if *refresh {
+		fmt.Printf("Refreshing mempool from disk...\n")
+		if err := mgr.RefreshMempool(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error refreshing mempool: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ Mempool refreshed\n\n")
+	}
+
+	// Handle clear
+	if *clear {
+		stats := mgr.GetMempoolStats()
+		count := stats["count"].(int)
+
+		if count == 0 {
+			fmt.Println("Mempool is already empty")
+			return
+		}
+
+		fmt.Printf("Clearing mempool (%d operations)...\n", count)
+
+		if err := mgr.ClearMempool(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error clearing mempool: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("✓ Mempool cleared (%d operations removed)\n", count)
+		fmt.Printf("  File deleted: %s\n", filepath.Join(dir, bundle.MEMPOOL_FILE))
+		return
+	}
+
+	// Handle export
+	if *export {
+		ops, err := mgr.GetMempoolOperations()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting mempool operations: %v\n", err)
+			os.Exit(1)
+		}
+
+		if len(ops) == 0 {
+			fmt.Fprintf(os.Stderr, "Mempool is empty\n")
+			return
+		}
+
+		// Output as JSONL to stdout
+		for _, op := range ops {
+			if len(op.RawJSON) > 0 {
+				fmt.Println(string(op.RawJSON))
+			}
+		}
+
+		fmt.Fprintf(os.Stderr, "Exported %d operations from mempool\n", len(ops))
+		return
+	}
+
+	// Default: Show mempool stats
+	stats := mgr.GetMempoolStats()
+	count := stats["count"].(int)
+	canCreate := stats["can_create_bundle"].(bool)
+
+	fmt.Printf("Mempool Status:\n")
+	fmt.Printf("  Operations: %d\n", count)
+	fmt.Printf("  Can create bundle: %v (need %d)\n", canCreate, bundle.BUNDLE_SIZE)
+
+	if count > 0 {
+		if sizeBytes, ok := stats["size_bytes"].(int); ok {
+			fmt.Printf("  Size: %.2f KB\n", float64(sizeBytes)/1024)
+		}
+
+		if firstTime, ok := stats["first_time"].(time.Time); ok {
+			fmt.Printf("  First operation: %s\n", firstTime.Format("2006-01-02 15:04:05"))
+		}
+
+		if lastTime, ok := stats["last_time"].(time.Time); ok {
+			fmt.Printf("  Last operation: %s\n", lastTime.Format("2006-01-02 15:04:05"))
+		}
+
+		progress := float64(count) / float64(bundle.BUNDLE_SIZE) * 100
+		fmt.Printf("  Progress: %.1f%% (%d/%d)\n", progress, count, bundle.BUNDLE_SIZE)
+
+		// Show progress bar
+		barWidth := 40
+		filled := int(float64(barWidth) * float64(count) / float64(bundle.BUNDLE_SIZE))
+		if filled > barWidth {
+			filled = barWidth
+		}
+		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+		fmt.Printf("  [%s]\n", bar)
+	} else {
+		fmt.Printf("  (empty)\n")
+	}
+
+	// Verbose: Show sample operations
+	if *verbose && count > 0 {
+		fmt.Println()
+		fmt.Printf("Sample operations (showing up to 10):\n")
+
+		ops, err := mgr.GetMempoolOperations()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting operations: %v\n", err)
+			os.Exit(1)
+		}
+
+		showCount := 10
+		if len(ops) < showCount {
+			showCount = len(ops)
+		}
+
+		for i := 0; i < showCount; i++ {
+			op := ops[i]
+			fmt.Printf("  %d. DID: %s\n", i+1, op.DID)
+			fmt.Printf("     CID: %s\n", op.CID)
+			fmt.Printf("     Created: %s\n", op.CreatedAt.Format("2006-01-02 15:04:05"))
+		}
+
+		if len(ops) > showCount {
+			fmt.Printf("  ... and %d more\n", len(ops)-showCount)
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("File: %s\n", filepath.Join(dir, bundle.MEMPOOL_FILE))
 }
