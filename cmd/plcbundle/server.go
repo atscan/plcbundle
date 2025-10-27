@@ -29,11 +29,6 @@ func newServerHandler(mgr *bundle.Manager, dir string) http.Handler {
 		handleIndexJSON(w, mgr)
 	})
 
-	// Stats JSON
-	mux.HandleFunc("/stats.json", func(w http.ResponseWriter, r *http.Request) {
-		handleStatsJSON(w, mgr)
-	})
-
 	// Bundle metadata
 	mux.HandleFunc("/bundle/", func(w http.ResponseWriter, r *http.Request) {
 		handleBundle(w, r, mgr)
@@ -64,14 +59,15 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, dir
 
 `)
 
-	fmt.Fprintf(w, "WHAT IS PLCBUNDLE?\n")
+	fmt.Fprintf(w, "What is PLC Bundle?\n")
 	fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(w, "plcbundle archives AT Protocol's PLC directory operations into\n")
 	fmt.Fprintf(w, "immutable, cryptographically-chained bundles of 10,000 operations.\n")
 	fmt.Fprintf(w, "Each bundle is compressed (zstd), hashed (SHA-256), and linked to\n")
 	fmt.Fprintf(w, "the previous bundle, creating a verifiable chain of DID operations.\n\n")
+	fmt.Fprintf(w, "More info: https://github.com/atscan/plcbundle\n\n")
 
-	fmt.Fprintf(w, "SERVER STATS\n")
+	fmt.Fprintf(w, "Server Stats\n")
 	fmt.Fprintf(w, "━━━━━━━━━━━━\n")
 	fmt.Fprintf(w, "  Bundle count:  %d\n", bundleCount)
 
@@ -89,23 +85,22 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, dir
 		}
 	}
 
-	fmt.Fprintf(w, "\nAPI ENDPOINTS\n")
+	fmt.Fprintf(w, "\nAPI Endpoints\n")
 	fmt.Fprintf(w, "━━━━━━━━━━━━━\n")
 	fmt.Fprintf(w, "  GET  /                    This info page\n")
 	fmt.Fprintf(w, "  GET  /index.json          Full bundle index\n")
-	fmt.Fprintf(w, "  GET  /stats.json          Server statistics\n")
 	fmt.Fprintf(w, "  GET  /bundle/:number      Bundle metadata (JSON)\n")
 	fmt.Fprintf(w, "  GET  /data/:number        Raw bundle (zstd compressed)\n")
 	fmt.Fprintf(w, "  GET  /jsonl/:number       Decompressed JSONL stream\n")
 
-	fmt.Fprintf(w, "\nEXAMPLES\n")
+	fmt.Fprintf(w, "\nExamples\n")
 	fmt.Fprintf(w, "━━━━━━━━\n")
 	fmt.Fprintf(w, "  # Get bundle metadata\n")
-	fmt.Fprintf(w, "  curl http://%s/bundle/000001\n\n", r.Host)
+	fmt.Fprintf(w, "  curl http://%s/bundle/1\n\n", r.Host)
 	fmt.Fprintf(w, "  # Download compressed bundle\n")
-	fmt.Fprintf(w, "  curl http://%s/data/000001 -o 000001.jsonl.zst\n\n", r.Host)
+	fmt.Fprintf(w, "  curl http://%s/data/1 -o 000001.jsonl.zst\n\n", r.Host)
 	fmt.Fprintf(w, "  # Stream decompressed operations\n")
-	fmt.Fprintf(w, "  curl http://%s/jsonl/000001\n\n", r.Host)
+	fmt.Fprintf(w, "  curl http://%s/jsonl/1\n\n", r.Host)
 	fmt.Fprintf(w, "  # Get full index\n")
 	fmt.Fprintf(w, "  curl http://%s/index.json\n\n", r.Host)
 
@@ -122,21 +117,6 @@ func handleIndexJSON(w http.ResponseWriter, mgr *bundle.Manager) {
 	data, err := json.MarshalIndent(index, "", "  ")
 	if err != nil {
 		http.Error(w, "Failed to marshal index", http.StatusInternalServerError)
-		return
-	}
-
-	w.Write(data)
-}
-
-func handleStatsJSON(w http.ResponseWriter, mgr *bundle.Manager) {
-	stats := mgr.GetInfo()
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-
-	data, err := json.MarshalIndent(stats, "", "  ")
-	if err != nil {
-		http.Error(w, "Failed to marshal stats", http.StatusInternalServerError)
 		return
 	}
 
