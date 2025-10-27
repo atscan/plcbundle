@@ -21,7 +21,7 @@ func newServerHandler(mgr *bundle.Manager, dir string) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		handleRoot(w, r, mgr, dir)
+		handleRoot(w, r, mgr)
 	})
 
 	// Index JSON
@@ -47,7 +47,7 @@ func newServerHandler(mgr *bundle.Manager, dir string) http.Handler {
 	return mux
 }
 
-func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, dir string) {
+func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	index := mgr.GetIndex()
@@ -60,7 +60,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, dir
 `)
 
 	fmt.Fprintf(w, "What is PLC Bundle?\n")
-	fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━\n")
+	fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(w, "plcbundle archives AT Protocol's PLC directory operations into\n")
 	fmt.Fprintf(w, "immutable, cryptographically-chained bundles of 10,000 operations.\n")
 	fmt.Fprintf(w, "Each bundle is compressed (zstd), hashed (SHA-256), and linked to\n")
@@ -82,6 +82,17 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, dir
 
 		if gaps, ok := stats["gaps"].(int); ok && gaps > 0 {
 			fmt.Fprintf(w, "  ⚠ Gaps:        %d missing bundles\n", gaps)
+		}
+
+		// Get first and last bundle metadata for hashes
+		firstMeta, err := index.GetBundle(firstBundle)
+		if err == nil {
+			fmt.Fprintf(w, "\n  Chain root:    %s\n", firstMeta.Hash)
+		}
+
+		lastMeta, err := index.GetBundle(lastBundle)
+		if err == nil {
+			fmt.Fprintf(w, "  Chain head:    %s\n", lastMeta.Hash)
 		}
 	}
 
