@@ -70,8 +70,17 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		config.Logger.Printf("Loaded index with %d bundles", index.Count())
 	}
 
-	// Initialize mempool
-	mempool, err := NewMempool(config.BundleDir, config.Logger)
+	// Initialize mempool for next bundle
+	lastBundle := index.GetLastBundle()
+	nextBundleNum := 1
+	var minTimestamp time.Time
+
+	if lastBundle != nil {
+		nextBundleNum = lastBundle.BundleNumber + 1
+		minTimestamp = lastBundle.EndTime
+	}
+
+	mempool, err := NewMempool(config.BundleDir, nextBundleNum, minTimestamp, config.Logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize mempool: %w", err)
 	}
@@ -83,7 +92,7 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		indexPath:  indexPath,
 		plcClient:  plcClient,
 		logger:     config.Logger,
-		mempool:    mempool, // NEW
+		mempool:    mempool,
 	}, nil
 }
 
@@ -165,7 +174,6 @@ func (m *Manager) LoadBundle(ctx context.Context, bundleNumber int) (*Bundle, er
 
 // SaveBundle saves a bundle to disk and updates the index
 func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
-	// Use ValidateForSave instead of Validate
 	if err := bundle.ValidateForSave(); err != nil {
 		return fmt.Errorf("bundle validation failed: %w", err)
 	}
@@ -194,6 +202,27 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
 	}
 
 	m.logger.Printf("Saved bundle %06d (hash: %s...)", bundle.BundleNumber, bundle.Hash[:16])
+
+	// IMPORTANT: Clean up old mempool and create new one for next bundle
+	oldMempoolFile := m.mempool.GetFilename()
+	if err := m.mempool.Delete(); err != nil {
+		m.logger.Printf("Warning: failed to delete old mempool %s: %v", oldMempoolFile, err)
+	} else {
+		m.logger.Printf("Deleted mempool: %s", oldMempoolFile)
+	}
+
+	// Create new mempool for next bundle
+	nextBundle := bundle.BundleNumber + 1
+	minTimestamp := bundle.EndTime
+
+	newMempool, err := NewMempool(m.config.BundleDir, nextBundle, minTimestamp, m.logger)
+	if err != nil {
+		return fmt.Errorf("failed to create new mempool: %w", err)
+	}
+
+	m.mempool = newMempool
+	m.logger.Printf("Created new mempool for bundle %06d (min timestamp: %s)",
+		nextBundle, minTimestamp.Format(time.RFC3339Nano))
 
 	return nil
 }
@@ -250,7 +279,12 @@ func (m *Manager) FetchNextBundle(ctx context.Context) (*Bundle, error) {
 
 	// Create bundle from mempool
 	m.logger.Printf("Creating bundle %06d from mempool", nextBundleNum)
-	operations := m.mempool.Take(BUNDLE_SIZE)
+	operations, err := m.mempool.Take(BUNDLE_SIZE) // ✅ Fixed - handle both return values
+	if err != nil {
+		m.mempool.Save()
+		return nil, fmt.Errorf("failed to take operations from mempool: %w", err)
+	}
+
 	bundle := m.operations.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash)
 
 	// Save mempool state
@@ -304,7 +338,6 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 			After: currentAfter,
 		})
 		if err != nil {
-			// Save what we have
 			m.mempool.Save()
 			return fmt.Errorf("export failed: %w", err)
 		}
@@ -312,14 +345,13 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 		if len(batch) == 0 {
 			m.logger.Printf("  No more operations available from PLC")
 			m.mempool.Save()
-			// Return success if we added anything
 			if totalAdded > 0 {
 				return nil
 			}
 			return fmt.Errorf("no operations available")
 		}
 
-		// Deduplicate and add to mempool
+		// Deduplicate
 		uniqueOps := make([]plc.PLCOperation, 0)
 		for _, op := range batch {
 			if !seenCIDs[op.CID] {
@@ -329,7 +361,14 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 		}
 
 		if len(uniqueOps) > 0 {
-			added := m.mempool.Add(uniqueOps)
+			// CRITICAL: Add with validation
+			added, err := m.mempool.Add(uniqueOps)
+			if err != nil {
+				// Validation error - save current state and return
+				m.mempool.Save()
+				return fmt.Errorf("chronological validation failed: %w", err)
+			}
+
 			totalAdded += added
 			m.logger.Printf("  Added %d new operations (mempool now: %d)", added, m.mempool.Count())
 
@@ -782,4 +821,12 @@ func (m *Manager) ClearMempool() error {
 	m.logger.Printf("Cleared %d operations from mempool", count)
 
 	return nil
+}
+
+// Add validation method
+func (m *Manager) ValidateMempool() error {
+	if m.mempool == nil {
+		return fmt.Errorf("mempool not initialized")
+	}
+	return m.mempool.Validate()
 }

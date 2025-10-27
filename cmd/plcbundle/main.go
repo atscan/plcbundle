@@ -627,6 +627,7 @@ func cmdMempool() {
 	clear := fs.Bool("clear", false, "clear the mempool")
 	export := fs.Bool("export", false, "export mempool operations as JSONL to stdout")
 	refresh := fs.Bool("refresh", false, "reload mempool from disk")
+	validate := fs.Bool("validate", false, "validate chronological order")
 	verbose := fs.Bool("v", false, "verbose output")
 	fs.Parse(os.Args[2:])
 
@@ -640,6 +641,17 @@ func cmdMempool() {
 	fmt.Printf("Working in: %s\n", dir)
 	fmt.Println()
 
+	// Handle validate
+	if *validate {
+		fmt.Printf("Validating mempool chronological order...\n")
+		if err := mgr.ValidateMempool(); err != nil {
+			fmt.Fprintf(os.Stderr, "✗ Validation failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ Mempool validation passed\n")
+		return
+	}
+
 	// Handle refresh
 	if *refresh {
 		fmt.Printf("Refreshing mempool from disk...\n")
@@ -647,7 +659,13 @@ func cmdMempool() {
 			fmt.Fprintf(os.Stderr, "Error refreshing mempool: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("✓ Mempool refreshed\n\n")
+
+		// Validate after refresh
+		if err := mgr.ValidateMempool(); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ Warning: mempool validation failed after refresh: %v\n", err)
+		} else {
+			fmt.Printf("✓ Mempool refreshed and validated\n\n")
+		}
 	}
 
 	// Handle clear
@@ -660,7 +678,14 @@ func cmdMempool() {
 			return
 		}
 
-		fmt.Printf("Clearing mempool (%d operations)...\n", count)
+		fmt.Printf("⚠ This will clear %d operations from the mempool.\n", count)
+		fmt.Printf("Are you sure? [y/N]: ")
+		var response string
+		fmt.Scanln(&response)
+		if strings.ToLower(strings.TrimSpace(response)) != "y" {
+			fmt.Println("Cancelled")
+			return
+		}
 
 		if err := mgr.ClearMempool(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error clearing mempool: %v\n", err)
@@ -668,7 +693,6 @@ func cmdMempool() {
 		}
 
 		fmt.Printf("✓ Mempool cleared (%d operations removed)\n", count)
-		fmt.Printf("  File deleted: %s\n", filepath.Join(dir, bundle.MEMPOOL_FILE))
 		return
 	}
 
@@ -700,10 +724,21 @@ func cmdMempool() {
 	stats := mgr.GetMempoolStats()
 	count := stats["count"].(int)
 	canCreate := stats["can_create_bundle"].(bool)
+	targetBundle := stats["target_bundle"].(int)
+	minTimestamp := stats["min_timestamp"].(time.Time)
+	validated := stats["validated"].(bool)
 
 	fmt.Printf("Mempool Status:\n")
+	fmt.Printf("  Target bundle: %06d\n", targetBundle)
 	fmt.Printf("  Operations: %d\n", count)
 	fmt.Printf("  Can create bundle: %v (need %d)\n", canCreate, bundle.BUNDLE_SIZE)
+	fmt.Printf("  Min timestamp: %s\n", minTimestamp.Format("2006-01-02 15:04:05"))
+
+	validationIcon := "✓"
+	if !validated {
+		validationIcon = "⚠"
+	}
+	fmt.Printf("  Validated: %s %v\n", validationIcon, validated)
 
 	if count > 0 {
 		if sizeBytes, ok := stats["size_bytes"].(int); ok {
@@ -753,7 +788,7 @@ func cmdMempool() {
 			op := ops[i]
 			fmt.Printf("  %d. DID: %s\n", i+1, op.DID)
 			fmt.Printf("     CID: %s\n", op.CID)
-			fmt.Printf("     Created: %s\n", op.CreatedAt.Format("2006-01-02 15:04:05"))
+			fmt.Printf("     Created: %s\n", op.CreatedAt.Format("2006-01-02 15:04:05.000"))
 		}
 
 		if len(ops) > showCount {
@@ -762,5 +797,8 @@ func cmdMempool() {
 	}
 
 	fmt.Println()
-	fmt.Printf("File: %s\n", filepath.Join(dir, bundle.MEMPOOL_FILE))
+
+	// Show mempool file
+	mempoolFilename := fmt.Sprintf("plc_mempool_%06d.jsonl", targetBundle)
+	fmt.Printf("File: %s\n", filepath.Join(dir, mempoolFilename))
 }
