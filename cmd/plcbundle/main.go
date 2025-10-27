@@ -2,12 +2,11 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -62,46 +61,13 @@ Commands:
   backfill   Fetch/load all bundles and stream to stdout
   version    Show version
 
-The tool works with the current directory or nearest bundle directory.
+The tool works with the current directory.
 Bundle directory is detected by presence of .jsonl.zst files or plc_bundles.json.`)
-}
-
-// findBundleDir finds the bundle directory (current dir or parent dirs)
-func findBundleDir() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-
-	// Check current directory
-	if isBundleDir(cwd) {
-		return cwd, nil
-	}
-
-	// Default to current directory (will be auto-created)
-	return cwd, nil
-}
-
-// isBundleDir checks if a directory is a bundle directory
-func isBundleDir(dir string) bool {
-	// Check for index file
-	indexPath := filepath.Join(dir, bundle.INDEX_FILE)
-	if _, err := os.Stat(indexPath); err == nil {
-		return true
-	}
-
-	// Check for any .jsonl.zst files
-	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl.zst"))
-	if err == nil && len(files) > 0 {
-		return true
-	}
-
-	return false
 }
 
 // getManager creates or opens a bundle manager in the detected directory
 func getManager(plcURL string) (*bundle.Manager, string, error) {
-	dir, err := findBundleDir()
+	dir, err := os.Getwd()
 	if err != nil {
 		return nil, "", err
 	}
@@ -261,13 +227,6 @@ func cmdScan() {
 
 	fmt.Printf("Scanning: %s\n", dir)
 
-	// Get current index state
-	index := mgr.GetIndex()
-	indexedBundles := make(map[int]bool)
-	for _, meta := range index.GetBundles() {
-		indexedBundles[meta.BundleNumber] = true
-	}
-
 	// Find all bundle files
 	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl.zst"))
 	if err != nil {
@@ -290,26 +249,18 @@ func cmdScan() {
 		}
 	}
 
-	// Sort bundle numbers
-	for i := 0; i < len(bundleNumbers); i++ {
-		for j := i + 1; j < len(bundleNumbers); j++ {
-			if bundleNumbers[i] > bundleNumbers[j] {
-				bundleNumbers[i], bundleNumbers[j] = bundleNumbers[j], bundleNumbers[i]
-			}
-		}
-	}
+	// Sort
+	sort.Ints(bundleNumbers)
 
 	skippedCount := 0
 	newCount := 0
 
 	fmt.Printf("Found %d bundle files\n", len(bundleNumbers))
 
-	// ← ctx line removed here
-
 	// Process each bundle incrementally
 	for _, num := range bundleNumbers {
 		// Skip if already indexed
-		if indexedBundles[num] {
+		if mgr.IsBundleIndexed(num) {
 			skippedCount++
 			continue
 		}
@@ -318,27 +269,15 @@ func cmdScan() {
 
 		path := filepath.Join(dir, fmt.Sprintf("%06d.jsonl.zst", num))
 
-		// Load bundle file
-		b, err := loadBundleFile(path, num)
+		// ✅ Use Manager - single point of entry
+		meta, err := mgr.ScanAndIndexBundle(path, num)
 		if err != nil {
 			fmt.Printf(" ERROR: %v\n", err)
 			continue
 		}
 
-		// Calculate metadata
-		meta := calculateBundleMetadata(index, num, path, b.Operations)
-
-		// Add to index
-		index.AddBundle(meta)
-
-		// Save index immediately (incremental)
-		if err := mgr.SaveIndex(); err != nil {
-			fmt.Printf(" ERROR saving index: %v\n", err)
-			continue
-		}
-
 		newCount++
-		fmt.Printf(" ✓ (%d ops, %d DIDs)\n", len(b.Operations), meta.DIDCount)
+		fmt.Printf(" ✓ (%d ops, %d DIDs)\n", meta.OperationCount, meta.DIDCount)
 	}
 
 	fmt.Printf("\n")
@@ -347,98 +286,6 @@ func cmdScan() {
 	fmt.Printf("  Already indexed: %d\n", skippedCount)
 	fmt.Printf("  Newly scanned: %d\n", newCount)
 	fmt.Printf("  Index: %s\n", filepath.Join(dir, bundle.INDEX_FILE))
-}
-
-// loadBundleFile loads and parses a bundle file directly
-func loadBundleFile(path string, num int) (*bundle.Bundle, error) {
-	config := bundle.DefaultConfig(filepath.Dir(path))
-	ops, err := bundle.NewOperations(config.CompressionLevel, config.Logger)
-	if err != nil {
-		return nil, err
-	}
-	defer ops.Close()
-
-	operations, err := ops.LoadBundle(path)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(operations) == 0 {
-		return nil, fmt.Errorf("bundle is empty")
-	}
-
-	return &bundle.Bundle{
-		BundleNumber: num,
-		Operations:   operations,
-		StartTime:    operations[0].CreatedAt,
-		EndTime:      operations[len(operations)-1].CreatedAt,
-	}, nil
-}
-
-// calculateBundleMetadata calculates metadata for a bundle
-func calculateBundleMetadata(index *bundle.Index, num int, path string, ops []plc.PLCOperation) *bundle.BundleMetadata {
-	// Get file size
-	info, _ := os.Stat(path)
-	compressedSize := info.Size()
-
-	// Calculate unique DIDs
-	didSet := make(map[string]bool)
-	for _, op := range ops {
-		didSet[op.DID] = true
-	}
-
-	// Calculate uncompressed size by summing raw JSON lengths
-	uncompressedSize := int64(0)
-	for _, op := range ops {
-		uncompressedSize += int64(len(op.RawJSON)) + 1 // +1 for newline
-	}
-
-	// Calculate hashes
-	uncompressedHash := calculateUncompressedHash(ops)
-	compressedData, _ := os.ReadFile(path)
-	compressedHash := computeHash(compressedData)
-
-	// Get cursor and prev hash from index
-	cursor := ""
-	prevHash := ""
-
-	if num > 1 {
-		if prevMeta, err := index.GetBundle(num - 1); err == nil {
-			cursor = prevMeta.EndTime.Format(time.RFC3339Nano)
-			prevHash = prevMeta.Hash
-		}
-	}
-
-	return &bundle.BundleMetadata{
-		BundleNumber:     num,
-		StartTime:        ops[0].CreatedAt,
-		EndTime:          ops[len(ops)-1].CreatedAt,
-		OperationCount:   len(ops),
-		DIDCount:         len(didSet),
-		Hash:             uncompressedHash,
-		CompressedHash:   compressedHash,
-		CompressedSize:   compressedSize,
-		UncompressedSize: uncompressedSize,
-		Cursor:           cursor,
-		PrevBundleHash:   prevHash,
-		CreatedAt:        time.Now().UTC(),
-	}
-}
-
-// calculateUncompressedHash calculates hash of JSONL data
-func calculateUncompressedHash(ops []plc.PLCOperation) string {
-	var data []byte
-	for _, op := range ops {
-		data = append(data, op.RawJSON...)
-		data = append(data, '\n')
-	}
-	return computeHash(data)
-}
-
-// computeHash computes SHA256 hash
-func computeHash(data []byte) string {
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
 }
 
 func cmdVerify() {

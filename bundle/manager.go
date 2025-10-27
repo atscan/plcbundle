@@ -453,10 +453,10 @@ func (m *Manager) ScanDirectory() (*DirectoryScanResult, error) {
 
 		// Calculate metadata
 		dids := m.operations.ExtractUniqueDIDs(ops)
-		jsonlData := m.operations.serializeJSONL(ops)
-		uncompressedHash := m.operations.hash(jsonlData)
+		jsonlData := m.operations.SerializeJSONL(ops)
+		uncompressedHash := m.operations.Hash(jsonlData)
 		compressedData, _ := os.ReadFile(path)
-		compressedHash := m.operations.hash(compressedData)
+		compressedHash := m.operations.Hash(compressedData)
 
 		// Determine cursor (would need previous bundle's end_time in real scenario)
 		cursor := ""
@@ -562,4 +562,101 @@ func (m *Manager) ExportOperations(ctx context.Context, afterTime time.Time, cou
 	}
 
 	return result, nil
+}
+
+// ScanBundle scans a single bundle file and returns its metadata
+func (m *Manager) ScanBundle(path string, bundleNumber int) (*BundleMetadata, error) {
+	// Load bundle file
+	operations, err := m.operations.LoadBundle(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load bundle: %w", err)
+	}
+
+	if len(operations) == 0 {
+		return nil, fmt.Errorf("bundle is empty")
+	}
+
+	// Get previous bundle hash from index
+	prevHash := ""
+	if bundleNumber > 1 {
+		if prevMeta, err := m.index.GetBundle(bundleNumber - 1); err == nil {
+			prevHash = prevMeta.Hash
+		}
+	}
+
+	// Calculate metadata
+	meta, err := m.calculateBundleMetadata(bundleNumber, path, operations, prevHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate metadata: %w", err)
+	}
+
+	return meta, nil
+}
+
+// ScanAndIndexBundle scans a bundle file and adds it to the index
+func (m *Manager) ScanAndIndexBundle(path string, bundleNumber int) (*BundleMetadata, error) {
+	meta, err := m.ScanBundle(path, bundleNumber)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add to index
+	m.index.AddBundle(meta)
+
+	// Save index
+	if err := m.SaveIndex(); err != nil {
+		return nil, fmt.Errorf("failed to save index: %w", err)
+	}
+
+	return meta, nil
+}
+
+// calculateBundleMetadata calculates metadata for a bundle (internal helper)
+func (m *Manager) calculateBundleMetadata(bundleNumber int, path string, operations []plc.PLCOperation, prevBundleHash string) (*BundleMetadata, error) {
+	// Get file info
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat file: %w", err)
+	}
+
+	// Extract unique DIDs
+	dids := m.operations.ExtractUniqueDIDs(operations)
+
+	// Calculate sizes and hashes
+	jsonlData := m.operations.SerializeJSONL(operations)
+	uncompressedSize := int64(len(jsonlData))
+	uncompressedHash := m.operations.Hash(jsonlData)
+
+	compressedData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read compressed file: %w", err)
+	}
+	compressedHash := m.operations.Hash(compressedData)
+
+	// Determine cursor
+	cursor := ""
+	if bundleNumber > 1 && prevBundleHash != "" {
+		cursor = operations[0].CreatedAt.Format(time.RFC3339Nano)
+	}
+
+	return &BundleMetadata{
+		BundleNumber:     bundleNumber,
+		StartTime:        operations[0].CreatedAt,
+		EndTime:          operations[len(operations)-1].CreatedAt,
+		OperationCount:   len(operations),
+		DIDCount:         len(dids),
+		Hash:             uncompressedHash,
+		CompressedHash:   compressedHash,
+		CompressedSize:   info.Size(),
+		UncompressedSize: uncompressedSize,
+		Cursor:           cursor,
+		PrevBundleHash:   prevBundleHash,
+		CreatedAt:        time.Now().UTC(),
+	}, nil
+}
+
+// IsBundleIndexed checks if a bundle is already in the index
+func (m *Manager) IsBundleIndexed(bundleNumber int) bool {
+	_, err := m.index.GetBundle(bundleNumber)
+	return err == nil
 }

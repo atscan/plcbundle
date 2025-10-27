@@ -89,14 +89,14 @@ func (op *Operations) LoadBundle(path string) ([]plc.PLCOperation, error) {
 // SaveBundle saves a bundle to disk
 func (op *Operations) SaveBundle(path string, operations []plc.PLCOperation) (uncompressedHash, compressedHash string, uncompressedSize, compressedSize int64, err error) {
 	// Serialize to JSONL
-	jsonlData := op.serializeJSONL(operations)
+	jsonlData := op.SerializeJSONL(operations)
 	uncompressedSize = int64(len(jsonlData))
-	uncompressedHash = op.hash(jsonlData)
+	uncompressedHash = op.Hash(jsonlData)
 
 	// Compress
 	compressed := op.encoder.EncodeAll(jsonlData, nil)
 	compressedSize = int64(len(compressed))
-	compressedHash = op.hash(compressed)
+	compressedHash = op.Hash(compressed)
 
 	// Write to file
 	if err := os.WriteFile(path, compressed, 0644); err != nil {
@@ -113,7 +113,7 @@ func (op *Operations) VerifyHash(path string, expectedHash string) (bool, string
 		return false, "", fmt.Errorf("failed to read file: %w", err)
 	}
 
-	actualHash := op.hash(data)
+	actualHash := op.Hash(data)
 	return actualHash == expectedHash, actualHash, nil
 }
 
@@ -170,7 +170,7 @@ func (op *Operations) parseJSONL(data []byte) ([]plc.PLCOperation, error) {
 }
 
 // serializeJSONL serializes operations to newline-delimited JSON
-func (op *Operations) serializeJSONL(operations []plc.PLCOperation) []byte {
+func (op *Operations) SerializeJSONL(operations []plc.PLCOperation) []byte {
 	var buf bytes.Buffer
 
 	for _, operation := range operations {
@@ -189,7 +189,7 @@ func (op *Operations) serializeJSONL(operations []plc.PLCOperation) []byte {
 }
 
 // hash computes SHA256 hash of data
-func (op *Operations) hash(data []byte) string {
+func (op *Operations) Hash(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
 }
@@ -291,4 +291,64 @@ func (op *Operations) CreateBundle(bundleNumber int, operations []plc.PLCOperati
 	}
 
 	return bundle
+}
+
+// CalculateMetadataFromFile calculates complete metadata from a bundle file
+func (op *Operations) CalculateMetadataFromFile(path string, bundleNumber int, prevBundleHash string) (*BundleMetadata, error) {
+	// Load operations
+	operations, err := op.LoadBundle(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(operations) == 0 {
+		return nil, fmt.Errorf("bundle is empty")
+	}
+
+	// Calculate metadata
+	return op.CalculateMetadata(bundleNumber, path, operations, prevBundleHash)
+}
+
+// CalculateMetadata calculates metadata from loaded operations
+func (op *Operations) CalculateMetadata(bundleNumber int, path string, operations []plc.PLCOperation, prevBundleHash string) (*BundleMetadata, error) {
+	// Get file info
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract unique DIDs
+	dids := op.ExtractUniqueDIDs(operations)
+
+	// Calculate sizes and hashes
+	jsonlData := op.SerializeJSONL(operations)
+	uncompressedSize := int64(len(jsonlData))
+	uncompressedHash := op.Hash(jsonlData)
+
+	compressedData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	compressedHash := op.Hash(compressedData)
+
+	// Determine cursor from previous bundle
+	cursor := ""
+	if bundleNumber > 1 && prevBundleHash != "" {
+		cursor = operations[0].CreatedAt.Format(time.RFC3339Nano)
+	}
+
+	return &BundleMetadata{
+		BundleNumber:     bundleNumber,
+		StartTime:        operations[0].CreatedAt,
+		EndTime:          operations[len(operations)-1].CreatedAt,
+		OperationCount:   len(operations),
+		DIDCount:         len(dids),
+		Hash:             uncompressedHash,
+		CompressedHash:   compressedHash,
+		CompressedSize:   info.Size(),
+		UncompressedSize: uncompressedSize,
+		Cursor:           cursor,
+		PrevBundleHash:   prevBundleHash,
+		CreatedAt:        time.Now().UTC(),
+	}, nil
 }

@@ -131,3 +131,18 @@ func (bm *BundleManager) GetInfo() map[string]interface{} {
 func (bm *BundleManager) Export(ctx context.Context, afterTime time.Time, count int) ([]PLCOperation, error) {
 	return bm.mgr.ExportOperations(ctx, afterTime, count)
 }
+
+// Scan scans the directory and rebuilds the index
+func (bm *BundleManager) Scan() (*DirectoryScanResult, error) {
+	return bm.mgr.ScanDirectory()
+}
+
+// ScanBundle scans a single bundle file
+func (bm *BundleManager) ScanBundle(path string, bundleNumber int) (*BundleMetadata, error) {
+	return bm.mgr.ScanBundle(path, bundleNumber)
+}
+
+// IsBundleIndexed checks if a bundle is in the index
+func (bm *BundleManager) IsBundleIndexed(bundleNumber int) bool {
+	return bm.mgr.IsBundleIndexed(bundleNumber)
+}
