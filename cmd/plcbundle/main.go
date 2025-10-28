@@ -393,7 +393,7 @@ func cmdRebuild() {
 			// Show head hash
 			index := mgr.GetIndex()
 			if lastMeta := index.GetLastBundle(); lastMeta != nil {
-				fmt.Printf("  Chain head: %s...\n", lastMeta.ChainHash[:16])
+				fmt.Printf("  Chain head: %s...\n", lastMeta.Hash[:16])
 			}
 		} else {
 			fmt.Printf("  ✗ Chain verification failed\n")
@@ -508,13 +508,13 @@ func cmdVerify() {
 			// Verify chain link (prev_bundle_hash)
 			if i > 0 {
 				prevMeta := bundles[i-1]
-				if meta.PrevBundleHash != prevMeta.Hash {
+				if meta.Parent != prevMeta.Hash {
 					if *verbose {
 						fmt.Printf(" CHAIN BROKEN\n")
 					}
 					fmt.Printf("\n✗ Chain broken at bundle %06d\n", bundleNum)
-					fmt.Printf("  Expected prev_hash: %s...\n", prevMeta.Hash[:16])
-					fmt.Printf("  Actual prev_hash:   %s...\n", meta.PrevBundleHash[:16])
+					fmt.Printf("  Expected parent: %s...\n", prevMeta.Hash[:16])
+					fmt.Printf("  Actual parent:   %s...\n", meta.Parent[:16])
 					errorCount++
 					continue
 				}
@@ -614,23 +614,25 @@ func showBundleInfo(mgr *bundle.Manager, dir string, bundleNum int, verbose bool
 
 	// Hashes
 	fmt.Printf("🔐 Cryptographic Hashes\n")
-	fmt.Printf("   Content (SHA-256):\n")
+	fmt.Printf("   Chain Hash:\n")
 	fmt.Printf("     %s\n", b.Hash)
+	fmt.Printf("   Content Hash:\n")
+	fmt.Printf("     %s\n", b.ContentHash)
 	fmt.Printf("   Compressed:\n")
 	fmt.Printf("     %s\n", b.CompressedHash)
-	if b.PrevBundleHash != "" {
-		fmt.Printf("   Previous Bundle:\n")
-		fmt.Printf("     %s\n", b.PrevBundleHash)
+	if b.Parent != "" {
+		fmt.Printf("   Parent Chain Hash:\n")
+		fmt.Printf("     %s\n", b.Parent)
 	}
 	fmt.Printf("\n")
 
 	// Chain
-	if b.PrevBundleHash != "" || b.Cursor != "" {
+	if b.Parent != "" || b.Cursor != "" {
 		fmt.Printf("🔗 Chain Information\n")
 		if b.Cursor != "" {
 			fmt.Printf("   Cursor:     %s\n", b.Cursor)
 		}
-		if b.PrevBundleHash != "" {
+		if b.Parent != "" {
 			fmt.Printf("   Links to:   Bundle %06d\n", bundleNum-1)
 		}
 		if len(b.BoundaryCIDs) > 0 {

@@ -167,10 +167,10 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		bundles := index.GetBundles()
 		missingHashes := 0
 		for i, meta := range bundles {
-			if meta.Hash == "" {
+			if meta.ContentHash == "" { // ← Changed from meta.Hash
 				missingHashes++
 			}
-			if i > 0 && meta.ChainHash == "" {
+			if i > 0 && meta.Hash == "" { // ← This is now the chain hash
 				missingHashes++
 			}
 		}
@@ -272,12 +272,13 @@ func (m *Manager) LoadBundle(ctx context.Context, bundleNumber int) (*Bundle, er
 		EndTime:          meta.EndTime,
 		Operations:       operations,
 		DIDCount:         meta.DIDCount,
-		Hash:             meta.Hash,
+		Hash:             meta.Hash,        // Chain hash (primary)
+		ContentHash:      meta.ContentHash, // Content hash
+		Parent:           meta.Parent,      // Parent chain hash
 		CompressedHash:   meta.CompressedHash,
 		CompressedSize:   meta.CompressedSize,
 		UncompressedSize: meta.UncompressedSize,
 		Cursor:           meta.Cursor,
-		PrevBundleHash:   meta.PrevBundleHash,
 		Compressed:       true,
 		CreatedAt:        meta.CreatedAt,
 	}
@@ -299,61 +300,47 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
 		return fmt.Errorf("failed to save bundle: %w", err)
 	}
 
-	// Update bundle metadata
-	bundle.Hash = uncompressedHash
+	// Set content hash and compressed metadata
+	bundle.ContentHash = uncompressedHash
 	bundle.CompressedHash = compressedHash
 	bundle.UncompressedSize = uncompressedSize
 	bundle.CompressedSize = compressedSize
 	bundle.CreatedAt = time.Now().UTC()
 
-	// Get previous bundle's hashes from index
-	var prevChainHash string
-	var prevContentHash string
-
+	// Get parent (previous chain hash)
+	var parent string
 	if bundle.BundleNumber > 1 {
 		prevBundle := m.index.GetLastBundle()
 		if prevBundle != nil {
-			prevChainHash = prevBundle.ChainHash
-			prevContentHash = prevBundle.Hash
+			parent = prevBundle.Hash // Get previous chain hash
 
-			// Safe logging with length checks
-			hashPreview := formatHashPreview(prevContentHash)
-			chainPreview := formatHashPreview(prevChainHash)
-
-			m.logger.Printf("Previous bundle %06d: hash=%s, chain=%s",
+			m.logger.Printf("Previous bundle %06d: hash=%s, content=%s",
 				prevBundle.BundleNumber,
-				hashPreview,
-				chainPreview)
+				formatHashPreview(prevBundle.Hash),
+				formatHashPreview(prevBundle.ContentHash))
 		} else {
 			// Try to get specific previous bundle
 			if prevMeta, err := m.index.GetBundle(bundle.BundleNumber - 1); err == nil {
-				prevChainHash = prevMeta.ChainHash
-				prevContentHash = prevMeta.Hash
+				parent = prevMeta.Hash
 
-				// Safe logging with length checks
-				hashPreview := formatHashPreview(prevContentHash)
-				chainPreview := formatHashPreview(prevChainHash)
-
-				m.logger.Printf("Found previous bundle %06d: hash=%s, chain=%s",
+				m.logger.Printf("Found previous bundle %06d: hash=%s, content=%s",
 					prevMeta.BundleNumber,
-					hashPreview,
-					chainPreview)
+					formatHashPreview(prevMeta.Hash),
+					formatHashPreview(prevMeta.ContentHash))
 			}
 		}
 	}
 
-	// Set previous bundle references
-	bundle.PrevBundleHash = prevContentHash
-	bundle.PrevChainHash = prevChainHash
+	bundle.Parent = parent
 
-	// Calculate chain hash
-	bundle.ChainHash = m.operations.CalculateChainHash(prevChainHash, bundle.Hash)
+	// Calculate chain hash (now stored as primary Hash)
+	bundle.Hash = m.operations.CalculateChainHash(parent, bundle.ContentHash)
 
-	// Safe logging for current bundle
-	m.logger.Printf("Bundle %06d: hash=%s, chain=%s",
+	m.logger.Printf("Bundle %06d: hash=%s, content=%s, parent=%s",
 		bundle.BundleNumber,
 		formatHashPreview(bundle.Hash),
-		formatHashPreview(bundle.ChainHash))
+		formatHashPreview(bundle.ContentHash),
+		formatHashPreview(bundle.Parent))
 
 	// Add to index
 	m.index.AddBundle(bundle.ToMetadata())
@@ -363,10 +350,9 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
 		return fmt.Errorf("failed to save index: %w", err)
 	}
 
-	m.logger.Printf("Saved bundle %06d (hash: %s, chain: %s)",
+	m.logger.Printf("Saved bundle %06d (hash: %s)",
 		bundle.BundleNumber,
-		formatHashPreview(bundle.Hash),
-		formatHashPreview(bundle.ChainHash))
+		formatHashPreview(bundle.Hash))
 
 	// IMPORTANT: Clean up old mempool and create new one for next bundle
 	oldMempoolFile := m.mempool.GetFilename()
@@ -661,17 +647,17 @@ func (m *Manager) VerifyChain(ctx context.Context) (*ChainVerificationResult, er
 		if i > 0 {
 			prevMeta := bundles[i-1]
 
-			// Check prev_bundle_hash
-			if meta.PrevBundleHash != prevMeta.Hash {
-				result.Error = fmt.Sprintf("Chain broken at bundle %d: prev_hash mismatch", meta.BundleNumber)
+			// Check parent reference
+			if meta.Parent != prevMeta.Hash {
+				result.Error = fmt.Sprintf("Chain broken at bundle %d: parent mismatch", meta.BundleNumber)
 				result.BrokenAt = meta.BundleNumber
 				return result, nil
 			}
 
-			// Check chain_hash (NEW - stronger verification)
-			expectedChainHash := m.operations.CalculateChainHash(prevMeta.ChainHash, meta.Hash)
-			if meta.ChainHash != expectedChainHash {
-				result.Error = fmt.Sprintf("Chain broken at bundle %d: chain_hash mismatch", meta.BundleNumber)
+			// Verify chain hash calculation
+			expectedHash := m.operations.CalculateChainHash(prevMeta.Hash, meta.ContentHash)
+			if meta.Hash != expectedHash {
+				result.Error = fmt.Sprintf("Chain broken at bundle %d: hash mismatch", meta.BundleNumber)
 				result.BrokenAt = meta.BundleNumber
 				return result, nil
 			}
@@ -760,51 +746,23 @@ func (m *Manager) ScanDirectory() (*DirectoryScanResult, error) {
 		size, _ := m.operations.GetFileSize(path)
 		totalSize += size
 
-		// Calculate metadata
-		dids := m.operations.ExtractUniqueDIDs(ops)
-		jsonlData := m.operations.SerializeJSONL(ops)
-		uncompressedHash := m.operations.Hash(jsonlData)
-		compressedData, _ := os.ReadFile(path)
-		compressedHash := m.operations.Hash(compressedData)
-
-		// Get previous bundle's hashes for chain calculation
-		prevHash := ""
-		prevChainHash := ""
+		// Calculate parent
+		var parent string
 		if num > 1 && len(newMetadata) > 0 {
 			prevMeta := newMetadata[len(newMetadata)-1]
-			prevHash = prevMeta.Hash
-			prevChainHash = prevMeta.ChainHash
+			parent = prevMeta.Hash
 		}
 
-		// Calculate chain hash
-		chainHash := m.operations.CalculateChainHash(prevChainHash, uncompressedHash)
-
-		// Determine cursor
-		cursor := ""
-		if num > 1 && prevHash != "" {
-			cursor = ops[0].CreatedAt.Format(time.RFC3339Nano)
-		}
-
-		meta := &BundleMetadata{
-			BundleNumber:     num,
-			StartTime:        ops[0].CreatedAt,
-			EndTime:          ops[len(ops)-1].CreatedAt,
-			OperationCount:   len(ops),
-			DIDCount:         len(dids),
-			Hash:             uncompressedHash,
-			ChainHash:        chainHash,
-			CompressedHash:   compressedHash,
-			CompressedSize:   size,
-			UncompressedSize: int64(len(jsonlData)),
-			Cursor:           cursor,
-			PrevBundleHash:   prevHash,
-			PrevChainHash:    prevChainHash,
-			CreatedAt:        time.Now().UTC(),
+		// Use the ONE method for metadata calculation
+		meta, err := m.operations.CalculateBundleMetadata(num, path, ops, parent)
+		if err != nil {
+			m.logger.Printf("Warning: failed to calculate metadata for bundle %d: %v", num, err)
+			continue
 		}
 
 		newMetadata = append(newMetadata, meta)
 
-		m.logger.Printf("  Scanned bundle %06d: %d ops, %d DIDs", num, len(ops), len(dids))
+		m.logger.Printf("  Scanned bundle %06d: %d ops, %d DIDs", num, len(ops), meta.DIDCount)
 	}
 
 	result.TotalSize = totalSize
@@ -908,8 +866,8 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 					continue
 				}
 
-				// Calculate metadata (without chain hash yet)
-				meta, err := m.calculateBundleMetadataFast(num, path, ops)
+				// Use the FAST method (no chain hash yet)
+				meta, err := m.operations.CalculateBundleMetadataFast(num, path, ops)
 				if err != nil {
 					results <- bundleResult{index: num, err: err}
 					continue
@@ -959,7 +917,7 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 
 	// Build ordered metadata slice and calculate chain hashes
 	var newMetadata []*BundleMetadata
-	var prevChainHash string
+	var parent string // Parent chain hash
 
 	for _, num := range bundleNumbers {
 		meta, ok := metadataMap[num]
@@ -968,16 +926,11 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 		}
 
 		// Now calculate chain hash (must be done sequentially)
-		meta.ChainHash = m.operations.CalculateChainHash(prevChainHash, meta.Hash)
-		meta.PrevChainHash = prevChainHash
-
-		// Update prev hashes for next iteration
-		if len(newMetadata) > 0 {
-			meta.PrevBundleHash = newMetadata[len(newMetadata)-1].Hash
-		}
+		meta.Hash = m.operations.CalculateChainHash(parent, meta.ContentHash)
+		meta.Parent = parent
 
 		newMetadata = append(newMetadata, meta)
-		prevChainHash = meta.ChainHash
+		parent = meta.Hash // Store for next iteration
 	}
 
 	result.TotalSize = totalSize
@@ -996,31 +949,6 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 	m.logger.Printf("Index rebuilt with %d bundles", len(newMetadata))
 
 	return result, nil
-}
-
-// calculateBundleMetadataFast calculates metadata quickly (optimized for parallel processing)
-func (m *Manager) calculateBundleMetadataFast(bundleNumber int, path string, operations []plc.PLCOperation) (*BundleMetadata, error) {
-	// Calculate hashes efficiently (read file once)
-	compressedHash, compressedSize, uncompressedHash, uncompressedSize, err := m.operations.CalculateFileHashes(path)
-	if err != nil {
-		return nil, err
-	}
-
-	// Extract unique DIDs (this is fast)
-	dids := m.operations.ExtractUniqueDIDs(operations)
-
-	return &BundleMetadata{
-		BundleNumber:     bundleNumber,
-		StartTime:        operations[0].CreatedAt,
-		EndTime:          operations[len(operations)-1].CreatedAt,
-		OperationCount:   len(operations),
-		DIDCount:         len(dids),
-		Hash:             uncompressedHash,
-		CompressedHash:   compressedHash,
-		CompressedSize:   compressedSize,
-		UncompressedSize: uncompressedSize,
-		CreatedAt:        time.Now().UTC(),
-	}, nil
 }
 
 // GetInfo returns information about the bundle manager
@@ -1094,23 +1022,16 @@ func (m *Manager) ScanBundle(path string, bundleNumber int) (*BundleMetadata, er
 		return nil, fmt.Errorf("bundle is empty")
 	}
 
-	// Get previous bundle hashes from index
-	prevHash := ""
-	prevChainHash := ""
+	// Get parent chain hash from index
+	var parent string
 	if bundleNumber > 1 {
 		if prevMeta, err := m.index.GetBundle(bundleNumber - 1); err == nil {
-			prevHash = prevMeta.Hash
-			prevChainHash = prevMeta.ChainHash
+			parent = prevMeta.Hash
 		}
 	}
 
-	// Calculate metadata (including chain hash)
-	meta, err := m.calculateBundleMetadata(bundleNumber, path, operations, prevHash, prevChainHash)
-	if err != nil {
-		return nil, fmt.Errorf("failed to calculate metadata: %w", err)
-	}
-
-	return meta, nil
+	// Use the ONE method
+	return m.operations.CalculateBundleMetadata(bundleNumber, path, operations, parent)
 }
 
 // ScanAndIndexBundle scans a bundle file and adds it to the index
@@ -1129,55 +1050,6 @@ func (m *Manager) ScanAndIndexBundle(path string, bundleNumber int) (*BundleMeta
 	}
 
 	return meta, nil
-}
-
-// calculateBundleMetadata calculates metadata for a bundle (internal helper)
-func (m *Manager) calculateBundleMetadata(bundleNumber int, path string, operations []plc.PLCOperation, prevBundleHash string, prevChainHash string) (*BundleMetadata, error) {
-	// Get file info
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat file: %w", err)
-	}
-
-	// Extract unique DIDs
-	dids := m.operations.ExtractUniqueDIDs(operations)
-
-	// Calculate sizes and hashes
-	jsonlData := m.operations.SerializeJSONL(operations)
-	uncompressedSize := int64(len(jsonlData))
-	uncompressedHash := m.operations.Hash(jsonlData)
-
-	compressedData, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read compressed file: %w", err)
-	}
-	compressedHash := m.operations.Hash(compressedData)
-
-	// Calculate chain hash
-	chainHash := m.operations.CalculateChainHash(prevChainHash, uncompressedHash)
-
-	// Determine cursor
-	cursor := ""
-	if bundleNumber > 1 && prevBundleHash != "" {
-		cursor = operations[0].CreatedAt.Format(time.RFC3339Nano)
-	}
-
-	return &BundleMetadata{
-		BundleNumber:     bundleNumber,
-		StartTime:        operations[0].CreatedAt,
-		EndTime:          operations[len(operations)-1].CreatedAt,
-		OperationCount:   len(operations),
-		DIDCount:         len(dids),
-		Hash:             uncompressedHash,
-		ChainHash:        chainHash,
-		CompressedHash:   compressedHash,
-		CompressedSize:   info.Size(),
-		UncompressedSize: uncompressedSize,
-		Cursor:           cursor,
-		PrevBundleHash:   prevBundleHash,
-		PrevChainHash:    prevChainHash,
-		CreatedAt:        time.Now().UTC(),
-	}, nil
 }
 
 // IsBundleIndexed checks if a bundle is already in the index
