@@ -824,6 +824,7 @@ func cmdServe() {
 	sync := fs.Bool("sync", false, "enable sync mode (auto-sync from PLC)")
 	plcURL := fs.String("plc", "https://plc.directory", "PLC directory URL (for sync mode)")
 	syncInterval := fs.Duration("sync-interval", 5*time.Minute, "sync interval for sync mode")
+	enableWebSocket := fs.Bool("websocket", false, "enable WebSocket endpoint for streaming records") // NEW
 	fs.Parse(os.Args[2:])
 
 	// Create manager with PLC client if sync mode is enabled
@@ -853,6 +854,12 @@ func cmdServe() {
 		fmt.Printf("  Sync mode: disabled\n")
 	}
 
+	if *enableWebSocket {
+		fmt.Printf("  WebSocket: ENABLED (ws://%s/ws)\n", addr)
+	} else {
+		fmt.Printf("  WebSocket: disabled\n")
+	}
+
 	fmt.Printf("\nPress Ctrl+C to stop\n\n")
 
 	// Start sync if enabled
@@ -865,7 +872,7 @@ func cmdServe() {
 
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      newServerHandler(mgr, *sync),
+		Handler:      newServerHandler(mgr, *sync, *enableWebSocket), // UPDATED
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
