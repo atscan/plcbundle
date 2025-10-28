@@ -115,8 +115,8 @@ func (pb *ProgressBar) print() {
 
 	// Print progress bar
 	if pb.showBytes && pb.totalBytes > 0 {
-		// Calculate MB/s
-		mbProcessed := float64(pb.currentBytes) / (1024 * 1024)
+		// Calculate MB/s (using decimal units: 1 MB = 1,000,000 bytes)
+		mbProcessed := float64(pb.currentBytes) / (1000 * 1000)
 		mbPerSec := mbProcessed / elapsed.Seconds()
 
 		fmt.Printf("\r  [%s] %6.2f%% | %d/%d bundles | %.1f/s | %.1f MB/s | ETA: %s ",

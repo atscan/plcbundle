@@ -366,8 +366,8 @@ func cmdRebuild() {
 	fmt.Printf("  Average speed:      %.1f bundles/sec\n", float64(result.BundleCount)/elapsed.Seconds())
 
 	if elapsed.Seconds() > 0 {
-		compressedThroughput := float64(result.TotalSize) / elapsed.Seconds() / (1024 * 1024)
-		uncompressedThroughput := float64(result.TotalUncompressed) / elapsed.Seconds() / (1024 * 1024)
+		compressedThroughput := float64(result.TotalSize) / elapsed.Seconds() / (1000 * 1000)
+		uncompressedThroughput := float64(result.TotalUncompressed) / elapsed.Seconds() / (1000 * 1000)
 		fmt.Printf("  Throughput (compressed):   %.1f MB/s\n", compressedThroughput)
 		fmt.Printf("  Throughput (uncompressed): %.1f MB/s\n", uncompressedThroughput)
 	}

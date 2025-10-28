@@ -42,17 +42,29 @@ func showGeneralInfo(mgr *bundle.Manager, dir string, verbose bool, showBundles 
 
 	firstBundle := stats["first_bundle"].(int)
 	lastBundle := stats["last_bundle"].(int)
-	totalSize := stats["total_size"].(int64)
+	totalCompressedSize := stats["total_size"].(int64)
 	startTime := stats["start_time"].(time.Time)
 	endTime := stats["end_time"].(time.Time)
 	updatedAt := stats["updated_at"].(time.Time)
+
+	// Calculate total uncompressed size
+	bundles := index.GetBundles()
+	var totalUncompressedSize int64
+	for _, meta := range bundles {
+		totalUncompressedSize += meta.UncompressedSize
+	}
 
 	// Summary
 	fmt.Printf("📊 Summary\n")
 	fmt.Printf("   Bundles:       %s\n", formatNumber(bundleCount))
 	fmt.Printf("   Range:         %06d → %06d\n", firstBundle, lastBundle)
-	fmt.Printf("   Total Size:    %s\n", formatBytes(totalSize))
-	fmt.Printf("   Avg/Bundle:    %s\n", formatBytes(totalSize/int64(bundleCount)))
+	fmt.Printf("   Compressed:    %s\n", formatBytes(totalCompressedSize))
+	fmt.Printf("   Uncompressed:  %s\n", formatBytes(totalUncompressedSize))
+	if totalUncompressedSize > 0 {
+		ratio := float64(totalUncompressedSize) / float64(totalCompressedSize)
+		fmt.Printf("   Ratio:         %.2fx compression\n", ratio)
+	}
+	fmt.Printf("   Avg/Bundle:    %s\n", formatBytes(totalCompressedSize/int64(bundleCount)))
 	fmt.Printf("\n")
 
 	// Timeline
@@ -65,15 +77,38 @@ func showGeneralInfo(mgr *bundle.Manager, dir string, verbose bool, showBundles 
 	fmt.Printf("   Age:           %s ago\n", formatDuration(time.Since(updatedAt)))
 	fmt.Printf("\n")
 
-	// Operations estimate
-	totalOps := bundleCount * bundle.BUNDLE_SIZE
-	fmt.Printf("🔢 Operations (estimate)\n")
-	fmt.Printf("   Total:         %s\n", formatNumber(totalOps))
+	// Operations count (exact calculation)
+	mempoolStats := mgr.GetMempoolStats()
+	mempoolCount := mempoolStats["count"].(int)
+	bundleOpsCount := bundleCount * bundle.BUNDLE_SIZE
+	totalOps := bundleOpsCount + mempoolCount
+
+	fmt.Printf("🔢 Operations\n")
+	fmt.Printf("   Bundles:       %s records\n", formatNumber(bundleOpsCount))
+	if mempoolCount > 0 {
+		fmt.Printf("   Mempool:       %s records\n", formatNumber(mempoolCount))
+	}
+	fmt.Printf("   Total:         %s records\n", formatNumber(totalOps))
 	if duration.Hours() > 0 {
-		opsPerHour := float64(totalOps) / duration.Hours()
-		fmt.Printf("   Rate:          %.0f ops/hour\n", opsPerHour)
+		opsPerHour := float64(bundleOpsCount) / duration.Hours()
+		fmt.Printf("   Rate:          %.0f ops/hour (bundles)\n", opsPerHour)
 	}
 	fmt.Printf("\n")
+
+	// Hashes (full, not trimmed)
+	firstMeta, err := index.GetBundle(firstBundle)
+	if err == nil {
+		fmt.Printf("🔐 Chain Hashes\n")
+		fmt.Printf("   Root (bundle %06d):\n", firstBundle)
+		fmt.Printf("     %s\n", firstMeta.Hash)
+
+		lastMeta, err := index.GetBundle(lastBundle)
+		if err == nil {
+			fmt.Printf("   Head (bundle %06d):\n", lastBundle)
+			fmt.Printf("     %s\n", lastMeta.Hash)
+		}
+		fmt.Printf("\n")
+	}
 
 	// Gaps
 	gaps := index.FindGaps()
@@ -105,8 +140,6 @@ func showGeneralInfo(mgr *bundle.Manager, dir string, verbose bool, showBundles 
 	}
 
 	// Mempool
-	mempoolStats := mgr.GetMempoolStats()
-	mempoolCount := mempoolStats["count"].(int)
 	if mempoolCount > 0 {
 		targetBundle := mempoolStats["target_bundle"].(int)
 		canCreate := mempoolStats["can_create_bundle"].(bool)
@@ -147,10 +180,10 @@ func showGeneralInfo(mgr *bundle.Manager, dir string, verbose bool, showBundles 
 			fmt.Printf("   ✓ Chain is valid\n")
 			fmt.Printf("   ✓ All %d bundles verified\n", len(result.VerifiedBundles))
 
-			// Show head hash
+			// Show head hash (full)
 			lastMeta, _ := index.GetBundle(lastBundle)
 			if lastMeta != nil {
-				fmt.Printf("   Head: %s\n", lastMeta.Hash[:16]+"...")
+				fmt.Printf("   Head: %s\n", lastMeta.Hash)
 			}
 		} else {
 			fmt.Printf("   ✗ Chain is broken\n")
@@ -198,17 +231,11 @@ func showGeneralInfo(mgr *bundle.Manager, dir string, verbose bool, showBundles 
 		fmt.Printf("💾 File System\n")
 
 		// Calculate average compression ratio
-		bundles := index.GetBundles()
-		var totalCompressed, totalUncompressed int64
-		for _, meta := range bundles {
-			totalCompressed += meta.CompressedSize
-			totalUncompressed += meta.UncompressedSize
-		}
-		if totalCompressed > 0 {
-			avgRatio := float64(totalUncompressed) / float64(totalCompressed)
-			savings := (1 - float64(totalCompressed)/float64(totalUncompressed)) * 100
+		if totalCompressedSize > 0 && totalUncompressedSize > 0 {
+			avgRatio := float64(totalUncompressedSize) / float64(totalCompressedSize)
+			savings := (1 - float64(totalCompressedSize)/float64(totalUncompressedSize)) * 100
 			fmt.Printf("   Compression:   %.2fx average ratio\n", avgRatio)
-			fmt.Printf("   Space Saved:   %.1f%% (%s)\n", savings, formatBytes(totalUncompressed-totalCompressed))
+			fmt.Printf("   Space Saved:   %.1f%% (%s)\n", savings, formatBytes(totalUncompressedSize-totalCompressedSize))
 		}
 
 		// Index size
@@ -301,7 +328,7 @@ func formatNumber(n int) string {
 }
 
 func formatBytes(bytes int64) string {
-	const unit = 1024
+	const unit = 1000
 	if bytes < unit {
 		return fmt.Sprintf("%d B", bytes)
 	}

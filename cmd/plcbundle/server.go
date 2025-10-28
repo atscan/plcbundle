@@ -84,7 +84,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 		totalSize := stats["total_size"].(int64)
 
 		fmt.Fprintf(w, "  Range:         %06d - %06d\n", firstBundle, lastBundle)
-		fmt.Fprintf(w, "  Total size:    %.2f MB\n", float64(totalSize)/(1024*1024))
+		fmt.Fprintf(w, "  Total size:    %.2f MB\n", float64(totalSize)/(1000*1000))
 		fmt.Fprintf(w, "  Updated:       %s\n", stats["updated_at"].(time.Time).Format("2006-01-02 15:04:05"))
 
 		if gaps, ok := stats["gaps"].(int); ok && gaps > 0 {
