@@ -16,7 +16,6 @@ type (
 	Index                   = bundle.Index
 	Manager                 = bundle.Manager
 	Config                  = bundle.Config
-	CompressionLevel        = bundle.CompressionLevel
 	VerificationResult      = bundle.VerificationResult
 	ChainVerificationResult = bundle.ChainVerificationResult
 	DirectoryScanResult     = bundle.DirectoryScanResult
@@ -31,11 +30,6 @@ type (
 const (
 	BUNDLE_SIZE = bundle.BUNDLE_SIZE
 	INDEX_FILE  = bundle.INDEX_FILE
-
-	CompressionFastest = bundle.CompressionFastest
-	CompressionDefault = bundle.CompressionDefault
-	CompressionBetter  = bundle.CompressionBetter
-	CompressionBest    = bundle.CompressionBest
 )
 
 // NewManager creates a new bundle manager (convenience wrapper)

@@ -22,23 +22,10 @@ type Operations struct {
 	logger  Logger
 }
 
-// NewOperations creates a new Operations handler
-func NewOperations(compressionLevel CompressionLevel, logger Logger) (*Operations, error) {
-	var zstdLevel zstd.EncoderLevel
-	switch compressionLevel {
-	case CompressionFastest:
-		zstdLevel = zstd.SpeedFastest
-	case CompressionDefault:
-		zstdLevel = zstd.SpeedDefault
-	case CompressionBetter:
-		zstdLevel = zstd.SpeedBetterCompression
-	case CompressionBest:
-		zstdLevel = zstd.SpeedBestCompression
-	default:
-		zstdLevel = zstd.SpeedBetterCompression
-	}
-
-	encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstdLevel))
+// NewOperations creates a new Operations handler with default compression
+func NewOperations(logger Logger) (*Operations, error) {
+	// Always use default compression (level 3 - good balance)
+	encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create zstd encoder: %w", err)
 	}

@@ -11,19 +11,6 @@ import (
 const (
 	// BUNDLE_SIZE is the standard number of operations per bundle
 	BUNDLE_SIZE = 10000
-
-	// DefaultCompression is the default compression level
-	DefaultCompression = CompressionBetter
-)
-
-// CompressionLevel represents zstd compression levels
-type CompressionLevel int
-
-const (
-	CompressionFastest CompressionLevel = 1
-	CompressionDefault CompressionLevel = 3
-	CompressionBetter  CompressionLevel = 5
-	CompressionBest    CompressionLevel = 9
 )
 
 // Bundle represents a PLC bundle
@@ -171,18 +158,16 @@ type Logger interface {
 
 // Config holds configuration for bundle operations
 type Config struct {
-	BundleDir        string
-	CompressionLevel CompressionLevel
-	VerifyOnLoad     bool
-	Logger           Logger
+	BundleDir    string
+	VerifyOnLoad bool
+	Logger       Logger
 }
 
 // DefaultConfig returns default configuration
 func DefaultConfig(bundleDir string) *Config {
 	return &Config{
-		BundleDir:        bundleDir,
-		CompressionLevel: CompressionBetter,
-		VerifyOnLoad:     true,
-		Logger:           nil, // Will use defaultLogger in manager
+		BundleDir:    bundleDir,
+		VerifyOnLoad: true,
+		Logger:       nil, // Will use defaultLogger in manager
 	}
 }

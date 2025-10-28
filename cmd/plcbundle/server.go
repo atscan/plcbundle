@@ -144,10 +144,30 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 	index := mgr.GetIndex()
 	bundles := index.GetBundles()
 
-	currentRecord := 0
+	if len(bundles) == 0 {
+		return
+	}
 
-	// Stream all operations from all bundles
-	for _, meta := range bundles {
+	// Calculate starting bundle and position from cursor
+	// Each bundle has exactly BUNDLE_SIZE (10,000) operations
+	// Cursor 88410345 = bundle 8841, position 345
+	startBundleIdx := cursor / bundle.BUNDLE_SIZE
+	startPosition := cursor % bundle.BUNDLE_SIZE
+
+	// Validate starting bundle exists
+	if startBundleIdx >= len(bundles) {
+		// Cursor is beyond all bundles, check mempool
+		currentRecord := len(bundles) * bundle.BUNDLE_SIZE
+		streamMempool(conn, mgr, cursor, currentRecord)
+		return
+	}
+
+	currentRecord := cursor
+
+	// Stream bundles starting from the calculated bundle
+	for i := startBundleIdx; i < len(bundles); i++ {
+		meta := bundles[i]
+
 		// Load bundle
 		b, err := mgr.LoadBundle(ctx, meta.BundleNumber)
 		if err != nil {
@@ -155,13 +175,15 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 			continue
 		}
 
-		// Send each operation
-		for _, op := range b.Operations {
-			// Skip records before cursor
-			if currentRecord < cursor {
-				currentRecord++
-				continue
-			}
+		// Determine starting position in this bundle
+		startPos := 0
+		if i == startBundleIdx {
+			startPos = startPosition
+		}
+
+		// Send operations from this bundle
+		for j := startPos; j < len(b.Operations); j++ {
+			op := b.Operations[j]
 
 			// Send raw JSON
 			if err := sendOperation(conn, op); err != nil {
@@ -179,7 +201,12 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 		}
 	}
 
-	// Stream mempool operations (seamlessly after bundles)
+	// Stream mempool operations after all bundles
+	streamMempool(conn, mgr, cursor, currentRecord)
+}
+
+// streamMempool streams mempool operations if cursor is in range
+func streamMempool(conn *websocket.Conn, mgr *bundle.Manager, cursor int, currentRecord int) {
 	mempoolOps, err := mgr.GetMempoolOperations()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to get mempool operations: %v\n", err)

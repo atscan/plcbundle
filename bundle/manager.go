@@ -53,7 +53,7 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 	}
 
 	// Initialize operations handler
-	ops, err := NewOperations(config.CompressionLevel, config.Logger)
+	ops, err := NewOperations(config.Logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize operations: %w", err)
 	}
@@ -640,7 +640,6 @@ func (m *Manager) GetInfo() map[string]interface{} {
 	stats := m.index.GetStats()
 	stats["bundle_dir"] = m.config.BundleDir
 	stats["index_path"] = m.indexPath
-	stats["compression_level"] = m.config.CompressionLevel
 	stats["verify_on_load"] = m.config.VerifyOnLoad
 	return stats
 }

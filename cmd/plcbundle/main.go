@@ -474,6 +474,10 @@ func cmdVerify() {
 func cmdInfo() {
 	fs := flag.NewFlagSet("info", flag.ExitOnError)
 	bundleNum := fs.Int("bundle", 0, "specific bundle info (0 = general info)")
+	verbose := fs.Bool("v", false, "verbose output")
+	showBundles := fs.Bool("bundles", false, "show bundle list")
+	verify := fs.Bool("verify", false, "verify chain integrity")
+	showTimeline := fs.Bool("timeline", false, "show timeline visualization")
 	fs.Parse(os.Args[2:])
 
 	mgr, dir, err := getManager("")
@@ -484,40 +488,134 @@ func cmdInfo() {
 	defer mgr.Close()
 
 	if *bundleNum > 0 {
-		// Show specific bundle info
-		ctx := context.Background()
-		b, err := mgr.LoadBundle(ctx, *bundleNum)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-
-		fmt.Printf("Bundle %06d:\n", b.BundleNumber)
-		fmt.Printf("  Directory: %s\n", dir)
-		fmt.Printf("  Time range: %s - %s\n", b.StartTime.Format("2006-01-02 15:04:05"), b.EndTime.Format("2006-01-02 15:04:05"))
-		fmt.Printf("  Operations: %d\n", len(b.Operations))
-		fmt.Printf("  Unique DIDs: %d\n", b.DIDCount)
-		fmt.Printf("  Hash: %s\n", b.Hash)
-		fmt.Printf("  Compressed: %.2f MB\n", float64(b.CompressedSize)/(1024*1024))
-		fmt.Printf("  Uncompressed: %.2f MB\n", float64(b.UncompressedSize)/(1024*1024))
-		fmt.Printf("  Compression ratio: %.2fx\n", b.CompressionRatio())
-		fmt.Printf("  Cursor: %s\n", b.Cursor)
-		if b.PrevBundleHash != "" {
-			fmt.Printf("  Prev bundle hash: %s...\n", b.PrevBundleHash[:16])
-		}
+		showBundleInfo(mgr, dir, *bundleNum, *verbose)
 	} else {
-		// Show general info
-		info := mgr.GetInfo()
-		fmt.Printf("Bundle Directory: %s\n", dir)
-		fmt.Printf("Bundle count: %v\n", info["bundle_count"])
-		if bc, ok := info["bundle_count"].(int); ok && bc > 0 {
-			fmt.Printf("Range: %06d - %06d\n", info["first_bundle"], info["last_bundle"])
-			fmt.Printf("Total size: %.2f MB\n", float64(info["total_size"].(int64))/(1024*1024))
-			if gaps, ok := info["gaps"].(int); ok && gaps > 0 {
-				fmt.Printf("⚠ Missing bundles: %d\n", gaps)
+		showGeneralInfo(mgr, dir, *verbose, *showBundles, *verify, *showTimeline)
+	}
+}
+
+func showBundleInfo(mgr *bundle.Manager, dir string, bundleNum int, verbose bool) {
+	ctx := context.Background()
+	b, err := mgr.LoadBundle(ctx, bundleNum)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("                    Bundle %06d\n", b.BundleNumber)
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("\n")
+
+	// Location
+	fmt.Printf("📁 Location\n")
+	fmt.Printf("   Directory:  %s\n", dir)
+	fmt.Printf("   File:       %06d.jsonl.zst\n", b.BundleNumber)
+	fmt.Printf("\n")
+
+	// Time Range
+	duration := b.EndTime.Sub(b.StartTime)
+	fmt.Printf("📅 Time Range\n")
+	fmt.Printf("   Start:      %s\n", b.StartTime.Format("2006-01-02 15:04:05.000 MST"))
+	fmt.Printf("   End:        %s\n", b.EndTime.Format("2006-01-02 15:04:05.000 MST"))
+	fmt.Printf("   Duration:   %s\n", formatDuration(duration))
+	fmt.Printf("   Created:    %s\n", b.CreatedAt.Format("2006-01-02 15:04:05 MST"))
+	fmt.Printf("\n")
+
+	// Content
+	fmt.Printf("📊 Content\n")
+	fmt.Printf("   Operations: %s\n", formatNumber(len(b.Operations)))
+	fmt.Printf("   Unique DIDs: %s\n", formatNumber(b.DIDCount))
+	if len(b.Operations) > 0 {
+		avgOpsPerDID := float64(len(b.Operations)) / float64(b.DIDCount)
+		fmt.Printf("   Avg ops/DID: %.2f\n", avgOpsPerDID)
+	}
+	fmt.Printf("\n")
+
+	// Size
+	fmt.Printf("💾 Size\n")
+	fmt.Printf("   Compressed:   %s\n", formatBytes(b.CompressedSize))
+	fmt.Printf("   Uncompressed: %s\n", formatBytes(b.UncompressedSize))
+	fmt.Printf("   Ratio:        %.2fx\n", b.CompressionRatio())
+	fmt.Printf("   Efficiency:   %.1f%% savings\n", (1-float64(b.CompressedSize)/float64(b.UncompressedSize))*100)
+	fmt.Printf("\n")
+
+	// Hashes
+	fmt.Printf("🔐 Cryptographic Hashes\n")
+	fmt.Printf("   Content (SHA-256):\n")
+	fmt.Printf("     %s\n", b.Hash)
+	fmt.Printf("   Compressed:\n")
+	fmt.Printf("     %s\n", b.CompressedHash)
+	if b.PrevBundleHash != "" {
+		fmt.Printf("   Previous Bundle:\n")
+		fmt.Printf("     %s\n", b.PrevBundleHash)
+	}
+	fmt.Printf("\n")
+
+	// Chain
+	if b.PrevBundleHash != "" || b.Cursor != "" {
+		fmt.Printf("🔗 Chain Information\n")
+		if b.Cursor != "" {
+			fmt.Printf("   Cursor:     %s\n", b.Cursor)
+		}
+		if b.PrevBundleHash != "" {
+			fmt.Printf("   Links to:   Bundle %06d\n", bundleNum-1)
+		}
+		if len(b.BoundaryCIDs) > 0 {
+			fmt.Printf("   Boundary:   %d CIDs at same timestamp\n", len(b.BoundaryCIDs))
+		}
+		fmt.Printf("\n")
+	}
+
+	// Verbose: Show sample operations
+	if verbose && len(b.Operations) > 0 {
+		fmt.Printf("📝 Sample Operations (first 5)\n")
+		showCount := 5
+		if len(b.Operations) < showCount {
+			showCount = len(b.Operations)
+		}
+		for i := 0; i < showCount; i++ {
+			op := b.Operations[i]
+			fmt.Printf("   %d. %s\n", i+1, op.DID)
+			fmt.Printf("      CID: %s\n", op.CID)
+			fmt.Printf("      Time: %s\n", op.CreatedAt.Format("2006-01-02 15:04:05.000"))
+			if op.IsNullified() {
+				fmt.Printf("      ⚠️  Nullified: %s\n", op.GetNullifyingCID())
 			}
 		}
-		fmt.Printf("Index updated: %s\n", info["updated_at"])
+		fmt.Printf("\n")
+	}
+
+	// Verbose: Show DID statistics
+	if verbose && len(b.Operations) > 0 {
+		didOps := make(map[string]int)
+		for _, op := range b.Operations {
+			didOps[op.DID]++
+		}
+
+		// Find most active DIDs
+		type didCount struct {
+			did   string
+			count int
+		}
+		var counts []didCount
+		for did, count := range didOps {
+			counts = append(counts, didCount{did, count})
+		}
+		sort.Slice(counts, func(i, j int) bool {
+			return counts[i].count > counts[j].count
+		})
+
+		fmt.Printf("🏆 Most Active DIDs\n")
+		showCount := 5
+		if len(counts) < showCount {
+			showCount = len(counts)
+		}
+		for i := 0; i < showCount; i++ {
+			fmt.Printf("   %d. %s (%d ops)\n", i+1, counts[i].did, counts[i].count)
+		}
+		fmt.Printf("\n")
 	}
 }
 
