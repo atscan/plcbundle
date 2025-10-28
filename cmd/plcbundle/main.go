@@ -1000,8 +1000,13 @@ func cmdServe() {
 	sync := fs.Bool("sync", false, "enable sync mode (auto-sync from PLC)")
 	plcURL := fs.String("plc", "https://plc.directory", "PLC directory URL (for sync mode)")
 	syncInterval := fs.Duration("sync-interval", 5*time.Minute, "sync interval for sync mode")
-	enableWebSocket := fs.Bool("websocket", false, "enable WebSocket endpoint for streaming records") // NEW
+	workers := fs.Int("workers", 4, "number of workers for auto-rebuild (0 = CPU count)")
 	fs.Parse(os.Args[2:])
+
+	// Auto-detect CPU count
+	if *workers == 0 {
+		*workers = runtime.NumCPU()
+	}
 
 	// Create manager with PLC client if sync mode is enabled
 	var plcURLForManager string
@@ -1009,7 +1014,66 @@ func cmdServe() {
 		plcURLForManager = *plcURL
 	}
 
-	mgr, dir, err := getManager(plcURLForManager)
+	dir, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Check if index exists
+	indexPath := filepath.Join(dir, bundle.INDEX_FILE)
+	indexExists := fileExists(indexPath)
+
+	// Check if bundle files exist
+	bundleFiles, _ := filepath.Glob(filepath.Join(dir, "*.jsonl.zst"))
+	hasBundles := len(bundleFiles) > 0
+
+	// Auto-rebuild if no index but bundles exist
+	if !indexExists && hasBundles {
+		fmt.Printf("📦 No index found, but %d bundle files detected\n", len(bundleFiles))
+		fmt.Printf("🔨 Starting automatic rebuild in background...\n")
+		fmt.Printf("\n")
+
+		// Start rebuild in background
+		go func() {
+			// Create a temporary manager for rebuild
+			config := bundle.DefaultConfig(dir)
+			rebuildMgr, err := bundle.NewManager(config, nil)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[Rebuild] Error: %v\n", err)
+				return
+			}
+			defer rebuildMgr.Close()
+
+			fmt.Printf("[Rebuild] Rebuilding index from %d bundles...\n", len(bundleFiles))
+			start := time.Now()
+
+			result, err := rebuildMgr.ScanDirectoryParallel(*workers, func(current, total int) {
+				if current%100 == 0 || current == total {
+					fmt.Printf("[Rebuild] Progress: %d/%d bundles (%.1f%%)\n",
+						current, total, float64(current)/float64(total)*100)
+				}
+			})
+
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[Rebuild] Error: %v\n", err)
+				return
+			}
+
+			elapsed := time.Since(start)
+			fmt.Printf("[Rebuild] ✓ Index rebuilt in %s\n", elapsed.Round(time.Millisecond))
+			fmt.Printf("[Rebuild]   Total bundles: %d\n", result.BundleCount)
+			fmt.Printf("[Rebuild]   Speed: %.1f bundles/sec\n", float64(result.BundleCount)/elapsed.Seconds())
+			fmt.Printf("[Rebuild]   Server will now serve all bundles\n")
+			fmt.Printf("\n")
+		}()
+
+		// Give rebuild a moment to start
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Create manager for serving (will load index when available)
+	mgr, _, err := getManager(plcURLForManager)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -1030,10 +1094,15 @@ func cmdServe() {
 		fmt.Printf("  Sync mode: disabled\n")
 	}
 
-	if *enableWebSocket {
-		fmt.Printf("  WebSocket: ENABLED (ws://%s/ws)\n", addr)
+	// Show current status
+	index := mgr.GetIndex()
+	bundleCount := index.Count()
+	if bundleCount > 0 {
+		fmt.Printf("  Bundles available: %d\n", bundleCount)
+	} else if hasBundles {
+		fmt.Printf("  Bundles available: 0 (rebuilding in background...)\n")
 	} else {
-		fmt.Printf("  WebSocket: disabled\n")
+		fmt.Printf("  Bundles available: 0\n")
 	}
 
 	fmt.Printf("\nPress Ctrl+C to stop\n\n")
@@ -1048,7 +1117,7 @@ func cmdServe() {
 
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      newServerHandler(mgr, *sync, *enableWebSocket), // UPDATED
+		Handler:      newServerHandler(mgr, *sync, false), // WebSocket disabled for now
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
@@ -1057,6 +1126,12 @@ func cmdServe() {
 		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// fileExists checks if a file exists
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func cmdCompare() {

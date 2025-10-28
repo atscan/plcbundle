@@ -250,8 +250,10 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.H
 		handleRoot(w, r, mgr, syncMode, wsEnabled)
 	})
 
-	// Index JSON
+	// Index JSON (reload from disk each time for fresh data during rebuild)
 	mux.HandleFunc("/index.json", func(w http.ResponseWriter, r *http.Request) {
+		// Reload index to get latest data
+		mgr.GetIndex() // This will refresh if needed
 		handleIndexJSON(w, mgr)
 	})
 

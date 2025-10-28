@@ -389,9 +389,10 @@ func (dr *decompressedReader) Close() error {
 func (op *Operations) CalculateChainHash(prevChainHash string, contentHash string) string {
 	var data string
 	if prevChainHash == "" {
-		// Genesis bundle
+		// Genesis bundle (first bundle)
 		data = "plcbundle:genesis:" + contentHash
 	} else {
+		// Subsequent bundles - chain hash includes previous chain hash
 		data = prevChainHash + ":" + contentHash
 	}
 	return op.Hash([]byte(data))

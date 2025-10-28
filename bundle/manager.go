@@ -174,6 +174,7 @@ func (m *Manager) LoadBundle(ctx context.Context, bundleNumber int) (*Bundle, er
 	return bundle, nil
 }
 
+// SaveBundle saves a bundle to disk and updates the index
 func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
 	if err := bundle.ValidateForSave(); err != nil {
 		return fmt.Errorf("bundle validation failed: %w", err)
@@ -194,14 +195,45 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
 	bundle.CompressedSize = compressedSize
 	bundle.CreatedAt = time.Now().UTC()
 
-	// Calculate chain hash
-	prevBundle := m.index.GetLastBundle()
-	if prevBundle != nil {
-		bundle.PrevChainHash = prevBundle.ChainHash
-		bundle.PrevBundleHash = prevBundle.Hash
+	// Get previous bundle's hashes from index
+	var prevChainHash string
+	var prevContentHash string
+
+	if bundle.BundleNumber > 1 {
+		prevBundle := m.index.GetLastBundle()
+		if prevBundle != nil {
+			prevChainHash = prevBundle.ChainHash
+			prevContentHash = prevBundle.Hash
+
+			m.logger.Printf("Previous bundle %06d: hash=%s, chain=%s",
+				prevBundle.BundleNumber,
+				prevContentHash[:16]+"...",
+				prevChainHash[:16]+"...")
+		} else {
+			// Try to get specific previous bundle
+			if prevMeta, err := m.index.GetBundle(bundle.BundleNumber - 1); err == nil {
+				prevChainHash = prevMeta.ChainHash
+				prevContentHash = prevMeta.Hash
+
+				m.logger.Printf("Found previous bundle %06d: hash=%s, chain=%s",
+					prevMeta.BundleNumber,
+					prevContentHash[:16]+"...",
+					prevChainHash[:16]+"...")
+			}
+		}
 	}
 
-	bundle.ChainHash = m.operations.CalculateChainHash(bundle.PrevChainHash, bundle.Hash)
+	// Set previous bundle references
+	bundle.PrevBundleHash = prevContentHash
+	bundle.PrevChainHash = prevChainHash
+
+	// Calculate chain hash
+	bundle.ChainHash = m.operations.CalculateChainHash(prevChainHash, bundle.Hash)
+
+	m.logger.Printf("Bundle %06d: hash=%s, chain=%s",
+		bundle.BundleNumber,
+		bundle.Hash[:16]+"...",
+		bundle.ChainHash[:16]+"...")
 
 	// Add to index
 	m.index.AddBundle(bundle.ToMetadata())
@@ -1102,4 +1134,28 @@ func (m *Manager) StreamBundleDecompressed(ctx context.Context, bundleNumber int
 	}
 
 	return m.operations.StreamDecompressed(path)
+}
+
+// RefreshIndex reloads the index from disk if it has been modified
+func (m *Manager) RefreshIndex() error {
+	// Check if index file has been modified
+	info, err := os.Stat(m.indexPath)
+	if err != nil {
+		return err
+	}
+
+	// If index was modified after we loaded it, reload
+	if info.ModTime().After(m.index.UpdatedAt) {
+		m.logger.Printf("Index file modified, reloading...")
+
+		newIndex, err := LoadIndex(m.indexPath)
+		if err != nil {
+			return fmt.Errorf("failed to reload index: %w", err)
+		}
+
+		m.index = newIndex
+		m.logger.Printf("Index reloaded: %d bundles", m.index.Count())
+	}
+
+	return nil
 }

@@ -22,6 +22,7 @@ type IndexComparison struct {
 	MissingBundles  []int // In target but not in local
 	ExtraBundles    []int // In local but not in target
 	HashMismatches  []HashMismatch
+	ChainMismatches []HashMismatch
 	LocalRange      [2]int
 	TargetRange     [2]int
 	LocalTotalSize  int64
@@ -31,13 +32,16 @@ type IndexComparison struct {
 }
 
 type HashMismatch struct {
-	BundleNumber int
-	LocalHash    string
-	TargetHash   string
+	BundleNumber    int
+	LocalHash       string
+	TargetHash      string
+	LocalChainHash  string // NEW
+	TargetChainHash string // NEW
 }
 
 func (ic *IndexComparison) HasDifferences() bool {
-	return len(ic.MissingBundles) > 0 || len(ic.ExtraBundles) > 0 || len(ic.HashMismatches) > 0
+	return len(ic.MissingBundles) > 0 || len(ic.ExtraBundles) > 0 ||
+		len(ic.HashMismatches) > 0 || len(ic.ChainMismatches) > 0
 }
 
 // loadTargetIndex loads an index from a file or URL
@@ -97,11 +101,12 @@ func compareIndexes(local, target *bundle.Index) *IndexComparison {
 	}
 
 	comparison := &IndexComparison{
-		LocalCount:     len(localBundles),
-		TargetCount:    len(targetBundles),
-		MissingBundles: make([]int, 0),
-		ExtraBundles:   make([]int, 0),
-		HashMismatches: make([]HashMismatch, 0),
+		LocalCount:      len(localBundles),
+		TargetCount:     len(targetBundles),
+		MissingBundles:  make([]int, 0),
+		ExtraBundles:    make([]int, 0),
+		HashMismatches:  make([]HashMismatch, 0),
+		ChainMismatches: make([]HashMismatch, 0),
 	}
 
 	// Get ranges
@@ -135,19 +140,41 @@ func compareIndexes(local, target *bundle.Index) *IndexComparison {
 	}
 	sort.Ints(comparison.ExtraBundles)
 
-	// Find hash mismatches (compare UNCOMPRESSED hash - the canonical hash)
+	// Find hash mismatches (compare UNCOMPRESSED hash and CHAIN hash)
 	for bundleNum, localMeta := range localMap {
 		if targetMeta, exists := targetMap[bundleNum]; exists {
 			comparison.CommonCount++
-			if localMeta.Hash != targetMeta.Hash {
-				comparison.HashMismatches = append(comparison.HashMismatches, HashMismatch{
-					BundleNumber: bundleNum,
-					LocalHash:    localMeta.Hash,
-					TargetHash:   targetMeta.Hash,
-				})
+
+			contentMismatch := localMeta.Hash != targetMeta.Hash
+			chainMismatch := localMeta.ChainHash != targetMeta.ChainHash
+
+			if contentMismatch || chainMismatch {
+				mismatch := HashMismatch{
+					BundleNumber:    bundleNum,
+					LocalHash:       localMeta.Hash,
+					TargetHash:      targetMeta.Hash,
+					LocalChainHash:  localMeta.ChainHash,
+					TargetChainHash: targetMeta.ChainHash,
+				}
+
+				// Separate content hash mismatches from chain hash mismatches
+				if contentMismatch {
+					comparison.HashMismatches = append(comparison.HashMismatches, mismatch)
+				}
+				if chainMismatch {
+					comparison.ChainMismatches = append(comparison.ChainMismatches, mismatch)
+				}
 			}
 		}
 	}
+
+	// Sort mismatches by bundle number (ADDED)
+	sort.Slice(comparison.HashMismatches, func(i, j int) bool {
+		return comparison.HashMismatches[i].BundleNumber < comparison.HashMismatches[j].BundleNumber
+	})
+	sort.Slice(comparison.ChainMismatches, func(i, j int) bool {
+		return comparison.ChainMismatches[i].BundleNumber < comparison.ChainMismatches[j].BundleNumber
+	})
 
 	return comparison
 }
@@ -160,23 +187,86 @@ func displayComparison(c *IndexComparison, verbose bool) {
 	// Summary
 	fmt.Printf("Summary\n")
 	fmt.Printf("───────\n")
-	fmt.Printf("  Local bundles:    %d\n", c.LocalCount)
-	fmt.Printf("  Target bundles:   %d\n", c.TargetCount)
-	fmt.Printf("  Common bundles:   %d\n", c.CommonCount)
-	fmt.Printf("  Missing bundles:  %d\n", len(c.MissingBundles))
-	fmt.Printf("  Extra bundles:    %d\n", len(c.ExtraBundles))
-	fmt.Printf("  Hash mismatches:  %d\n", len(c.HashMismatches))
+	fmt.Printf("  Local bundles:      %d\n", c.LocalCount)
+	fmt.Printf("  Target bundles:     %d\n", c.TargetCount)
+	fmt.Printf("  Common bundles:     %d\n", c.CommonCount)
+	fmt.Printf("  Missing bundles:    %d\n", len(c.MissingBundles))
+	fmt.Printf("  Extra bundles:      %d\n", len(c.ExtraBundles))
+	fmt.Printf("  Content mismatches: %d\n", len(c.HashMismatches))
+	fmt.Printf("  Chain mismatches:   %d ⚠️\n", len(c.ChainMismatches))
 
 	if c.LocalCount > 0 {
-		fmt.Printf("\n  Local range:      %06d - %06d\n", c.LocalRange[0], c.LocalRange[1])
-		fmt.Printf("  Local size:       %.2f MB\n", float64(c.LocalTotalSize)/(1024*1024))
-		fmt.Printf("  Local updated:    %s\n", c.LocalUpdated.Format("2006-01-02 15:04:05"))
+		fmt.Printf("\n  Local range:        %06d - %06d\n", c.LocalRange[0], c.LocalRange[1])
+		fmt.Printf("  Local size:         %.2f MB\n", float64(c.LocalTotalSize)/(1024*1024))
+		fmt.Printf("  Local updated:      %s\n", c.LocalUpdated.Format("2006-01-02 15:04:05"))
 	}
 
 	if c.TargetCount > 0 {
-		fmt.Printf("\n  Target range:     %06d - %06d\n", c.TargetRange[0], c.TargetRange[1])
-		fmt.Printf("  Target size:      %.2f MB\n", float64(c.TargetTotalSize)/(1024*1024))
-		fmt.Printf("  Target updated:   %s\n", c.TargetUpdated.Format("2006-01-02 15:04:05"))
+		fmt.Printf("\n  Target range:       %06d - %06d\n", c.TargetRange[0], c.TargetRange[1])
+		fmt.Printf("  Target size:        %.2f MB\n", float64(c.TargetTotalSize)/(1024*1024))
+		fmt.Printf("  Target updated:     %s\n", c.TargetUpdated.Format("2006-01-02 15:04:05"))
+	}
+
+	// Chain hash mismatches (MOST IMPORTANT)
+	if len(c.ChainMismatches) > 0 {
+		fmt.Printf("\n")
+		fmt.Printf("⚠️  CHAIN HASH MISMATCHES (CRITICAL)\n")
+		fmt.Printf("════════════════════════════════════\n")
+		fmt.Printf("Chain hashes validate the entire bundle history.\n")
+		fmt.Printf("Mismatches indicate different bundle content or chain breaks.\n")
+		fmt.Printf("\n")
+
+		displayCount := len(c.ChainMismatches)
+		if displayCount > 10 && !verbose {
+			displayCount = 10
+		}
+
+		for i := 0; i < displayCount; i++ {
+			m := c.ChainMismatches[i]
+			fmt.Printf("  Bundle %06d:\n", m.BundleNumber)
+
+			// Show full chain hashes (CHANGED - always full)
+			fmt.Printf("    Chain Hash:\n")
+			fmt.Printf("      Local:  %s\n", m.LocalChainHash)
+			fmt.Printf("      Target: %s\n", m.TargetChainHash)
+
+			// Also show content hash if different
+			if m.LocalHash != m.TargetHash {
+				fmt.Printf("    Content Hash (also differs):\n")
+				fmt.Printf("      Local:  %s\n", m.LocalHash)
+				fmt.Printf("      Target: %s\n", m.TargetHash)
+			}
+			fmt.Printf("\n")
+		}
+
+		if len(c.ChainMismatches) > displayCount {
+			fmt.Printf("  ... and %d more (use -v to show all)\n\n", len(c.ChainMismatches)-displayCount)
+		}
+	}
+
+	// Content hash mismatches (without chain mismatch)
+	contentOnlyMismatches := filterContentOnlyMismatches(c.HashMismatches, c.ChainMismatches)
+	if len(contentOnlyMismatches) > 0 {
+		fmt.Printf("\n")
+		fmt.Printf("Content Hash Mismatches (chain hash matches)\n")
+		fmt.Printf("─────────────────────────────────────────────\n")
+
+		displayCount := len(contentOnlyMismatches)
+		if displayCount > 10 && !verbose {
+			displayCount = 10
+		}
+
+		for i := 0; i < displayCount; i++ {
+			m := contentOnlyMismatches[i]
+			fmt.Printf("  Bundle %06d:\n", m.BundleNumber)
+			// Show full hashes (CHANGED - always full)
+			fmt.Printf("    Local:  %s\n", m.LocalHash)
+			fmt.Printf("    Target: %s\n", m.TargetHash)
+		}
+
+		if len(contentOnlyMismatches) > displayCount {
+			fmt.Printf("  ... and %d more (use -v to show all)\n", len(contentOnlyMismatches)-displayCount)
+		}
 	}
 
 	// Missing bundles
@@ -229,40 +319,41 @@ func displayComparison(c *IndexComparison, verbose bool) {
 		}
 	}
 
-	// Hash mismatches
-	if len(c.HashMismatches) > 0 {
-		fmt.Printf("\n")
-		fmt.Printf("Hash Mismatches (uncompressed data)\n")
-		fmt.Printf("────────────────────────────────────\n")
-
-		displayCount := len(c.HashMismatches)
-		if displayCount > 10 && !verbose {
-			displayCount = 10
-		}
-
-		for i := 0; i < displayCount; i++ {
-			m := c.HashMismatches[i]
-			fmt.Printf("  Bundle %06d:\n", m.BundleNumber)
-			fmt.Printf("    Local:  %s\n", m.LocalHash[:16]+"...")
-			fmt.Printf("    Target: %s\n", m.TargetHash[:16]+"...")
-			if verbose {
-				fmt.Printf("    Local (full):  %s\n", m.LocalHash)
-				fmt.Printf("    Target (full): %s\n", m.TargetHash)
-			}
-		}
-
-		if len(c.HashMismatches) > displayCount {
-			fmt.Printf("  ... and %d more (use -v to show all)\n", len(c.HashMismatches)-displayCount)
-		}
-	}
-
 	// Final status
 	fmt.Printf("\n")
 	if !c.HasDifferences() {
 		fmt.Printf("✓ Indexes are identical\n")
 	} else {
 		fmt.Printf("✗ Indexes have differences\n")
+		if len(c.ChainMismatches) > 0 {
+			fmt.Printf("\n⚠️  WARNING: Chain hash mismatches detected!\n")
+			fmt.Printf("This indicates different bundle content or chain integrity issues.\n")
+		}
 	}
+}
+
+// filterContentOnlyMismatches returns content mismatches that don't have chain mismatches
+func filterContentOnlyMismatches(contentMismatches, chainMismatches []HashMismatch) []HashMismatch {
+	chainMismatchMap := make(map[int]bool)
+	for _, m := range chainMismatches {
+		chainMismatchMap[m.BundleNumber] = true
+	}
+
+	var result []HashMismatch
+	for _, m := range contentMismatches {
+		if !chainMismatchMap[m.BundleNumber] {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
+// truncateHash truncates a hash for display
+func truncateHash(hash string) string {
+	if len(hash) > 16 {
+		return hash[:16] + "..."
+	}
+	return hash
 }
 
 // displayBundleRanges displays bundle numbers as ranges
