@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -15,12 +16,38 @@ import (
 	"github.com/atscan/plcbundle/plc"
 )
 
-// Version information (injected at build time via ldflags)
+// Version information (injected at build time via ldflags or read from build info)
 var (
 	version   = "dev"
 	gitCommit = "unknown"
 	buildDate = "unknown"
 )
+
+func init() {
+	// Try to get version from build info (works with go install)
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			version = info.Main.Version
+		}
+
+		// Extract git commit and build time from build settings
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				if setting.Value != "" {
+					gitCommit = setting.Value
+					if len(gitCommit) > 7 {
+						gitCommit = gitCommit[:7] // Short hash
+					}
+				}
+			case "vcs.time":
+				if setting.Value != "" {
+					buildDate = setting.Value
+				}
+			}
+		}
+	}
+}
 
 func main() {
 	if len(os.Args) < 2 {

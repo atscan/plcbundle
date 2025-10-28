@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/atscan/plcbundle/bundle"
+	"github.com/atscan/plcbundle/plc"
 	"github.com/gorilla/websocket"
 )
 
@@ -143,10 +144,6 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 	index := mgr.GetIndex()
 	bundles := index.GetBundles()
 
-	if len(bundles) == 0 {
-		return
-	}
-
 	currentRecord := 0
 
 	// Stream all operations from all bundles
@@ -166,29 +163,14 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 				continue
 			}
 
-			// Send raw JSON if available, otherwise marshal the operation
-			var data []byte
-			if len(op.RawJSON) > 0 {
-				data = op.RawJSON
-			} else {
-				data, err = json.Marshal(op)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to marshal operation: %v\n", err)
-					currentRecord++
-					continue
-				}
-			}
-
-			// Send raw JSON as text message
-			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-				// Connection closed or error
-				fmt.Fprintf(os.Stderr, "WebSocket write error: %v\n", err)
+			// Send raw JSON
+			if err := sendOperation(conn, op); err != nil {
 				return
 			}
 
 			currentRecord++
 
-			// Optional: Send ping periodically to keep connection alive
+			// Send ping periodically to keep connection alive
 			if currentRecord%1000 == 0 {
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					return
@@ -196,6 +178,60 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 			}
 		}
 	}
+
+	// Stream mempool operations (seamlessly after bundles)
+	mempoolOps, err := mgr.GetMempoolOperations()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get mempool operations: %v\n", err)
+		return
+	}
+
+	for _, op := range mempoolOps {
+		// Skip records before cursor
+		if currentRecord < cursor {
+			currentRecord++
+			continue
+		}
+
+		// Send raw JSON
+		if err := sendOperation(conn, op); err != nil {
+			return
+		}
+
+		currentRecord++
+
+		// Send ping periodically
+		if currentRecord%1000 == 0 {
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// sendOperation sends a single operation over WebSocket as raw JSON
+func sendOperation(conn *websocket.Conn, op plc.PLCOperation) error {
+	var data []byte
+	var err error
+
+	// Use raw JSON if available, otherwise marshal
+	if len(op.RawJSON) > 0 {
+		data = op.RawJSON
+	} else {
+		data, err = json.Marshal(op)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to marshal operation: %v\n", err)
+			return nil // Skip this operation but continue
+		}
+	}
+
+	// Send as text message
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		fmt.Fprintf(os.Stderr, "WebSocket write error: %v\n", err)
+		return err
+	}
+
+	return nil
 }
 
 func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syncMode bool, wsEnabled bool) {
@@ -315,9 +351,9 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	fmt.Fprintf(w, "━━━━━━━━\n")
 	fmt.Fprintf(w, "  # Get bundle metadata\n")
 	fmt.Fprintf(w, "  curl %s/bundle/1\n\n", baseURL)
-	fmt.Fprintf(w, "  # Download compressed bundle\n")
-	fmt.Fprintf(w, "  curl %s/data/1 -o 000001.jsonl.zst\n\n", baseURL)
-	fmt.Fprintf(w, "  # Stream decompressed operations\n")
+	fmt.Fprintf(w, "  # Download compressed bundle 42\n")
+	fmt.Fprintf(w, "  curl %s/data/42 -o 000042.jsonl.zst\n\n", baseURL)
+	fmt.Fprintf(w, "  # Stream decompressed operations from bundle 42\n")
 	fmt.Fprintf(w, "  curl %s/jsonl/1\n\n", baseURL)
 
 	if wsEnabled {
