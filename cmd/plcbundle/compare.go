@@ -190,10 +190,10 @@ func displayComparison(c *IndexComparison, verbose bool) {
 	fmt.Printf("  Local bundles:      %d\n", c.LocalCount)
 	fmt.Printf("  Target bundles:     %d\n", c.TargetCount)
 	fmt.Printf("  Common bundles:     %d\n", c.CommonCount)
-	fmt.Printf("  Missing bundles:    %d\n", len(c.MissingBundles))
-	fmt.Printf("  Extra bundles:      %d\n", len(c.ExtraBundles))
-	fmt.Printf("  Content mismatches: %d\n", len(c.HashMismatches))
-	fmt.Printf("  Chain mismatches:   %d ⚠️\n", len(c.ChainMismatches))
+	fmt.Printf("  Missing bundles:    %s\n", formatCount(len(c.MissingBundles)))
+	fmt.Printf("  Extra bundles:      %s\n", formatCount(len(c.ExtraBundles)))
+	fmt.Printf("  Content mismatches: %s\n", formatCount(len(c.HashMismatches)))
+	fmt.Printf("  Chain mismatches:   %s\n", formatCountCritical(len(c.ChainMismatches)))
 
 	if c.LocalCount > 0 {
 		fmt.Printf("\n  Local range:        %06d - %06d\n", c.LocalRange[0], c.LocalRange[1])
@@ -330,6 +330,22 @@ func displayComparison(c *IndexComparison, verbose bool) {
 			fmt.Printf("This indicates different bundle content or chain integrity issues.\n")
 		}
 	}
+}
+
+// formatCount formats a count with color/symbol
+func formatCount(count int) string {
+	if count == 0 {
+		return "\033[32m0 ✓\033[0m" // Green with checkmark
+	}
+	return fmt.Sprintf("\033[33m%d ⚠️\033[0m", count) // Yellow with warning
+}
+
+// formatCountCritical formats a count for critical items (chain mismatches)
+func formatCountCritical(count int) string {
+	if count == 0 {
+		return "\033[32m0 ✓\033[0m" // Green with checkmark
+	}
+	return fmt.Sprintf("\033[31m%d ✗\033[0m", count) // Red with X
 }
 
 // filterContentOnlyMismatches returns content mismatches that don't have chain mismatches
