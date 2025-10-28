@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -95,7 +96,7 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		}
 	}
 
-	// Perform rebuild if needed
+	// Perform rebuild if needed (using parallel scan)
 	if needsRebuild {
 		config.Logger.Printf("Rebuilding index from %d bundle files...", len(bundleFiles))
 
@@ -108,8 +109,16 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 			logger:     config.Logger,
 		}
 
-		// Scan directory to rebuild index
-		_, err := tempMgr.ScanDirectory()
+		// Use parallel scan with auto-detected CPU count
+		workers := runtime.NumCPU()
+		if workers < 1 {
+			workers = 1
+		}
+
+		config.Logger.Printf("Using %d workers for parallel scan", workers)
+
+		// Scan directory to rebuild index (parallel)
+		_, err := tempMgr.ScanDirectoryParallel(workers, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to rebuild index: %w", err)
 		}
