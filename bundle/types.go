@@ -122,11 +122,13 @@ func (b *Bundle) ToMetadata() *BundleMetadata {
 		OperationCount:   b.OperationCount(),
 		DIDCount:         b.DIDCount,
 		Hash:             b.Hash,
+		ChainHash:        b.ChainHash,
 		CompressedHash:   b.CompressedHash,
 		CompressedSize:   b.CompressedSize,
 		UncompressedSize: b.UncompressedSize,
 		Cursor:           b.Cursor,
 		PrevBundleHash:   b.PrevBundleHash,
+		PrevChainHash:    b.PrevChainHash,
 		CreatedAt:        b.CreatedAt,
 	}
 }

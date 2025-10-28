@@ -265,20 +265,28 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
 			prevChainHash = prevBundle.ChainHash
 			prevContentHash = prevBundle.Hash
 
+			// Safe logging with length checks
+			hashPreview := formatHashPreview(prevContentHash)
+			chainPreview := formatHashPreview(prevChainHash)
+
 			m.logger.Printf("Previous bundle %06d: hash=%s, chain=%s",
 				prevBundle.BundleNumber,
-				prevContentHash[:16]+"...",
-				prevChainHash[:16]+"...")
+				hashPreview,
+				chainPreview)
 		} else {
 			// Try to get specific previous bundle
 			if prevMeta, err := m.index.GetBundle(bundle.BundleNumber - 1); err == nil {
 				prevChainHash = prevMeta.ChainHash
 				prevContentHash = prevMeta.Hash
 
+				// Safe logging with length checks
+				hashPreview := formatHashPreview(prevContentHash)
+				chainPreview := formatHashPreview(prevChainHash)
+
 				m.logger.Printf("Found previous bundle %06d: hash=%s, chain=%s",
 					prevMeta.BundleNumber,
-					prevContentHash[:16]+"...",
-					prevChainHash[:16]+"...")
+					hashPreview,
+					chainPreview)
 			}
 		}
 	}
@@ -290,10 +298,11 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
 	// Calculate chain hash
 	bundle.ChainHash = m.operations.CalculateChainHash(prevChainHash, bundle.Hash)
 
+	// Safe logging for current bundle
 	m.logger.Printf("Bundle %06d: hash=%s, chain=%s",
 		bundle.BundleNumber,
-		bundle.Hash[:16]+"...",
-		bundle.ChainHash[:16]+"...")
+		formatHashPreview(bundle.Hash),
+		formatHashPreview(bundle.ChainHash))
 
 	// Add to index
 	m.index.AddBundle(bundle.ToMetadata())
@@ -303,8 +312,10 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
 		return fmt.Errorf("failed to save index: %w", err)
 	}
 
-	m.logger.Printf("Saved bundle %06d (hash: %s..., chain: %s...)",
-		bundle.BundleNumber, bundle.Hash[:16], bundle.ChainHash[:16])
+	m.logger.Printf("Saved bundle %06d (hash: %s, chain: %s)",
+		bundle.BundleNumber,
+		formatHashPreview(bundle.Hash),
+		formatHashPreview(bundle.ChainHash))
 
 	// IMPORTANT: Clean up old mempool and create new one for next bundle
 	oldMempoolFile := m.mempool.GetFilename()
@@ -328,6 +339,17 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
 		nextBundle, minTimestamp.Format(time.RFC3339Nano))
 
 	return nil
+}
+
+// formatHashPreview safely formats a hash for display
+func formatHashPreview(hash string) string {
+	if len(hash) == 0 {
+		return "(empty)"
+	}
+	if len(hash) < 16 {
+		return hash
+	}
+	return hash[:16] + "..."
 }
 
 // FetchNextBundle fetches the next bundle from PLC directory
