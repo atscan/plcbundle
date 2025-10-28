@@ -9,22 +9,42 @@ import (
 
 // ProgressBar shows progress of an operation
 type ProgressBar struct {
-	total     int
-	current   int
-	startTime time.Time
-	mu        sync.Mutex
-	width     int
-	lastPrint time.Time
+	total        int
+	current      int
+	totalBytes   int64
+	currentBytes int64
+	startTime    time.Time
+	mu           sync.Mutex
+	width        int
+	lastPrint    time.Time
+	showBytes    bool
 }
 
 // NewProgressBar creates a new progress bar
 func NewProgressBar(total int) *ProgressBar {
 	return &ProgressBar{
-		total:     total,
-		current:   0,
-		startTime: time.Now(),
-		width:     40,
-		lastPrint: time.Now(),
+		total:        total,
+		current:      0,
+		totalBytes:   0,
+		currentBytes: 0,
+		startTime:    time.Now(),
+		width:        40,
+		lastPrint:    time.Now(),
+		showBytes:    false,
+	}
+}
+
+// NewProgressBarWithBytes creates a new progress bar that tracks bytes
+func NewProgressBarWithBytes(total int, totalBytes int64) *ProgressBar {
+	return &ProgressBar{
+		total:        total,
+		current:      0,
+		totalBytes:   totalBytes,
+		currentBytes: 0,
+		startTime:    time.Now(),
+		width:        40,
+		lastPrint:    time.Now(),
+		showBytes:    true,
 	}
 }
 
@@ -44,11 +64,21 @@ func (pb *ProgressBar) Set(current int) {
 	pb.print()
 }
 
+// SetWithBytes sets the current progress and bytes processed
+func (pb *ProgressBar) SetWithBytes(current int, bytesProcessed int64) {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	pb.current = current
+	pb.currentBytes = bytesProcessed
+	pb.print()
+}
+
 // Finish completes the progress bar
 func (pb *ProgressBar) Finish() {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	pb.current = pb.total
+	pb.currentBytes = pb.totalBytes
 	pb.print()
 	fmt.Println() // New line after completion
 }
@@ -84,13 +114,28 @@ func (pb *ProgressBar) print() {
 	}
 
 	// Print progress bar
-	fmt.Printf("\r  [%s] %6.2f%% | %d/%d bundles | %.1f/s | ETA: %s ",
-		bar,
-		percent,
-		pb.current,
-		pb.total,
-		speed,
-		formatETA(eta))
+	if pb.showBytes && pb.totalBytes > 0 {
+		// Calculate MB/s
+		mbProcessed := float64(pb.currentBytes) / (1024 * 1024)
+		mbPerSec := mbProcessed / elapsed.Seconds()
+
+		fmt.Printf("\r  [%s] %6.2f%% | %d/%d bundles | %.1f/s | %.1f MB/s | ETA: %s ",
+			bar,
+			percent,
+			pb.current,
+			pb.total,
+			speed,
+			mbPerSec,
+			formatETA(eta))
+	} else {
+		fmt.Printf("\r  [%s] %6.2f%% | %d/%d bundles | %.1f/s | ETA: %s ",
+			bar,
+			percent,
+			pb.current,
+			pb.total,
+			speed,
+			formatETA(eta))
+	}
 }
 
 // formatETA formats the ETA duration

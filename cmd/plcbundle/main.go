@@ -1027,16 +1027,18 @@ func cmdServe() {
 		os.Exit(1)
 	}
 
+	// Create manager with progress tracking
 	config := bundle.DefaultConfig(dir)
 	config.RebuildWorkers = *workers
 
-	// Add progress callback for rebuild
+	// Create a progress wrapper that tracks bytes
 	config.RebuildProgress = func(current, total int) {
+		// Simple progress logging every 100 bundles
 		if current%100 == 0 || current == total {
-			fmt.Printf("[Rebuild] Progress: %d/%d bundles (%.1f%%)    \r",
+			fmt.Printf("  Rebuild progress: %d/%d bundles (%.1f%%)    \r",
 				current, total, float64(current)/float64(total)*100)
 			if current == total {
-				fmt.Println() // New line when complete
+				fmt.Println()
 			}
 		}
 	}

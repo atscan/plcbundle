@@ -121,15 +121,9 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		config.Logger.Printf("Using %d workers for parallel scan", workers)
 
 		// Create progress callback wrapper
-		progressCallback := config.RebuildProgress
-		if progressCallback == nil {
-			// Default: log every 100 bundles
-			progressCallback = func(current, total int) {
-				if current%100 == 0 || current == total {
-					config.Logger.Printf("Rebuild progress: %d/%d bundles (%.1f%%)",
-						current, total, float64(current)/float64(total)*100)
-				}
-			}
+		var progressCallback func(current, total int)
+		if config.RebuildProgress != nil {
+			progressCallback = config.RebuildProgress
 		}
 
 		start := time.Now()
@@ -148,19 +142,22 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 			return nil, fmt.Errorf("failed to load rebuilt index: %w", err)
 		}
 
-		config.Logger.Printf("✓ Index rebuilt with %d bundles in %s (%.1f bundles/sec)",
-			index.Count(), elapsed.Round(time.Millisecond), float64(result.BundleCount)/elapsed.Seconds())
+		// Calculate throughput
+		mbPerSec := float64(result.TotalUncompressed) / elapsed.Seconds() / (1024 * 1024)
+
+		config.Logger.Printf("✓ Index rebuilt with %d bundles in %s",
+			index.Count(), elapsed.Round(time.Millisecond))
+		config.Logger.Printf("  Speed: %.1f bundles/sec, %.1f MB/s (uncompressed)",
+			float64(result.BundleCount)/elapsed.Seconds(), mbPerSec)
 
 		// Verify all chain hashes are present
 		bundles := index.GetBundles()
 		missingHashes := 0
 		for i, meta := range bundles {
 			if meta.Hash == "" {
-				config.Logger.Printf("⚠️  Bundle %06d has empty Hash after rebuild!", meta.BundleNumber)
 				missingHashes++
 			}
 			if i > 0 && meta.ChainHash == "" {
-				config.Logger.Printf("⚠️  Bundle %06d has empty ChainHash after rebuild!", meta.BundleNumber)
 				missingHashes++
 			}
 		}
@@ -918,16 +915,15 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 		close(results)
 	}()
 
-	// Collect results (in a map first, then sort)
 	metadataMap := make(map[int]*BundleMetadata)
 	var totalSize int64
-	var totalUncompressed int64 // NEW
+	var totalUncompressed int64
 	processed := 0
 
 	for result := range results {
 		processed++
 
-		// Update progress
+		// Update progress with bytes
 		if progressCallback != nil {
 			progressCallback(processed, len(bundleNumbers))
 		}
@@ -938,7 +934,7 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 		}
 		metadataMap[result.index] = result.meta
 		totalSize += result.meta.CompressedSize
-		totalUncompressed += result.meta.UncompressedSize // NEW
+		totalUncompressed += result.meta.UncompressedSize
 	}
 
 	// Build ordered metadata slice and calculate chain hashes
