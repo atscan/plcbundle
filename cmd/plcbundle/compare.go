@@ -135,15 +135,15 @@ func compareIndexes(local, target *bundle.Index) *IndexComparison {
 	}
 	sort.Ints(comparison.ExtraBundles)
 
-	// Find hash mismatches
+	// Find hash mismatches (compare UNCOMPRESSED hash - the canonical hash)
 	for bundleNum, localMeta := range localMap {
 		if targetMeta, exists := targetMap[bundleNum]; exists {
 			comparison.CommonCount++
-			if localMeta.CompressedHash != targetMeta.CompressedHash {
+			if localMeta.Hash != targetMeta.Hash {
 				comparison.HashMismatches = append(comparison.HashMismatches, HashMismatch{
 					BundleNumber: bundleNum,
-					LocalHash:    localMeta.CompressedHash,
-					TargetHash:   targetMeta.CompressedHash,
+					LocalHash:    localMeta.Hash,
+					TargetHash:   targetMeta.Hash,
 				})
 			}
 		}
@@ -232,8 +232,8 @@ func displayComparison(c *IndexComparison, verbose bool) {
 	// Hash mismatches
 	if len(c.HashMismatches) > 0 {
 		fmt.Printf("\n")
-		fmt.Printf("Hash Mismatches\n")
-		fmt.Printf("───────────────\n")
+		fmt.Printf("Hash Mismatches (uncompressed data)\n")
+		fmt.Printf("────────────────────────────────────\n")
 
 		displayCount := len(c.HashMismatches)
 		if displayCount > 10 && !verbose {
@@ -245,6 +245,10 @@ func displayComparison(c *IndexComparison, verbose bool) {
 			fmt.Printf("  Bundle %06d:\n", m.BundleNumber)
 			fmt.Printf("    Local:  %s\n", m.LocalHash[:16]+"...")
 			fmt.Printf("    Target: %s\n", m.TargetHash[:16]+"...")
+			if verbose {
+				fmt.Printf("    Local (full):  %s\n", m.LocalHash)
+				fmt.Printf("    Target (full): %s\n", m.TargetHash)
+			}
 		}
 
 		if len(c.HashMismatches) > displayCount {
