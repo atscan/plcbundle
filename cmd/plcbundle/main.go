@@ -304,18 +304,21 @@ func cmdRebuild() {
 
 	// Create progress bar
 	var progress *ProgressBar
-	var progressCallback func(int, int)
+	var progressCallback func(int, int, int64)
 
 	if !*noProgress {
-		progress = NewProgressBar(len(files))
-		progressCallback = func(current, total int) {
-			progress.Set(current)
-		}
 		fmt.Println("Processing bundles:")
+		progress = NewProgressBar(len(files))
+		progress.showBytes = true // Enable byte tracking
+
+		progressCallback = func(current, total int, bytesProcessed int64) {
+			progress.SetWithBytes(current, bytesProcessed)
+		}
 	}
 
 	// Use parallel scan
 	result, err := mgr.ScanDirectoryParallel(*workers, progressCallback)
+
 	if err != nil {
 		if progress != nil {
 			progress.Finish()

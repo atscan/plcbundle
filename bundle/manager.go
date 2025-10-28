@@ -120,10 +120,23 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 
 		config.Logger.Printf("Using %d workers for parallel scan", workers)
 
-		// Create progress callback wrapper
-		var progressCallback func(current, total int)
+		// Create progress callback wrapper with new signature
+		var progressCallback func(current, total int, bytesProcessed int64)
 		if config.RebuildProgress != nil {
-			progressCallback = config.RebuildProgress
+			// Wrap the old-style callback to work with new signature
+			oldCallback := config.RebuildProgress
+			progressCallback = func(current, total int, bytesProcessed int64) {
+				oldCallback(current, total)
+			}
+		} else {
+			// Default: log every 100 bundles
+			progressCallback = func(current, total int, bytesProcessed int64) {
+				if current%100 == 0 || current == total {
+					mbProcessed := float64(bytesProcessed) / (1024 * 1024)
+					config.Logger.Printf("Rebuild progress: %d/%d bundles (%.1f%%), %.1f MB processed",
+						current, total, float64(current)/float64(total)*100, mbProcessed)
+				}
+			}
 		}
 
 		start := time.Now()
@@ -808,7 +821,7 @@ func (m *Manager) ScanDirectory() (*DirectoryScanResult, error) {
 }
 
 // ScanDirectoryParallel scans the bundle directory in parallel and rebuilds the index
-func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(current, total int)) (*DirectoryScanResult, error) {
+func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(current, total int, bytesProcessed int64)) (*DirectoryScanResult, error) {
 	result := &DirectoryScanResult{
 		BundleDir: m.config.BundleDir,
 	}
@@ -915,6 +928,7 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 		close(results)
 	}()
 
+	// Collect results (in a map first, then sort)
 	metadataMap := make(map[int]*BundleMetadata)
 	var totalSize int64
 	var totalUncompressed int64
@@ -923,9 +937,12 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 	for result := range results {
 		processed++
 
-		// Update progress with bytes
+		// Update progress WITH bytes
 		if progressCallback != nil {
-			progressCallback(processed, len(bundleNumbers))
+			if result.meta != nil {
+				totalUncompressed += result.meta.UncompressedSize
+			}
+			progressCallback(processed, len(bundleNumbers), totalUncompressed)
 		}
 
 		if result.err != nil {
@@ -934,7 +951,6 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 		}
 		metadataMap[result.index] = result.meta
 		totalSize += result.meta.CompressedSize
-		totalUncompressed += result.meta.UncompressedSize
 	}
 
 	// Build ordered metadata slice and calculate chain hashes
@@ -961,7 +977,7 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 	}
 
 	result.TotalSize = totalSize
-	result.TotalUncompressed = totalUncompressed // NEW
+	result.TotalUncompressed = totalUncompressed
 
 	// Rebuild index
 	m.index.Rebuild(newMetadata)
