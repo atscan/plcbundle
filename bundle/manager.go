@@ -110,18 +110,37 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		}
 
 		// Use parallel scan with auto-detected CPU count
-		workers := runtime.NumCPU()
-		if workers < 1 {
-			workers = 1
+		workers := config.RebuildWorkers
+		if workers <= 0 {
+			workers = runtime.NumCPU()
+			if workers < 1 {
+				workers = 1
+			}
 		}
 
 		config.Logger.Printf("Using %d workers for parallel scan", workers)
 
+		// Create progress callback wrapper
+		progressCallback := config.RebuildProgress
+		if progressCallback == nil {
+			// Default: log every 100 bundles
+			progressCallback = func(current, total int) {
+				if current%100 == 0 || current == total {
+					config.Logger.Printf("Rebuild progress: %d/%d bundles (%.1f%%)",
+						current, total, float64(current)/float64(total)*100)
+				}
+			}
+		}
+
+		start := time.Now()
+
 		// Scan directory to rebuild index (parallel)
-		_, err := tempMgr.ScanDirectoryParallel(workers, nil)
+		result, err := tempMgr.ScanDirectoryParallel(workers, progressCallback)
 		if err != nil {
 			return nil, fmt.Errorf("failed to rebuild index: %w", err)
 		}
+
+		elapsed := time.Since(start)
 
 		// Reload the rebuilt index
 		index, err = LoadIndex(indexPath)
@@ -129,7 +148,25 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 			return nil, fmt.Errorf("failed to load rebuilt index: %w", err)
 		}
 
-		config.Logger.Printf("✓ Index rebuilt with %d bundles", index.Count())
+		config.Logger.Printf("✓ Index rebuilt with %d bundles in %s (%.1f bundles/sec)",
+			index.Count(), elapsed.Round(time.Millisecond), float64(result.BundleCount)/elapsed.Seconds())
+
+		// Verify all chain hashes are present
+		bundles := index.GetBundles()
+		missingHashes := 0
+		for i, meta := range bundles {
+			if meta.Hash == "" {
+				config.Logger.Printf("⚠️  Bundle %06d has empty Hash after rebuild!", meta.BundleNumber)
+				missingHashes++
+			}
+			if i > 0 && meta.ChainHash == "" {
+				config.Logger.Printf("⚠️  Bundle %06d has empty ChainHash after rebuild!", meta.BundleNumber)
+				missingHashes++
+			}
+		}
+		if missingHashes > 0 {
+			config.Logger.Printf("⚠️  Warning: %d bundles have missing hashes", missingHashes)
+		}
 	}
 
 	// Initialize mempool for next bundle

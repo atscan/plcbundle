@@ -173,16 +173,22 @@ type Logger interface {
 
 // Config holds configuration for bundle operations
 type Config struct {
-	BundleDir    string
-	VerifyOnLoad bool
-	Logger       Logger
+	BundleDir       string
+	VerifyOnLoad    bool
+	AutoRebuild     bool
+	RebuildWorkers  int                      // Number of workers for parallel rebuild (0 = auto-detect)
+	RebuildProgress func(current, total int) // Progress callback for rebuild
+	Logger          Logger
 }
 
 // DefaultConfig returns default configuration
 func DefaultConfig(bundleDir string) *Config {
 	return &Config{
-		BundleDir:    bundleDir,
-		VerifyOnLoad: true,
-		Logger:       nil, // Will use defaultLogger in manager
+		BundleDir:       bundleDir,
+		VerifyOnLoad:    true,
+		AutoRebuild:     true,
+		RebuildWorkers:  0,   // 0 means auto-detect CPU count
+		RebuildProgress: nil, // No progress callback by default
+		Logger:          nil,
 	}
 }

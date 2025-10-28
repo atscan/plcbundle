@@ -1001,7 +1001,13 @@ func cmdServe() {
 	plcURL := fs.String("plc", "https://plc.directory", "PLC directory URL (for sync mode)")
 	syncInterval := fs.Duration("sync-interval", 5*time.Minute, "sync interval for sync mode")
 	enableWebSocket := fs.Bool("websocket", false, "enable WebSocket endpoint for streaming records")
+	workers := fs.Int("workers", 4, "number of workers for auto-rebuild (0 = CPU count)")
 	fs.Parse(os.Args[2:])
+
+	// Auto-detect CPU count
+	if *workers == 0 {
+		*workers = runtime.NumCPU()
+	}
 
 	// Create manager with PLC client if sync mode is enabled
 	var plcURLForManager string
@@ -1009,8 +1015,42 @@ func cmdServe() {
 		plcURLForManager = *plcURL
 	}
 
-	// NewManager now handles auto-rebuild automatically
-	mgr, dir, err := getManager(plcURLForManager) // ← Capture dir here
+	dir, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Ensure directory exists
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	config := bundle.DefaultConfig(dir)
+	config.RebuildWorkers = *workers
+
+	// Add progress callback for rebuild
+	config.RebuildProgress = func(current, total int) {
+		if current%100 == 0 || current == total {
+			fmt.Printf("[Rebuild] Progress: %d/%d bundles (%.1f%%)    \r",
+				current, total, float64(current)/float64(total)*100)
+			if current == total {
+				fmt.Println() // New line when complete
+			}
+		}
+	}
+
+	var client *plc.Client
+	if plcURLForManager != "" {
+		client = plc.NewClient(plcURLForManager)
+	}
+
+	fmt.Printf("Starting plcbundle HTTP server...\n")
+	fmt.Printf("  Directory: %s\n", dir)
+
+	// NewManager now handles auto-rebuild automatically with progress
+	mgr, err := bundle.NewManager(config, client)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -1019,8 +1059,6 @@ func cmdServe() {
 
 	addr := fmt.Sprintf("%s:%s", *host, *port)
 
-	fmt.Printf("Starting plcbundle HTTP server...\n")
-	fmt.Printf("  Directory: %s\n", dir) // ← Now dir is available
 	fmt.Printf("  Listening: http://%s\n", addr)
 
 	if *sync {
