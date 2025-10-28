@@ -829,7 +829,7 @@ func cmdServe() {
 
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      newServerHandler(mgr, dir),
+		Handler:      newServerHandler(mgr),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}

@@ -12,7 +12,7 @@ import (
 	"github.com/atscan/plcbundle/bundle"
 )
 
-func newServerHandler(mgr *bundle.Manager, dir string) http.Handler {
+func newServerHandler(mgr *bundle.Manager) http.Handler {
 	mux := http.NewServeMux()
 
 	// Root - ASCII art + info
