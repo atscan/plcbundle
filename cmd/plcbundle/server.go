@@ -146,7 +146,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	if syncMode {
 		fmt.Fprintf(w, "\nSync Endpoints\n")
 		fmt.Fprintf(w, "━━━━━━━━━━━━━━\n")
-		fmt.Fprintf(w, "  GET  /sync                Sync status & mempool info\n")
+		fmt.Fprintf(w, "  GET  /sync                Sync status & mempool info (JSON)\n")
 		fmt.Fprintf(w, "  GET  /sync/mempool        Mempool operations (JSONL)\n")
 	}
 
