@@ -851,7 +851,7 @@ func cmdServe() {
 	defer cancel()
 
 	if *mirror {
-		go runMirrorSync(ctx, mgr, *syncInterval)
+		go runSync(ctx, mgr, *syncInterval)
 	}
 
 	server := &http.Server{

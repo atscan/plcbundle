@@ -13,7 +13,7 @@ import (
 	"github.com/atscan/plcbundle/bundle"
 )
 
-func newServerHandler(mgr *bundle.Manager, mirrorMode bool) http.Handler {
+func newServerHandler(mgr *bundle.Manager, syncMode bool) http.Handler {
 	mux := http.NewServeMux()
 
 	// Root - ASCII art + info
@@ -22,7 +22,7 @@ func newServerHandler(mgr *bundle.Manager, mirrorMode bool) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		handleRoot(w, r, mgr, mirrorMode)
+		handleRoot(w, r, mgr, syncMode)
 	})
 
 	// Index JSON
@@ -45,25 +45,21 @@ func newServerHandler(mgr *bundle.Manager, mirrorMode bool) http.Handler {
 		handleBundleJSONL(w, r, mgr)
 	})
 
-	// Mempool endpoints (only if mirror mode enabled)
-	if mirrorMode {
-		mux.HandleFunc("/mempool", func(w http.ResponseWriter, r *http.Request) {
-			handleMempool(w, mgr)
+	// Sync endpoints (only if sync mode enabled)
+	if syncMode {
+		mux.HandleFunc("/sync", func(w http.ResponseWriter, r *http.Request) {
+			handleSync(w, mgr)
 		})
 
-		mux.HandleFunc("/mempool/stats", func(w http.ResponseWriter, r *http.Request) {
-			handleMempoolStats(w, mgr)
-		})
-
-		mux.HandleFunc("/mempool/operations", func(w http.ResponseWriter, r *http.Request) {
-			handleMempoolOperations(w, mgr)
+		mux.HandleFunc("/sync/mempool", func(w http.ResponseWriter, r *http.Request) {
+			handleSyncMempool(w, mgr)
 		})
 	}
 
 	return mux
 }
 
-func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, mirrorMode bool) {
+func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syncMode bool) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	index := mgr.GetIndex()
@@ -86,7 +82,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, mir
 	fmt.Fprintf(w, "Server Stats\n")
 	fmt.Fprintf(w, "━━━━━━━━━━━━\n")
 	fmt.Fprintf(w, "  Bundle count:  %d\n", bundleCount)
-	fmt.Fprintf(w, "  Mirror mode:   %v\n", mirrorMode)
+	fmt.Fprintf(w, "  Sync mode:     %v\n", syncMode)
 
 	if bundleCount > 0 {
 		firstBundle := stats["first_bundle"].(int)
@@ -113,8 +109,8 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, mir
 		}
 	}
 
-	// Show mempool stats if mirror mode
-	if mirrorMode {
+	// Show mempool stats if sync mode
+	if syncMode {
 		mempoolStats := mgr.GetMempoolStats()
 		count := mempoolStats["count"].(int)
 		targetBundle := mempoolStats["target_bundle"].(int)
@@ -147,12 +143,11 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, mir
 	fmt.Fprintf(w, "  GET  /data/:number        Raw bundle (zstd compressed)\n")
 	fmt.Fprintf(w, "  GET  /jsonl/:number       Decompressed JSONL stream\n")
 
-	if mirrorMode {
-		fmt.Fprintf(w, "\nMempool Endpoints (Mirror Mode)\n")
-		fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-		fmt.Fprintf(w, "  GET  /mempool             Mempool info (HTML)\n")
-		fmt.Fprintf(w, "  GET  /mempool/stats       Mempool statistics (JSON)\n")
-		fmt.Fprintf(w, "  GET  /mempool/operations  Mempool operations (JSONL)\n")
+	if syncMode {
+		fmt.Fprintf(w, "\nSync Endpoints\n")
+		fmt.Fprintf(w, "━━━━━━━━━━━━━━\n")
+		fmt.Fprintf(w, "  GET  /sync                Sync status & mempool info\n")
+		fmt.Fprintf(w, "  GET  /sync/mempool        Mempool operations (JSONL)\n")
 	}
 
 	fmt.Fprintf(w, "\nExamples\n")
@@ -164,36 +159,63 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, mir
 	fmt.Fprintf(w, "  # Stream decompressed operations\n")
 	fmt.Fprintf(w, "  curl http://%s/jsonl/1\n\n", r.Host)
 
-	if mirrorMode {
+	if syncMode {
+		fmt.Fprintf(w, "  # Get sync status\n")
+		fmt.Fprintf(w, "  curl http://%s/sync\n\n", r.Host)
 		fmt.Fprintf(w, "  # Get mempool operations\n")
-		fmt.Fprintf(w, "  curl http://%s/mempool/operations\n\n", r.Host)
-		fmt.Fprintf(w, "  # Get mempool stats\n")
-		fmt.Fprintf(w, "  curl http://%s/mempool/stats\n\n", r.Host)
+		fmt.Fprintf(w, "  curl http://%s/sync/mempool\n\n", r.Host)
 	}
 
 	fmt.Fprintf(w, "\n────────────────────────────────────────────────────────────────\n")
 	fmt.Fprintf(w, "plcbundle v%s | https://github.com/atscan/plcbundle\n", version)
 }
 
-// handleMempool returns mempool info as HTML/text
-func handleMempool(w http.ResponseWriter, mgr *bundle.Manager) {
+// handleSync returns sync status and mempool info
+func handleSync(w http.ResponseWriter, mgr *bundle.Manager) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	stats := mgr.GetMempoolStats()
-	count := stats["count"].(int)
-	targetBundle := stats["target_bundle"].(int)
-	canCreate := stats["can_create_bundle"].(bool)
-	minTimestamp := stats["min_timestamp"].(time.Time)
-	validated := stats["validated"].(bool)
+	index := mgr.GetIndex()
+	stats := index.GetStats()
+	bundleCount := stats["bundle_count"].(int)
 
-	fmt.Fprintf(w, "Mempool Status\n")
-	fmt.Fprintf(w, "══════════════\n\n")
-	fmt.Fprintf(w, "Target Bundle:     %06d\n", targetBundle)
+	fmt.Fprintf(w, "Sync Status\n")
+	fmt.Fprintf(w, "═══════════\n\n")
+
+	// Bundle info
+	fmt.Fprintf(w, "Bundles\n")
+	fmt.Fprintf(w, "───────\n")
+	fmt.Fprintf(w, "Count:         %d\n", bundleCount)
+
+	if bundleCount > 0 {
+		firstBundle := stats["first_bundle"].(int)
+		lastBundle := stats["last_bundle"].(int)
+		totalSize := stats["total_size"].(int64)
+
+		fmt.Fprintf(w, "Range:         %06d - %06d\n", firstBundle, lastBundle)
+		fmt.Fprintf(w, "Total size:    %.2f MB\n", float64(totalSize)/(1024*1024))
+		fmt.Fprintf(w, "Last updated:  %s\n", stats["updated_at"].(time.Time).Format(time.RFC3339))
+
+		if gaps, ok := stats["gaps"].(int); ok && gaps > 0 {
+			fmt.Fprintf(w, "⚠ Gaps:        %d missing bundles\n", gaps)
+		}
+	}
+
+	// Mempool info
+	mempoolStats := mgr.GetMempoolStats()
+	count := mempoolStats["count"].(int)
+	targetBundle := mempoolStats["target_bundle"].(int)
+	canCreate := mempoolStats["can_create_bundle"].(bool)
+	minTimestamp := mempoolStats["min_timestamp"].(time.Time)
+	validated := mempoolStats["validated"].(bool)
+
+	fmt.Fprintf(w, "\nMempool\n")
+	fmt.Fprintf(w, "───────\n")
+	fmt.Fprintf(w, "Target bundle:     %06d\n", targetBundle)
 	fmt.Fprintf(w, "Operations:        %d / %d\n", count, bundle.BUNDLE_SIZE)
-	fmt.Fprintf(w, "Can Create Bundle: %v\n", canCreate)
-	fmt.Fprintf(w, "Min Timestamp:     %s\n", minTimestamp.Format(time.RFC3339))
-	fmt.Fprintf(w, "Validated:         %v\n\n", validated)
+	fmt.Fprintf(w, "Can create bundle: %v\n", canCreate)
+	fmt.Fprintf(w, "Min timestamp:     %s\n", minTimestamp.Format(time.RFC3339))
+	fmt.Fprintf(w, "Validated:         %v\n", validated)
 
 	if count > 0 {
 		progress := float64(count) / float64(bundle.BUNDLE_SIZE) * 100
@@ -206,44 +228,27 @@ func handleMempool(w http.ResponseWriter, mgr *bundle.Manager) {
 			filled = barWidth
 		}
 		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
-		fmt.Fprintf(w, "[%s]\n\n", bar)
+		fmt.Fprintf(w, "\n[%s]\n\n", bar)
 
-		if sizeBytes, ok := stats["size_bytes"].(int); ok {
+		if sizeBytes, ok := mempoolStats["size_bytes"].(int); ok {
 			fmt.Fprintf(w, "Size:              %.2f KB\n", float64(sizeBytes)/1024)
 		}
-		if firstTime, ok := stats["first_time"].(time.Time); ok {
-			fmt.Fprintf(w, "First Operation:   %s\n", firstTime.Format(time.RFC3339))
+		if firstTime, ok := mempoolStats["first_time"].(time.Time); ok {
+			fmt.Fprintf(w, "First operation:   %s\n", firstTime.Format(time.RFC3339))
 		}
-		if lastTime, ok := stats["last_time"].(time.Time); ok {
-			fmt.Fprintf(w, "Last Operation:    %s\n", lastTime.Format(time.RFC3339))
+		if lastTime, ok := mempoolStats["last_time"].(time.Time); ok {
+			fmt.Fprintf(w, "Last operation:    %s\n", lastTime.Format(time.RFC3339))
 		}
 	} else {
-		fmt.Fprintf(w, "(empty)\n")
+		fmt.Fprintf(w, "\n(empty)\n")
 	}
 
 	fmt.Fprintf(w, "\nEndpoints:\n")
-	fmt.Fprintf(w, "  /mempool/stats       - JSON statistics\n")
-	fmt.Fprintf(w, "  /mempool/operations  - JSONL stream of operations\n")
+	fmt.Fprintf(w, "  /sync/mempool - JSONL stream of mempool operations\n")
 }
 
-// handleMempoolStats returns mempool statistics as JSON
-func handleMempoolStats(w http.ResponseWriter, mgr *bundle.Manager) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-
-	stats := mgr.GetMempoolStats()
-
-	data, err := json.MarshalIndent(stats, "", "  ")
-	if err != nil {
-		http.Error(w, "Failed to marshal stats", http.StatusInternalServerError)
-		return
-	}
-
-	w.Write(data)
-}
-
-// handleMempoolOperations streams mempool operations as JSONL
-func handleMempoolOperations(w http.ResponseWriter, mgr *bundle.Manager) {
+// handleSyncMempool streams mempool operations as JSONL
+func handleSyncMempool(w http.ResponseWriter, mgr *bundle.Manager) {
 	ops, err := mgr.GetMempoolOperations()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get mempool operations: %v", err), http.StatusInternalServerError)
@@ -382,9 +387,9 @@ func handleBundleJSONL(w http.ResponseWriter, r *http.Request, mgr *bundle.Manag
 	}
 }
 
-// runMirrorSync continuously fetches new bundles in the background
-func runMirrorSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration) {
-	fmt.Printf("[Mirror] Starting sync loop (interval: %s)\n", interval)
+// runSync continuously fetches new bundles in the background
+func runSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration) {
+	fmt.Printf("[Sync] Starting sync loop (interval: %s)\n", interval)
 
 	// Do initial sync immediately
 	syncBundles(ctx, mgr)
@@ -395,7 +400,7 @@ func runMirrorSync(ctx context.Context, mgr *bundle.Manager, interval time.Durat
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Printf("[Mirror] Sync stopped\n")
+			fmt.Printf("[Sync] Sync stopped\n")
 			return
 		case <-ticker.C:
 			syncBundles(ctx, mgr)
@@ -412,7 +417,7 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager) {
 		startBundle = lastBundle.BundleNumber + 1
 	}
 
-	fmt.Printf("[Mirror] Checking for new bundles (current: %06d)...\n", startBundle-1)
+	fmt.Printf("[Sync] Checking for new bundles (current: %06d)...\n", startBundle-1)
 
 	fetchedCount := 0
 	consecutiveErrors := 0
@@ -426,20 +431,20 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager) {
 			// Check if we've reached the end
 			if isEndOfDataError(err) {
 				if fetchedCount > 0 {
-					fmt.Printf("[Mirror] ✓ Synced %d new bundles (now at %06d)\n",
+					fmt.Printf("[Sync] ✓ Synced %d new bundles (now at %06d)\n",
 						fetchedCount, currentBundle-1)
 				} else {
-					fmt.Printf("[Mirror] ✓ Already up to date (bundle %06d)\n", startBundle-1)
+					fmt.Printf("[Sync] ✓ Already up to date (bundle %06d)\n", startBundle-1)
 				}
 				break
 			}
 
 			// Handle other errors
 			consecutiveErrors++
-			fmt.Fprintf(os.Stderr, "[Mirror] Error fetching bundle %06d: %v\n", currentBundle, err)
+			fmt.Fprintf(os.Stderr, "[Sync] Error fetching bundle %06d: %v\n", currentBundle, err)
 
 			if consecutiveErrors >= maxConsecutiveErrors {
-				fmt.Fprintf(os.Stderr, "[Mirror] Too many consecutive errors, stopping sync\n")
+				fmt.Fprintf(os.Stderr, "[Sync] Too many consecutive errors, stopping sync\n")
 				break
 			}
 
@@ -452,12 +457,12 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager) {
 		consecutiveErrors = 0
 
 		if err := mgr.SaveBundle(ctx, b); err != nil {
-			fmt.Fprintf(os.Stderr, "[Mirror] Error saving bundle %06d: %v\n", b.BundleNumber, err)
+			fmt.Fprintf(os.Stderr, "[Sync] Error saving bundle %06d: %v\n", b.BundleNumber, err)
 			break
 		}
 
 		fetchedCount++
-		fmt.Printf("[Mirror] ✓ Fetched bundle %06d (%d ops, %d DIDs)\n",
+		fmt.Printf("[Sync] ✓ Fetched bundle %06d (%d ops, %d DIDs)\n",
 			b.BundleNumber, len(b.Operations), b.DIDCount)
 
 		// Add a small delay between fetches to be nice to the PLC directory
