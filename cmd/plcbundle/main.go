@@ -811,9 +811,18 @@ func cmdServe() {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	port := fs.String("port", "8080", "HTTP server port")
 	host := fs.String("host", "127.0.0.1", "HTTP server host")
+	mirror := fs.Bool("mirror", false, "enable mirror mode (auto-sync from PLC)")
+	plcURL := fs.String("plc", "https://plc.directory", "PLC directory URL (for mirror mode)")
+	syncInterval := fs.Duration("sync-interval", 5*time.Minute, "sync interval for mirror mode")
 	fs.Parse(os.Args[2:])
 
-	mgr, dir, err := getManager("")
+	// Create manager with PLC client if mirror mode is enabled
+	var plcURLForManager string
+	if *mirror {
+		plcURLForManager = *plcURL
+	}
+
+	mgr, dir, err := getManager(plcURLForManager)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -825,11 +834,29 @@ func cmdServe() {
 	fmt.Printf("Starting plcbundle HTTP server...\n")
 	fmt.Printf("  Directory: %s\n", dir)
 	fmt.Printf("  Listening: http://%s\n", addr)
+
+	if *mirror {
+		fmt.Printf("  Mirror mode: ENABLED\n")
+		fmt.Printf("  PLC URL: %s\n", *plcURL)
+		fmt.Printf("  Sync interval: %s\n", *syncInterval)
+		fmt.Printf("  Mempool API: ENABLED\n") // Added
+	} else {
+		fmt.Printf("  Mirror mode: disabled\n")
+	}
+
 	fmt.Printf("\nPress Ctrl+C to stop\n\n")
+
+	// Start mirror sync if enabled
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if *mirror {
+		go runMirrorSync(ctx, mgr, *syncInterval)
+	}
 
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      newServerHandler(mgr),
+		Handler:      newServerHandler(mgr, *mirror), // Pass mirror flag
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
