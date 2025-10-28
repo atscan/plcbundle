@@ -26,6 +26,10 @@
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠋⢀⠋⢈⡿⠿⠁⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ```
 
+> ⚠️ **Preview Version - Do Not Use in Production!**
+>
+> This project and plcbundle specification is currently unstable and under heavy development. Things can break at any time. Bundle hashes or data formats may change. **Do not** use this for production systems. Please wait for the **`1.0`** release.
+
 A Go library and CLI tool for managing [DID PLC Directory](https://plc.directory/) bundles with transparent synchronization, compression, and verification.
 
 ## Features
