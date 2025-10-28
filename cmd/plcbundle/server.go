@@ -104,12 +104,12 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, mir
 		// Get first and last bundle metadata for hashes
 		firstMeta, err := index.GetBundle(firstBundle)
 		if err == nil {
-			fmt.Fprintf(w, "\n  Chain root:    %s\n", firstMeta.Hash)
+			fmt.Fprintf(w, "\n  Root: %s\n", firstMeta.Hash)
 		}
 
 		lastMeta, err := index.GetBundle(lastBundle)
 		if err == nil {
-			fmt.Fprintf(w, "  Chain head:    %s\n", lastMeta.Hash)
+			fmt.Fprintf(w, "  Head: %s\n", lastMeta.Hash)
 		}
 	}
 
