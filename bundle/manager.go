@@ -66,6 +66,7 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 
 	// Check for bundle files in directory
 	bundleFiles, _ := filepath.Glob(filepath.Join(config.BundleDir, "*.jsonl.zst"))
+	bundleFiles = filterBundleFiles(bundleFiles) // ← ADD THIS
 	hasBundleFiles := len(bundleFiles) > 0
 
 	needsRebuild := false
@@ -683,6 +684,7 @@ func (m *Manager) ScanDirectory() (*DirectoryScanResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan directory: %w", err)
 	}
+	files = filterBundleFiles(files)
 
 	if len(files) == 0 {
 		m.logger.Printf("No bundle files found")
@@ -797,6 +799,7 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan directory: %w", err)
 	}
+	files = filterBundleFiles(files)
 
 	if len(files) == 0 {
 		m.logger.Printf("No bundle files found")
@@ -1175,4 +1178,18 @@ func (m *Manager) RefreshIndex() error {
 	}
 
 	return nil
+}
+
+// filterBundleFiles filters out files starting with . or _ (system/temp files)
+func filterBundleFiles(files []string) []string {
+	filtered := make([]string, 0, len(files))
+	for _, file := range files {
+		basename := filepath.Base(file)
+		// Skip files starting with . or _
+		if len(basename) > 0 && (basename[0] == '.' || basename[0] == '_') {
+			continue
+		}
+		filtered = append(filtered, file)
+	}
+	return filtered
 }
