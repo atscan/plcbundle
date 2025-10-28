@@ -348,14 +348,6 @@ func filterContentOnlyMismatches(contentMismatches, chainMismatches []HashMismat
 	return result
 }
 
-// truncateHash truncates a hash for display
-func truncateHash(hash string) string {
-	if len(hash) > 16 {
-		return hash[:16] + "..."
-	}
-	return hash
-}
-
 // displayBundleRanges displays bundle numbers as ranges
 func displayBundleRanges(bundles []int) {
 	if len(bundles) == 0 {

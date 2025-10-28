@@ -62,14 +62,65 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 	// Load or create index
 	indexPath := filepath.Join(config.BundleDir, INDEX_FILE)
 	index, err := LoadIndex(indexPath)
+
+	// Check for bundle files in directory
+	bundleFiles, _ := filepath.Glob(filepath.Join(config.BundleDir, "*.jsonl.zst"))
+	hasBundleFiles := len(bundleFiles) > 0
+
+	needsRebuild := false
+
 	if err != nil {
-		config.Logger.Printf("Creating new index at %s", indexPath)
-		index = NewIndex()
-		if err := index.Save(indexPath); err != nil {
-			return nil, fmt.Errorf("failed to save new index: %w", err)
+		// Index doesn't exist or is invalid
+		if hasBundleFiles {
+			// We have bundles but no index - need to rebuild
+			config.Logger.Printf("No valid index found, but detected %d bundle files", len(bundleFiles))
+			needsRebuild = true
+		} else {
+			// No index and no bundles - create fresh index
+			config.Logger.Printf("Creating new index at %s", indexPath)
+			index = NewIndex()
+			if err := index.Save(indexPath); err != nil {
+				return nil, fmt.Errorf("failed to save new index: %w", err)
+			}
 		}
 	} else {
+		// Index exists - check if it's complete
 		config.Logger.Printf("Loaded index with %d bundles", index.Count())
+
+		// Check if there are bundle files not in the index
+		if hasBundleFiles && len(bundleFiles) > index.Count() {
+			config.Logger.Printf("Detected %d bundle files but index only has %d entries - rebuilding",
+				len(bundleFiles), index.Count())
+			needsRebuild = true
+		}
+	}
+
+	// Perform rebuild if needed
+	if needsRebuild {
+		config.Logger.Printf("Rebuilding index from %d bundle files...", len(bundleFiles))
+
+		// Create temporary manager for scanning
+		tempMgr := &Manager{
+			config:     config,
+			operations: ops,
+			index:      NewIndex(),
+			indexPath:  indexPath,
+			logger:     config.Logger,
+		}
+
+		// Scan directory to rebuild index
+		_, err := tempMgr.ScanDirectory()
+		if err != nil {
+			return nil, fmt.Errorf("failed to rebuild index: %w", err)
+		}
+
+		// Reload the rebuilt index
+		index, err = LoadIndex(indexPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load rebuilt index: %w", err)
+		}
+
+		config.Logger.Printf("✓ Index rebuilt with %d bundles", index.Count())
 	}
 
 	// Initialize mempool for next bundle
