@@ -119,6 +119,7 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.H
 }
 
 // handleWebSocket streams all records via WebSocket starting from cursor
+// Keeps connection alive and streams new records as they arrive
 func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager) {
 	// Parse cursor from query parameter (defaults to 0)
 	cursorStr := r.URL.Query().Get("cursor")
@@ -132,9 +133,6 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 		}
 	}
 
-	// Check if client wants to keep connection alive
-	keepAlive := r.URL.Query().Get("keepalive") == "true"
-
 	// Upgrade to WebSocket
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -143,129 +141,209 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 	}
 	defer conn.Close()
 
-	// Set up ping/pong handlers for keepalive
+	// Set up handlers for connection management
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil
 	})
 
-	ctx := context.Background()
-	index := mgr.GetIndex()
-	bundles := index.GetBundles()
+	// Channel to signal client disconnect
+	done := make(chan struct{})
 
-	if len(bundles) == 0 {
-		if !keepAlive {
-			closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "no bundles available")
-			conn.WriteMessage(websocket.CloseMessage, closeMsg)
-		}
-		return
-	}
-
-	// Calculate starting bundle and position from cursor
-	startBundleIdx := cursor / bundle.BUNDLE_SIZE
-	startPosition := cursor % bundle.BUNDLE_SIZE
-
-	// Validate starting bundle exists
-	if startBundleIdx >= len(bundles) {
-		currentRecord := len(bundles) * bundle.BUNDLE_SIZE
-		if err := streamMempool(conn, mgr, cursor, currentRecord); err != nil {
-			return
-		}
-		if !keepAlive {
-			closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "stream complete")
-			conn.WriteMessage(websocket.CloseMessage, closeMsg)
-		}
-		return
-	}
-
-	currentRecord := cursor
-
-	// Stream bundles starting from the calculated bundle
-	for i := startBundleIdx; i < len(bundles); i++ {
-		meta := bundles[i]
-
-		b, err := mgr.LoadBundle(ctx, meta.BundleNumber)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to load bundle %d: %v\n", meta.BundleNumber, err)
-			continue
-		}
-
-		startPos := 0
-		if i == startBundleIdx {
-			startPos = startPosition
-		}
-
-		for j := startPos; j < len(b.Operations); j++ {
-			op := b.Operations[j]
-
-			if err := sendOperation(conn, op); err != nil {
-				return
-			}
-
-			currentRecord++
-
-			if currentRecord%1000 == 0 {
-				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					return
-				}
-			}
-		}
-	}
-
-	// Stream mempool
-	if err := streamMempool(conn, mgr, cursor, currentRecord); err != nil {
-		return
-	}
-
-	if keepAlive {
-		// Keep connection open and wait for client to close
-		fmt.Fprintf(os.Stderr, "WebSocket: stream complete, keeping connection alive\n")
-
-		// Read messages from client (to detect close)
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	// Start goroutine to detect client disconnect
+	go func() {
+		defer close(done)
 		for {
 			_, _, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 					fmt.Fprintf(os.Stderr, "WebSocket: client closed connection\n")
 				}
-				break
+				return
 			}
 		}
-	} else {
-		// Close gracefully
-		closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "stream complete")
-		conn.WriteMessage(websocket.CloseMessage, closeMsg)
-		time.Sleep(100 * time.Millisecond)
+	}()
+
+	ctx := context.Background()
+
+	// Stream all data and keep connection alive
+	if err := streamLive(ctx, conn, mgr, cursor, done); err != nil {
+		fmt.Fprintf(os.Stderr, "WebSocket stream error: %v\n", err)
 	}
 }
 
-// streamMempool streams mempool operations if cursor is in range
-func streamMempool(conn *websocket.Conn, mgr *bundle.Manager, cursor int, currentRecord int) {
-	mempoolOps, err := mgr.GetMempoolOperations()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to get mempool operations: %v\n", err)
-		return
+// streamLive streams all historical data then continues with live updates
+func streamLive(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, startCursor int, done chan struct{}) error {
+	index := mgr.GetIndex()
+	currentRecord := startCursor
+
+	// Step 1: Stream all historical bundles
+	bundles := index.GetBundles()
+	if len(bundles) > 0 {
+		startBundleIdx := startCursor / bundle.BUNDLE_SIZE
+		startPosition := startCursor % bundle.BUNDLE_SIZE
+
+		if startBundleIdx < len(bundles) {
+			for i := startBundleIdx; i < len(bundles); i++ {
+				select {
+				case <-done:
+					return nil // Client disconnected
+				default:
+				}
+
+				meta := bundles[i]
+				b, err := mgr.LoadBundle(ctx, meta.BundleNumber)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to load bundle %d: %v\n", meta.BundleNumber, err)
+					continue
+				}
+
+				startPos := 0
+				if i == startBundleIdx {
+					startPos = startPosition
+				}
+
+				for j := startPos; j < len(b.Operations); j++ {
+					select {
+					case <-done:
+						return nil
+					default:
+					}
+
+					if err := sendOperation(conn, b.Operations[j]); err != nil {
+						return err
+					}
+					currentRecord++
+
+					if currentRecord%1000 == 0 {
+						if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
 	}
 
-	for _, op := range mempoolOps {
-		// Skip records before cursor
-		if currentRecord < cursor {
+	// Step 2: Stream current mempool
+	lastSeenMempoolCount := 0
+	mempoolOps, err := mgr.GetMempoolOperations()
+	if err == nil {
+		bundleRecordBase := len(bundles) * bundle.BUNDLE_SIZE
+
+		for i, op := range mempoolOps {
+			select {
+			case <-done:
+				return nil
+			default:
+			}
+
+			recordNum := bundleRecordBase + i
+			if recordNum < startCursor {
+				continue
+			}
+
+			if err := sendOperation(conn, op); err != nil {
+				return err
+			}
 			currentRecord++
-			continue
+			lastSeenMempoolCount = i + 1
 		}
+	}
 
-		// Send raw JSON
-		if err := sendOperation(conn, op); err != nil {
-			return
-		}
+	// Step 3: Enter live streaming loop
+	// Poll for new operations in mempool and new bundles
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 
-		currentRecord++
+	lastBundleCount := len(bundles)
 
-		// Send ping periodically
-		if currentRecord%1000 == 0 {
+	fmt.Fprintf(os.Stderr, "WebSocket: entering live mode at cursor %d\n", currentRecord)
+
+	for {
+		select {
+		case <-done:
+			fmt.Fprintf(os.Stderr, "WebSocket: client disconnected, stopping stream\n")
+			return nil
+
+		case <-ticker.C:
+			// Refresh index to check for new bundles
+			index = mgr.GetIndex()
+			bundles = index.GetBundles()
+
+			// Check if new bundles were created
+			if len(bundles) > lastBundleCount {
+				fmt.Fprintf(os.Stderr, "WebSocket: detected %d new bundle(s)\n", len(bundles)-lastBundleCount)
+
+				// Stream new bundles
+				for i := lastBundleCount; i < len(bundles); i++ {
+					select {
+					case <-done:
+						return nil
+					default:
+					}
+
+					meta := bundles[i]
+					b, err := mgr.LoadBundle(ctx, meta.BundleNumber)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Failed to load bundle %d: %v\n", meta.BundleNumber, err)
+						continue
+					}
+
+					for _, op := range b.Operations {
+						select {
+						case <-done:
+							return nil
+						default:
+						}
+
+						if err := sendOperation(conn, op); err != nil {
+							return err
+						}
+						currentRecord++
+
+						if currentRecord%1000 == 0 {
+							if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+								return err
+							}
+						}
+					}
+				}
+
+				lastBundleCount = len(bundles)
+				lastSeenMempoolCount = 0 // Reset mempool count after bundle creation
+			}
+
+			// Check for new operations in mempool
+			mempoolOps, err := mgr.GetMempoolOperations()
+			if err != nil {
+				continue
+			}
+
+			if len(mempoolOps) > lastSeenMempoolCount {
+				fmt.Fprintf(os.Stderr, "WebSocket: streaming %d new mempool operation(s)\n",
+					len(mempoolOps)-lastSeenMempoolCount)
+
+				// Stream new mempool operations
+				for i := lastSeenMempoolCount; i < len(mempoolOps); i++ {
+					select {
+					case <-done:
+						return nil
+					default:
+					}
+
+					if err := sendOperation(conn, mempoolOps[i]); err != nil {
+						return err
+					}
+					currentRecord++
+				}
+
+				lastSeenMempoolCount = len(mempoolOps)
+			}
+
+			// Send periodic ping to keep connection alive
 			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				return
+				return err
 			}
 		}
 	}
@@ -289,7 +367,9 @@ func sendOperation(conn *websocket.Conn, op plc.PLCOperation) error {
 
 	// Send as text message
 	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-		fmt.Fprintf(os.Stderr, "WebSocket write error: %v\n", err)
+		if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+			fmt.Fprintf(os.Stderr, "WebSocket write error: %v\n", err)
+		}
 		return err
 	}
 
@@ -423,8 +503,12 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	if wsEnabled {
 		fmt.Fprintf(w, "\nWebSocket Endpoints\n")
 		fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━\n")
-		fmt.Fprintf(w, "  WS   /ws?cursor=N         Stream all records from cursor N\n")
-		fmt.Fprintf(w, "                            (cursor defaults to 0)\n")
+		fmt.Fprintf(w, "  WS   /ws?cursor=N         Live stream all records from cursor N\n")
+		fmt.Fprintf(w, "                            Streams all bundles, then mempool\n")
+		fmt.Fprintf(w, "                            Continues streaming new operations live\n")
+		fmt.Fprintf(w, "                            Connection stays open until client closes\n")
+		fmt.Fprintf(w, "                            Cursor: global record number (0-based)\n")
+		fmt.Fprintf(w, "                            Example: 88410345 = bundle 8841, pos 345\n")
 	}
 
 	if syncMode {
