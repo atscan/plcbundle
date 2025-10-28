@@ -275,7 +275,24 @@ func cmdRebuild() {
 		*workers = runtime.NumCPU()
 	}
 
-	mgr, dir, err := getManager("")
+	// Create manager WITHOUT auto-rebuild (we'll do it manually)
+	dir, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Ensure directory exists
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	config := bundle.DefaultConfig(dir)
+	config.AutoRebuild = false // ← Disable auto-rebuild
+	config.RebuildWorkers = *workers
+
+	mgr, err := bundle.NewManager(config, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

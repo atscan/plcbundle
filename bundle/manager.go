@@ -97,7 +97,7 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 	}
 
 	// Perform rebuild if needed (using parallel scan)
-	if needsRebuild {
+	if needsRebuild && config.AutoRebuild {
 		config.Logger.Printf("Rebuilding index from %d bundle files...", len(bundleFiles))
 
 		// Create temporary manager for scanning
@@ -177,6 +177,10 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		if missingHashes > 0 {
 			config.Logger.Printf("⚠️  Warning: %d bundles have missing hashes", missingHashes)
 		}
+	}
+
+	if index == nil {
+		index = NewIndex()
 	}
 
 	// Initialize mempool for next bundle
