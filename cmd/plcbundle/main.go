@@ -15,7 +15,12 @@ import (
 	"github.com/atscan/plcbundle/plc"
 )
 
-const version = "0.1.0"
+// Version information (injected at build time via ldflags)
+var (
+	version   = "dev"
+	gitCommit = "unknown"
+	buildDate = "unknown"
+)
 
 func main() {
 	if len(os.Args) < 2 {
@@ -44,6 +49,8 @@ func main() {
 		cmdServe()
 	case "version":
 		fmt.Printf("plcbundle version %s\n", version)
+		fmt.Printf("  commit: %s\n", gitCommit)
+		fmt.Printf("  built:  %s\n", buildDate)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", command)
 		printUsage()
