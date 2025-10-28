@@ -68,7 +68,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(w, "plcbundle archives AT Protocol's DID PLC Directory operations into\n")
 	fmt.Fprintf(w, "immutable, cryptographically-chained bundles of 10,000 operations.\n")
-	fmt.Fprintf(w, "Each bundle is compressed (zstd), hashed (SHA-256), and linked to\n")
+	fmt.Fprintf(w, "Each bundle is hashed (SHA-256), compressed (zstd), and linked to\n")
 	fmt.Fprintf(w, "the previous bundle, creating a verifiable chain of DID operations.\n\n")
 	fmt.Fprintf(w, "More info: https://github.com/atscan/plcbundle\n\n")
 
