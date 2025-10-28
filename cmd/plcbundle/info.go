@@ -35,7 +35,7 @@ func showGeneralInfo(mgr *bundle.Manager, dir string, verbose bool, showBundles 
 		fmt.Printf("\n")
 		fmt.Printf("Get started:\n")
 		fmt.Printf("  plcbundle fetch          # Fetch bundles from PLC\n")
-		fmt.Printf("  plcbundle scan           # Scan existing bundle files\n")
+		fmt.Printf("  plcbundle rebuild        # Rebuild index from existing files\n")
 		fmt.Printf("\n")
 		return
 	}

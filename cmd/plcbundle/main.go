@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -60,8 +61,8 @@ func main() {
 	switch command {
 	case "fetch":
 		cmdFetch()
-	case "scan":
-		cmdScan()
+	case "rebuild":
+		cmdRebuild()
 	case "verify":
 		cmdVerify()
 	case "info":
@@ -88,14 +89,14 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println(`plcbundle - PLC Bundle Management Tool
+	fmt.Printf(`plcbundle %s - DID PLC Bundle Management Tool
 
 Usage:
   plcbundle <command> [options]
 
 Commands:
   fetch      Fetch next bundle from PLC directory
-  scan       Scan current directory for bundles (incremental)
+  rebuild    Rebuild index from existing bundle files
   verify     Verify bundle integrity
   info       Show bundle information
   export     Export operations from bundles
@@ -105,8 +106,12 @@ Commands:
   compare    Compare local index with target index
   version    Show version
 
-The tool works with the current directory.
-Bundle directory is detected by presence of .jsonl.zst files or plc_bundles.json.`)
+Security Model:
+  Bundles are cryptographically chained but require external verification:
+  - Verify against original PLC directory
+  - Compare with multiple independent mirrors
+  - Check published root and head hashes
+  - Anyone can reproduce bundles from PLC directory`, version)
 }
 
 // getManager creates or opens a bundle manager in the detected directory
@@ -258,9 +263,17 @@ func isEndOfDataError(err error) bool {
 	return false
 }
 
-func cmdScan() {
-	fs := flag.NewFlagSet("scan", flag.ExitOnError)
+func cmdRebuild() {
+	fs := flag.NewFlagSet("rebuild", flag.ExitOnError)
+	verbose := fs.Bool("v", false, "verbose output")
+	workers := fs.Int("workers", 4, "number of parallel workers (0 = CPU count)")
+	noProgress := fs.Bool("no-progress", false, "disable progress bar")
 	fs.Parse(os.Args[2:])
+
+	// Auto-detect CPU count
+	if *workers == 0 {
+		*workers = runtime.NumCPU()
+	}
 
 	mgr, dir, err := getManager("")
 	if err != nil {
@@ -269,7 +282,8 @@ func cmdScan() {
 	}
 	defer mgr.Close()
 
-	fmt.Printf("Scanning: %s\n", dir)
+	fmt.Printf("Rebuilding index from: %s\n", dir)
+	fmt.Printf("Using %d workers\n", *workers)
 
 	// Find all bundle files
 	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl.zst"))
@@ -283,53 +297,90 @@ func cmdScan() {
 		return
 	}
 
-	// Parse and sort bundle numbers
-	var bundleNumbers []int
-	for _, file := range files {
-		base := filepath.Base(file)
-		var num int
-		if _, err := fmt.Sscanf(base, "%06d.jsonl.zst", &num); err == nil {
-			bundleNumbers = append(bundleNumbers, num)
+	fmt.Printf("Found %d bundle files\n", len(files))
+	fmt.Printf("\n")
+
+	start := time.Now()
+
+	// Create progress bar
+	var progress *ProgressBar
+	var progressCallback func(int, int)
+
+	if !*noProgress {
+		progress = NewProgressBar(len(files))
+		progressCallback = func(current, total int) {
+			progress.Set(current)
 		}
+		fmt.Println("Processing bundles:")
 	}
 
-	// Sort
-	sort.Ints(bundleNumbers)
-
-	skippedCount := 0
-	newCount := 0
-
-	fmt.Printf("Found %d bundle files\n", len(bundleNumbers))
-
-	// Process each bundle incrementally
-	for _, num := range bundleNumbers {
-		// Skip if already indexed
-		if mgr.IsBundleIndexed(num) {
-			skippedCount++
-			continue
+	// Use parallel scan
+	result, err := mgr.ScanDirectoryParallel(*workers, progressCallback)
+	if err != nil {
+		if progress != nil {
+			progress.Finish()
 		}
-
-		fmt.Printf("  Processing bundle %06d...", num)
-
-		path := filepath.Join(dir, fmt.Sprintf("%06d.jsonl.zst", num))
-
-		// ✅ Use Manager - single point of entry
-		meta, err := mgr.ScanAndIndexBundle(path, num)
-		if err != nil {
-			fmt.Printf(" ERROR: %v\n", err)
-			continue
-		}
-
-		newCount++
-		fmt.Printf(" ✓ (%d ops, %d DIDs)\n", meta.OperationCount, meta.DIDCount)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
+
+	// Finish progress bar
+	if progress != nil {
+		progress.Finish()
+	}
+
+	elapsed := time.Since(start)
 
 	fmt.Printf("\n")
-	fmt.Printf("✓ Scan complete\n")
-	fmt.Printf("  Total bundles: %d\n", len(bundleNumbers))
-	fmt.Printf("  Already indexed: %d\n", skippedCount)
-	fmt.Printf("  Newly scanned: %d\n", newCount)
-	fmt.Printf("  Index: %s\n", filepath.Join(dir, bundle.INDEX_FILE))
+	fmt.Printf("✓ Index rebuilt in %s\n", elapsed.Round(time.Millisecond))
+	fmt.Printf("  Total bundles:      %d\n", result.BundleCount)
+	fmt.Printf("  Compressed size:    %s\n", formatBytes(result.TotalSize))
+	fmt.Printf("  Uncompressed size:  %s\n", formatBytes(result.TotalUncompressed))
+
+	// Calculate compression ratio
+	if result.TotalUncompressed > 0 {
+		ratio := float64(result.TotalUncompressed) / float64(result.TotalSize)
+		fmt.Printf("  Compression ratio:  %.2fx\n", ratio)
+	}
+
+	fmt.Printf("  Average speed:      %.1f bundles/sec\n", float64(result.BundleCount)/elapsed.Seconds())
+
+	if elapsed.Seconds() > 0 {
+		compressedThroughput := float64(result.TotalSize) / elapsed.Seconds() / (1024 * 1024)
+		uncompressedThroughput := float64(result.TotalUncompressed) / elapsed.Seconds() / (1024 * 1024)
+		fmt.Printf("  Throughput (compressed):   %.1f MB/s\n", compressedThroughput)
+		fmt.Printf("  Throughput (uncompressed): %.1f MB/s\n", uncompressedThroughput)
+	}
+
+	fmt.Printf("  Index file:         %s\n", filepath.Join(dir, bundle.INDEX_FILE))
+
+	if len(result.MissingGaps) > 0 {
+		fmt.Printf("  ⚠️  Missing gaps:     %d bundles\n", len(result.MissingGaps))
+	}
+
+	// Verify chain if requested
+	if *verbose {
+		fmt.Printf("\n")
+		fmt.Printf("Verifying chain integrity...\n")
+
+		ctx := context.Background()
+		verifyResult, err := mgr.VerifyChain(ctx)
+		if err != nil {
+			fmt.Printf("  ⚠️  Verification error: %v\n", err)
+		} else if verifyResult.Valid {
+			fmt.Printf("  ✓ Chain is valid (%d bundles verified)\n", len(verifyResult.VerifiedBundles))
+
+			// Show head hash
+			index := mgr.GetIndex()
+			if lastMeta := index.GetLastBundle(); lastMeta != nil {
+				fmt.Printf("  Chain head: %s...\n", lastMeta.ChainHash[:16])
+			}
+		} else {
+			fmt.Printf("  ✗ Chain verification failed\n")
+			fmt.Printf("  Broken at: bundle %06d\n", verifyResult.BrokenAt)
+			fmt.Printf("  Error: %s\n", verifyResult.Error)
+		}
+	}
 }
 
 func cmdVerify() {

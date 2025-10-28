@@ -24,6 +24,179 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syncMode bool, wsEnabled bool) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+	index := mgr.GetIndex()
+	stats := index.GetStats()
+	bundleCount := stats["bundle_count"].(int)
+
+	baseURL := getBaseURL(r)
+	wsURL := getWSURL(r)
+
+	fmt.Fprintf(w, `
+
+	⠀⠀⠀⠀⠀⠀⠀⠀⠀⠄⠀⡀⠀⠀⠀⠀⠀⠀⢀⠀⠀⡀⠀⢀⠀⢀⡀⣤⡢⣤⡤⡀⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⡄⡄⠐⡀⠈⣀⠀⡠⡠⠀⣢⣆⢌⡾⢙⠺⢽⠾⡋⣻⡷⡫⢵⣭⢦⣴⠦⠀⢠⠀⠀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⢠⣤⣽⣥⡈⠧⣂⢧⢾⠕⠞⠡⠊⠁⣐⠉⠀⠉⢍⠀⠉⠌⡉⠀⠂⠁⠱⠉⠁⢝⠻⠎⣬⢌⡌⣬⣡⣀⣢⣄⡄⠀⡀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⢀⢸⣿⣿⢿⣾⣯⣑⢄⡂⠀⠄⠂⠀⠀⢀⠀⠀⠐⠀⠀⠀⠀⠀⠀⠀⠀⠄⠐⠀⠀⠀⠀⣄⠭⠂⠈⠜⣩⣿⢝⠃⠀⠁⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⢀⣻⡟⠏⠀⠚⠈⠚⡉⡝⢶⣱⢤⣅⠈⠀⠄⠀⠀⠀⠀⠀⠠⠀⠀⡂⠐⣤⢕⡪⢼⣈⡹⡇⠏⠏⠋⠅⢃⣪⡏⡇⡍⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠺⣻⡄⠀⠀⠀⢠⠌⠃⠐⠉⢡⠱⠧⠝⡯⣮⢶⣴⣤⡆⢐⣣⢅⣮⡟⠦⠍⠉⠀⠁⠐⠀⠀⠀⠄⠐⠡⣽⡸⣎⢁⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⢈⡻⣧⠀⠁⠐⠀⠀⠀⠀⠀⠀⠊⠀⠕⢀⡉⠈⡫⠽⡿⡟⠿⠟⠁⠀⠀⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⠬⠥⣋⡯⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⡀⣾⡍⠕⡀⠀⠀⠀⠄⠠⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠥⣤⢌⠀⠀⠀⠀⠀⠀⠀⠀⠀⠁⠀⠀⠄⢀⠀⢝⢞⣫⡆⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⣽⡶⡄⠐⡀⠀⠀⠀⠀⠀⠀⢀⠀⠄⠀⠀⠀⠄⠁⠇⣷⡆⠀⠀⠀⢀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡸⢝⣮⠍⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⢀⠀⢾⣷⠀⠠⡀⠀⠀⠀⠀⢀⠀⠀⠀⠀⠀⠁⡁⠀⠀⣾⡥⠖⠀⠀⠀⠂⠀⠀⠀⠀⠀⠁⠀⡀⠁⠀⠀⠻⢳⣻⢄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⣞⡙⠨⣀⠠⠄⠀⠂⠀⠀⠀⠈⢀⠀⠀⠀⠀⠀⠤⢚⢢⣟⠀⠀⠀⠀⡐⠀⠀⡀⠀⠀⠀⠀⠁⠈⠌⠊⣯⣮⡏⠡⠂⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⣻⡟⡄⡡⣄⠀⠠⠀⠀⡅⠀⠐⠀⡀⠀⡀⠀⠄⠈⠃⠳⠪⠤⠀⠀⠀⠀⡀⠀⠂⠀⠀⠀⠁⠈⢠⣠⠒⠻⣻⡧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠪⡎⠠⢌⠑⡀⠂⠀⠄⠠⠀⠠⠀⠁⡀⠠⠠⡀⣀⠜⢏⡅⠀⠀⡀⠁⠀⠀⠁⠁⠐⠄⡀⢀⠂⠀⠄⢑⣿⣿⣿⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠼⣻⠧⣣⣀⠐⠨⠁⠕⢈⢀⢀⡁⠀⠈⠠⢀⠀⠐⠜⣽⡗⡤⠀⠂⠀⠠⠀⢂⠠⠀⠁⠄⠀⠔⠀⠑⣨⣿⢯⠋⡅⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⡚⣷⣭⠎⢃⡗⠄⡄⢀⠁⠀⠅⢀⢅⡀⠠⠀⢠⡀⡩⠷⢇⠀⡀⠄⡠⠤⠆⣀⡀⠄⠉⣠⠃⠴⠀⠈⢁⣿⡛⡯⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠘⡬⡿⣿⡏⡻⡯⠌⢁⢛⠠⠓⠐⠐⠐⠌⠃⠋⠂⡢⢰⣈⢏⣰⠂⠈⠀⠠⠒⠡⠌⠫⠭⠩⠢⡬⠆⠿⢷⢿⡽⡧⠉⠊⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠺⣷⣺⣗⣿⡶⡎⡅⣣⢎⠠⡅⣢⡖⠴⠬⡈⠂⡨⢡⠾⣣⣢⠀⠀⡹⠄⡄⠄⡇⣰⡖⡊⠔⢹⣄⣿⣭⣵⣿⢷⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠩⣿⣿⣲⣿⣷⣟⣼⠟⣬⢉⡠⣪⢜⣂⣁⠥⠓⠚⡁⢶⣷⣠⠂⡄⡢⣀⡐⠧⢆⣒⡲⡳⡫⢟⡃⢪⡧⣟⡟⣯⠐⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⢺⠟⢿⢟⢻⡗⡮⡿⣲⢷⣆⣏⣇⡧⣄⢖⠾⡷⣿⣤⢳⢷⣣⣦⡜⠗⣭⢂⠩⣹⢿⡲⢎⡧⣕⣖⣓⣽⡿⡖⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠂⠂⠏⠿⢻⣥⡪⢽⣳⣳⣥⡶⣫⣍⢐⣥⣻⣾⡻⣅⢭⡴⢭⣿⠕⣧⡭⣞⣻⣣⣻⢿⠟⠛⠙⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠄⠋⠫⠯⣍⢻⣿⣿⣷⣕⣵⣹⣽⣿⣷⣇⡏⣿⡿⣍⡝⠵⠯⠁⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠐⠠⠁⠋⢣⠓⡍⣫⠹⣿⣿⣷⡿⠯⠺⠁⠁⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠋⢀⠋⢈⡿⠿⠁⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                                                                                            
+
+                  plcbundle server (%s)
+
+`, version)
+
+	fmt.Fprintf(w, "What is PLC Bundle?\n")
+	fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━━\n")
+	fmt.Fprintf(w, "plcbundle archives AT Protocol's DID PLC Directory operations into\n")
+	fmt.Fprintf(w, "immutable, cryptographically-chained bundles of 10,000 operations.\n")
+	fmt.Fprintf(w, "Each bundle is compressed (zstd), hashed (SHA-256), and linked to\n")
+	fmt.Fprintf(w, "the previous bundle, creating a verifiable chain of DID operations.\n\n")
+	fmt.Fprintf(w, "More info: https://github.com/atscan/plcbundle\n\n")
+
+	fmt.Fprintf(w, "Server Stats\n")
+	fmt.Fprintf(w, "━━━━━━━━━━━━\n")
+	fmt.Fprintf(w, "  Bundle count:  %d\n", bundleCount)
+	fmt.Fprintf(w, "  Sync mode:     %v\n", syncMode)
+	fmt.Fprintf(w, "  WebSocket:     %v\n", wsEnabled)
+
+	if bundleCount > 0 {
+		firstBundle := stats["first_bundle"].(int)
+		lastBundle := stats["last_bundle"].(int)
+		totalSize := stats["total_size"].(int64)
+
+		fmt.Fprintf(w, "  Range:         %06d - %06d\n", firstBundle, lastBundle)
+		fmt.Fprintf(w, "  Total size:    %.2f MB\n", float64(totalSize)/(1024*1024))
+		fmt.Fprintf(w, "  Updated:       %s\n", stats["updated_at"].(time.Time).Format("2006-01-02 15:04:05"))
+
+		if gaps, ok := stats["gaps"].(int); ok && gaps > 0 {
+			fmt.Fprintf(w, "  ⚠ Gaps:        %d missing bundles\n", gaps)
+		}
+
+		// Get first and last bundle metadata for hashes
+		firstMeta, err := index.GetBundle(firstBundle)
+		if err == nil {
+			fmt.Fprintf(w, "\n  Root: %s\n", firstMeta.Hash)
+		}
+
+		lastMeta, err := index.GetBundle(lastBundle)
+		if err == nil {
+			fmt.Fprintf(w, "  Head: %s\n", lastMeta.Hash)
+		}
+	}
+
+	// Show mempool stats if sync mode
+	if syncMode {
+		mempoolStats := mgr.GetMempoolStats()
+		count := mempoolStats["count"].(int)
+		targetBundle := mempoolStats["target_bundle"].(int)
+		canCreate := mempoolStats["can_create_bundle"].(bool)
+
+		fmt.Fprintf(w, "\nMempool Stats\n")
+		fmt.Fprintf(w, "━━━━━━━━━━━━━\n")
+		fmt.Fprintf(w, "  Target bundle:     %06d\n", targetBundle)
+		fmt.Fprintf(w, "  Operations:        %d / %d\n", count, bundle.BUNDLE_SIZE)
+		fmt.Fprintf(w, "  Can create bundle: %v\n", canCreate)
+
+		if count > 0 {
+			progress := float64(count) / float64(bundle.BUNDLE_SIZE) * 100
+			fmt.Fprintf(w, "  Progress:          %.1f%%\n", progress)
+
+			// ASCII Progress bar
+			barWidth := 50
+			filled := int(float64(barWidth) * float64(count) / float64(bundle.BUNDLE_SIZE))
+			if filled > barWidth {
+				filled = barWidth
+			}
+			bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+			fmt.Fprintf(w, "  [%s]\n", bar)
+
+			if firstTime, ok := mempoolStats["first_time"].(time.Time); ok {
+				fmt.Fprintf(w, "  First op:          %s\n", firstTime.Format("2006-01-02 15:04:05"))
+			}
+			if lastTime, ok := mempoolStats["last_time"].(time.Time); ok {
+				fmt.Fprintf(w, "  Last op:           %s\n", lastTime.Format("2006-01-02 15:04:05"))
+			}
+		} else {
+			fmt.Fprintf(w, "  (empty)\n")
+		}
+	}
+
+	fmt.Fprintf(w, "\nAPI Endpoints\n")
+	fmt.Fprintf(w, "━━━━━━━━━━━━━\n")
+	fmt.Fprintf(w, "  GET  /                    This info page\n")
+	fmt.Fprintf(w, "  GET  /index.json          Full bundle index\n")
+	fmt.Fprintf(w, "  GET  /bundle/:number      Bundle metadata (JSON)\n")
+	fmt.Fprintf(w, "  GET  /data/:number        Raw bundle (zstd compressed)\n")
+	fmt.Fprintf(w, "  GET  /jsonl/:number       Decompressed JSONL stream\n")
+
+	if wsEnabled {
+		fmt.Fprintf(w, "\nWebSocket Endpoints\n")
+		fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━\n")
+		fmt.Fprintf(w, "  WS   /ws?cursor=N         Live stream all records from cursor N\n")
+		fmt.Fprintf(w, "                            Streams all bundles, then mempool\n")
+		fmt.Fprintf(w, "                            Continues streaming new operations live\n")
+		fmt.Fprintf(w, "                            Connection stays open until client closes\n")
+		fmt.Fprintf(w, "                            Cursor: global record number (0-based)\n")
+		fmt.Fprintf(w, "                            Example: 88410345 = bundle 8841, pos 345\n")
+	}
+
+	if syncMode {
+		fmt.Fprintf(w, "\nSync Endpoints\n")
+		fmt.Fprintf(w, "━━━━━━━━━━━━━━\n")
+		fmt.Fprintf(w, "  GET  /sync                Sync status & mempool info (JSON)\n")
+		fmt.Fprintf(w, "  GET  /sync/mempool        Mempool operations (JSONL)\n")
+	}
+
+	fmt.Fprintf(w, "\nExamples\n")
+	fmt.Fprintf(w, "━━━━━━━━\n")
+	fmt.Fprintf(w, "  # Get bundle metadata\n")
+	fmt.Fprintf(w, "  curl %s/bundle/1\n\n", baseURL)
+	fmt.Fprintf(w, "  # Download compressed bundle 42\n")
+	fmt.Fprintf(w, "  curl %s/data/42 -o 000042.jsonl.zst\n\n", baseURL)
+	fmt.Fprintf(w, "  # Stream decompressed operations from bundle 42\n")
+	fmt.Fprintf(w, "  curl %s/jsonl/1\n\n", baseURL)
+
+	if wsEnabled {
+		fmt.Fprintf(w, "  # Stream all operations via WebSocket (from beginning)\n")
+		fmt.Fprintf(w, "  websocat %s/ws\n\n", wsURL)
+		fmt.Fprintf(w, "  # Stream from cursor 10000\n")
+		fmt.Fprintf(w, "  websocat '%s/ws?cursor=10000'\n\n", wsURL)
+		fmt.Fprintf(w, "  # Stream and save to file\n")
+		fmt.Fprintf(w, "  websocat %s/ws > all_operations.jsonl\n\n", wsURL)
+		fmt.Fprintf(w, "  # Stream with jq for pretty printing\n")
+		fmt.Fprintf(w, "  websocat %s/ws | jq .\n\n", wsURL)
+	}
+
+	if syncMode {
+		fmt.Fprintf(w, "  # Get sync status\n")
+		fmt.Fprintf(w, "  curl %s/sync\n\n", baseURL)
+		fmt.Fprintf(w, "  # Get mempool operations\n")
+		fmt.Fprintf(w, "  curl %s/sync/mempool\n\n", baseURL)
+	}
+
+	fmt.Fprintf(w, "\n────────────────────────────────────────────────────────────────\n")
+	fmt.Fprintf(w, "plcbundle %s | https://github.com/atscan/plcbundle\n", version)
+}
+
 // getScheme returns the appropriate HTTP scheme (http or https)
 func getScheme(r *http.Request) string {
 	// Check if TLS is active
@@ -374,179 +547,6 @@ func sendOperation(conn *websocket.Conn, op plc.PLCOperation) error {
 	}
 
 	return nil
-}
-
-func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syncMode bool, wsEnabled bool) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-
-	index := mgr.GetIndex()
-	stats := index.GetStats()
-	bundleCount := stats["bundle_count"].(int)
-
-	baseURL := getBaseURL(r)
-	wsURL := getWSURL(r)
-
-	fmt.Fprintf(w, `
-
-	⠀⠀⠀⠀⠀⠀⠀⠀⠀⠄⠀⡀⠀⠀⠀⠀⠀⠀⢀⠀⠀⡀⠀⢀⠀⢀⡀⣤⡢⣤⡤⡀⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⡄⡄⠐⡀⠈⣀⠀⡠⡠⠀⣢⣆⢌⡾⢙⠺⢽⠾⡋⣻⡷⡫⢵⣭⢦⣴⠦⠀⢠⠀⠀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⢠⣤⣽⣥⡈⠧⣂⢧⢾⠕⠞⠡⠊⠁⣐⠉⠀⠉⢍⠀⠉⠌⡉⠀⠂⠁⠱⠉⠁⢝⠻⠎⣬⢌⡌⣬⣡⣀⣢⣄⡄⠀⡀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⢀⢸⣿⣿⢿⣾⣯⣑⢄⡂⠀⠄⠂⠀⠀⢀⠀⠀⠐⠀⠀⠀⠀⠀⠀⠀⠀⠄⠐⠀⠀⠀⠀⣄⠭⠂⠈⠜⣩⣿⢝⠃⠀⠁⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⢀⣻⡟⠏⠀⠚⠈⠚⡉⡝⢶⣱⢤⣅⠈⠀⠄⠀⠀⠀⠀⠀⠠⠀⠀⡂⠐⣤⢕⡪⢼⣈⡹⡇⠏⠏⠋⠅⢃⣪⡏⡇⡍⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠺⣻⡄⠀⠀⠀⢠⠌⠃⠐⠉⢡⠱⠧⠝⡯⣮⢶⣴⣤⡆⢐⣣⢅⣮⡟⠦⠍⠉⠀⠁⠐⠀⠀⠀⠄⠐⠡⣽⡸⣎⢁⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⢈⡻⣧⠀⠁⠐⠀⠀⠀⠀⠀⠀⠊⠀⠕⢀⡉⠈⡫⠽⡿⡟⠿⠟⠁⠀⠀⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⠬⠥⣋⡯⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⡀⣾⡍⠕⡀⠀⠀⠀⠄⠠⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠥⣤⢌⠀⠀⠀⠀⠀⠀⠀⠀⠀⠁⠀⠀⠄⢀⠀⢝⢞⣫⡆⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⣽⡶⡄⠐⡀⠀⠀⠀⠀⠀⠀⢀⠀⠄⠀⠀⠀⠄⠁⠇⣷⡆⠀⠀⠀⢀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡸⢝⣮⠍⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⢀⠀⢾⣷⠀⠠⡀⠀⠀⠀⠀⢀⠀⠀⠀⠀⠀⠁⡁⠀⠀⣾⡥⠖⠀⠀⠀⠂⠀⠀⠀⠀⠀⠁⠀⡀⠁⠀⠀⠻⢳⣻⢄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⣞⡙⠨⣀⠠⠄⠀⠂⠀⠀⠀⠈⢀⠀⠀⠀⠀⠀⠤⢚⢢⣟⠀⠀⠀⠀⡐⠀⠀⡀⠀⠀⠀⠀⠁⠈⠌⠊⣯⣮⡏⠡⠂⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⣻⡟⡄⡡⣄⠀⠠⠀⠀⡅⠀⠐⠀⡀⠀⡀⠀⠄⠈⠃⠳⠪⠤⠀⠀⠀⠀⡀⠀⠂⠀⠀⠀⠁⠈⢠⣠⠒⠻⣻⡧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠪⡎⠠⢌⠑⡀⠂⠀⠄⠠⠀⠠⠀⠁⡀⠠⠠⡀⣀⠜⢏⡅⠀⠀⡀⠁⠀⠀⠁⠁⠐⠄⡀⢀⠂⠀⠄⢑⣿⣿⣿⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠼⣻⠧⣣⣀⠐⠨⠁⠕⢈⢀⢀⡁⠀⠈⠠⢀⠀⠐⠜⣽⡗⡤⠀⠂⠀⠠⠀⢂⠠⠀⠁⠄⠀⠔⠀⠑⣨⣿⢯⠋⡅⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⡚⣷⣭⠎⢃⡗⠄⡄⢀⠁⠀⠅⢀⢅⡀⠠⠀⢠⡀⡩⠷⢇⠀⡀⠄⡠⠤⠆⣀⡀⠄⠉⣠⠃⠴⠀⠈⢁⣿⡛⡯⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠘⡬⡿⣿⡏⡻⡯⠌⢁⢛⠠⠓⠐⠐⠐⠌⠃⠋⠂⡢⢰⣈⢏⣰⠂⠈⠀⠠⠒⠡⠌⠫⠭⠩⠢⡬⠆⠿⢷⢿⡽⡧⠉⠊⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠺⣷⣺⣗⣿⡶⡎⡅⣣⢎⠠⡅⣢⡖⠴⠬⡈⠂⡨⢡⠾⣣⣢⠀⠀⡹⠄⡄⠄⡇⣰⡖⡊⠔⢹⣄⣿⣭⣵⣿⢷⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠩⣿⣿⣲⣿⣷⣟⣼⠟⣬⢉⡠⣪⢜⣂⣁⠥⠓⠚⡁⢶⣷⣠⠂⡄⡢⣀⡐⠧⢆⣒⡲⡳⡫⢟⡃⢪⡧⣟⡟⣯⠐⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⢺⠟⢿⢟⢻⡗⡮⡿⣲⢷⣆⣏⣇⡧⣄⢖⠾⡷⣿⣤⢳⢷⣣⣦⡜⠗⣭⢂⠩⣹⢿⡲⢎⡧⣕⣖⣓⣽⡿⡖⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠂⠂⠏⠿⢻⣥⡪⢽⣳⣳⣥⡶⣫⣍⢐⣥⣻⣾⡻⣅⢭⡴⢭⣿⠕⣧⡭⣞⣻⣣⣻⢿⠟⠛⠙⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠄⠋⠫⠯⣍⢻⣿⣿⣷⣕⣵⣹⣽⣿⣷⣇⡏⣿⡿⣍⡝⠵⠯⠁⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠐⠠⠁⠋⢣⠓⡍⣫⠹⣿⣿⣷⡿⠯⠺⠁⠁⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠋⢀⠋⢈⡿⠿⠁⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                                                                                            
-
-                  plcbundle server (%s)
-
-`, version)
-
-	fmt.Fprintf(w, "What is PLC Bundle?\n")
-	fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Fprintf(w, "plcbundle archives AT Protocol's PLC directory operations into\n")
-	fmt.Fprintf(w, "immutable, cryptographically-chained bundles of 10,000 operations.\n")
-	fmt.Fprintf(w, "Each bundle is compressed (zstd), hashed (SHA-256), and linked to\n")
-	fmt.Fprintf(w, "the previous bundle, creating a verifiable chain of DID operations.\n\n")
-	fmt.Fprintf(w, "More info: https://github.com/atscan/plcbundle\n\n")
-
-	fmt.Fprintf(w, "Server Stats\n")
-	fmt.Fprintf(w, "━━━━━━━━━━━━\n")
-	fmt.Fprintf(w, "  Bundle count:  %d\n", bundleCount)
-	fmt.Fprintf(w, "  Sync mode:     %v\n", syncMode)
-	fmt.Fprintf(w, "  WebSocket:     %v\n", wsEnabled)
-
-	if bundleCount > 0 {
-		firstBundle := stats["first_bundle"].(int)
-		lastBundle := stats["last_bundle"].(int)
-		totalSize := stats["total_size"].(int64)
-
-		fmt.Fprintf(w, "  Range:         %06d - %06d\n", firstBundle, lastBundle)
-		fmt.Fprintf(w, "  Total size:    %.2f MB\n", float64(totalSize)/(1024*1024))
-		fmt.Fprintf(w, "  Updated:       %s\n", stats["updated_at"].(time.Time).Format("2006-01-02 15:04:05"))
-
-		if gaps, ok := stats["gaps"].(int); ok && gaps > 0 {
-			fmt.Fprintf(w, "  ⚠ Gaps:        %d missing bundles\n", gaps)
-		}
-
-		// Get first and last bundle metadata for hashes
-		firstMeta, err := index.GetBundle(firstBundle)
-		if err == nil {
-			fmt.Fprintf(w, "\n  Root: %s\n", firstMeta.Hash)
-		}
-
-		lastMeta, err := index.GetBundle(lastBundle)
-		if err == nil {
-			fmt.Fprintf(w, "  Head: %s\n", lastMeta.Hash)
-		}
-	}
-
-	// Show mempool stats if sync mode
-	if syncMode {
-		mempoolStats := mgr.GetMempoolStats()
-		count := mempoolStats["count"].(int)
-		targetBundle := mempoolStats["target_bundle"].(int)
-		canCreate := mempoolStats["can_create_bundle"].(bool)
-
-		fmt.Fprintf(w, "\nMempool Stats\n")
-		fmt.Fprintf(w, "━━━━━━━━━━━━━\n")
-		fmt.Fprintf(w, "  Target bundle:     %06d\n", targetBundle)
-		fmt.Fprintf(w, "  Operations:        %d / %d\n", count, bundle.BUNDLE_SIZE)
-		fmt.Fprintf(w, "  Can create bundle: %v\n", canCreate)
-
-		if count > 0 {
-			progress := float64(count) / float64(bundle.BUNDLE_SIZE) * 100
-			fmt.Fprintf(w, "  Progress:          %.1f%%\n", progress)
-
-			// ASCII Progress bar
-			barWidth := 50
-			filled := int(float64(barWidth) * float64(count) / float64(bundle.BUNDLE_SIZE))
-			if filled > barWidth {
-				filled = barWidth
-			}
-			bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
-			fmt.Fprintf(w, "  [%s]\n", bar)
-
-			if firstTime, ok := mempoolStats["first_time"].(time.Time); ok {
-				fmt.Fprintf(w, "  First op:          %s\n", firstTime.Format("2006-01-02 15:04:05"))
-			}
-			if lastTime, ok := mempoolStats["last_time"].(time.Time); ok {
-				fmt.Fprintf(w, "  Last op:           %s\n", lastTime.Format("2006-01-02 15:04:05"))
-			}
-		} else {
-			fmt.Fprintf(w, "  (empty)\n")
-		}
-	}
-
-	fmt.Fprintf(w, "\nAPI Endpoints\n")
-	fmt.Fprintf(w, "━━━━━━━━━━━━━\n")
-	fmt.Fprintf(w, "  GET  /                    This info page\n")
-	fmt.Fprintf(w, "  GET  /index.json          Full bundle index\n")
-	fmt.Fprintf(w, "  GET  /bundle/:number      Bundle metadata (JSON)\n")
-	fmt.Fprintf(w, "  GET  /data/:number        Raw bundle (zstd compressed)\n")
-	fmt.Fprintf(w, "  GET  /jsonl/:number       Decompressed JSONL stream\n")
-
-	if wsEnabled {
-		fmt.Fprintf(w, "\nWebSocket Endpoints\n")
-		fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━\n")
-		fmt.Fprintf(w, "  WS   /ws?cursor=N         Live stream all records from cursor N\n")
-		fmt.Fprintf(w, "                            Streams all bundles, then mempool\n")
-		fmt.Fprintf(w, "                            Continues streaming new operations live\n")
-		fmt.Fprintf(w, "                            Connection stays open until client closes\n")
-		fmt.Fprintf(w, "                            Cursor: global record number (0-based)\n")
-		fmt.Fprintf(w, "                            Example: 88410345 = bundle 8841, pos 345\n")
-	}
-
-	if syncMode {
-		fmt.Fprintf(w, "\nSync Endpoints\n")
-		fmt.Fprintf(w, "━━━━━━━━━━━━━━\n")
-		fmt.Fprintf(w, "  GET  /sync                Sync status & mempool info (JSON)\n")
-		fmt.Fprintf(w, "  GET  /sync/mempool        Mempool operations (JSONL)\n")
-	}
-
-	fmt.Fprintf(w, "\nExamples\n")
-	fmt.Fprintf(w, "━━━━━━━━\n")
-	fmt.Fprintf(w, "  # Get bundle metadata\n")
-	fmt.Fprintf(w, "  curl %s/bundle/1\n\n", baseURL)
-	fmt.Fprintf(w, "  # Download compressed bundle 42\n")
-	fmt.Fprintf(w, "  curl %s/data/42 -o 000042.jsonl.zst\n\n", baseURL)
-	fmt.Fprintf(w, "  # Stream decompressed operations from bundle 42\n")
-	fmt.Fprintf(w, "  curl %s/jsonl/1\n\n", baseURL)
-
-	if wsEnabled {
-		fmt.Fprintf(w, "  # Stream all operations via WebSocket (from beginning)\n")
-		fmt.Fprintf(w, "  websocat %s/ws\n\n", wsURL)
-		fmt.Fprintf(w, "  # Stream from cursor 10000\n")
-		fmt.Fprintf(w, "  websocat '%s/ws?cursor=10000'\n\n", wsURL)
-		fmt.Fprintf(w, "  # Stream and save to file\n")
-		fmt.Fprintf(w, "  websocat %s/ws > all_operations.jsonl\n\n", wsURL)
-		fmt.Fprintf(w, "  # Stream with jq for pretty printing\n")
-		fmt.Fprintf(w, "  websocat %s/ws | jq .\n\n", wsURL)
-	}
-
-	if syncMode {
-		fmt.Fprintf(w, "  # Get sync status\n")
-		fmt.Fprintf(w, "  curl %s/sync\n\n", baseURL)
-		fmt.Fprintf(w, "  # Get mempool operations\n")
-		fmt.Fprintf(w, "  curl %s/sync/mempool\n\n", baseURL)
-	}
-
-	fmt.Fprintf(w, "\n────────────────────────────────────────────────────────────────\n")
-	fmt.Fprintf(w, "plcbundle %s | https://github.com/atscan/plcbundle\n", version)
 }
 
 // handleSync returns sync status and mempool info as JSON

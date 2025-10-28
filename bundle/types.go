@@ -15,20 +15,24 @@ const (
 
 // Bundle represents a PLC bundle
 type Bundle struct {
-	BundleNumber     int                `json:"bundle_number"`
-	StartTime        time.Time          `json:"start_time"`
-	EndTime          time.Time          `json:"end_time"`
-	Operations       []plc.PLCOperation `json:"-"` // Not serialized to JSON
-	DIDCount         int                `json:"did_count"`
-	Hash             string             `json:"hash"`
-	CompressedHash   string             `json:"compressed_hash"`
-	CompressedSize   int64              `json:"compressed_size"`
-	UncompressedSize int64              `json:"uncompressed_size"`
-	Cursor           string             `json:"cursor"`
-	PrevBundleHash   string             `json:"prev_bundle_hash,omitempty"`
-	BoundaryCIDs     []string           `json:"boundary_cids,omitempty"`
-	Compressed       bool               `json:"compressed"`
-	CreatedAt        time.Time          `json:"created_at"`
+	BundleNumber int                `json:"bundle_number"`
+	StartTime    time.Time          `json:"start_time"`
+	EndTime      time.Time          `json:"end_time"`
+	Operations   []plc.PLCOperation `json:"-"`
+	DIDCount     int                `json:"did_count"`
+
+	Hash      string `json:"hash"`
+	ChainHash string `json:"chain_hash"`
+
+	CompressedHash   string    `json:"compressed_hash"`
+	CompressedSize   int64     `json:"compressed_size"`
+	UncompressedSize int64     `json:"uncompressed_size"`
+	Cursor           string    `json:"cursor"`
+	PrevBundleHash   string    `json:"prev_bundle_hash,omitempty"`
+	PrevChainHash    string    `json:"prev_chain_hash,omitempty"`
+	BoundaryCIDs     []string  `json:"boundary_cids,omitempty"`
+	Compressed       bool      `json:"compressed"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // GetFilePath returns the file path for this bundle
@@ -85,19 +89,27 @@ func (b *Bundle) Validate() error {
 	return nil
 }
 
-// BundleMetadata contains metadata about a bundle (for index)
 type BundleMetadata struct {
-	BundleNumber     int       `json:"bundle_number"`
-	StartTime        time.Time `json:"start_time"`
-	EndTime          time.Time `json:"end_time"`
-	OperationCount   int       `json:"operation_count"`
-	DIDCount         int       `json:"did_count"`
-	Hash             string    `json:"hash"`
+	BundleNumber   int       `json:"bundle_number"`
+	StartTime      time.Time `json:"start_time"`
+	EndTime        time.Time `json:"end_time"`
+	OperationCount int       `json:"operation_count"`
+	DIDCount       int       `json:"did_count"`
+
+	// Content hash (operations only)
+	Hash string `json:"hash"`
+
+	// Cumulative chain hash (includes all previous bundles)
+	ChainHash string `json:"chain_hash"`
+
+	// References
+	PrevBundleHash string `json:"prev_bundle_hash,omitempty"`
+	PrevChainHash  string `json:"prev_chain_hash,omitempty"`
+
 	CompressedHash   string    `json:"compressed_hash"`
 	CompressedSize   int64     `json:"compressed_size"`
 	UncompressedSize int64     `json:"uncompressed_size"`
 	Cursor           string    `json:"cursor"`
-	PrevBundleHash   string    `json:"prev_bundle_hash,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 
@@ -141,13 +153,14 @@ type ChainVerificationResult struct {
 
 // DirectoryScanResult contains results from scanning a directory
 type DirectoryScanResult struct {
-	BundleDir    string
-	BundleCount  int
-	FirstBundle  int
-	LastBundle   int
-	MissingGaps  []int
-	TotalSize    int64
-	IndexUpdated bool
+	BundleDir         string
+	BundleCount       int
+	FirstBundle       int
+	LastBundle        int
+	MissingGaps       []int
+	TotalSize         int64 // Compressed size
+	TotalUncompressed int64 // Uncompressed size (NEW)
+	IndexUpdated      bool
 }
 
 // Logger interface for bundle operations

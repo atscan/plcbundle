@@ -385,3 +385,39 @@ func (dr *decompressedReader) Close() error {
 	dr.decoder.Close()
 	return dr.file.Close()
 }
+
+func (op *Operations) CalculateChainHash(prevChainHash string, contentHash string) string {
+	var data string
+	if prevChainHash == "" {
+		// Genesis bundle
+		data = "plcbundle:genesis:" + contentHash
+	} else {
+		data = prevChainHash + ":" + contentHash
+	}
+	return op.Hash([]byte(data))
+}
+
+// CalculateFileHashes calculates both content and compressed hashes efficiently
+func (op *Operations) CalculateFileHashes(path string) (compressedHash string, compressedSize int64, uncompressedHash string, uncompressedSize int64, err error) {
+	// Read compressed file
+	compressedData, err := os.ReadFile(path)
+	if err != nil {
+		return "", 0, "", 0, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Calculate compressed hash
+	compressedHash = op.Hash(compressedData)
+	compressedSize = int64(len(compressedData))
+
+	// Decompress
+	uncompressedData, err := op.decoder.DecodeAll(compressedData, nil)
+	if err != nil {
+		return "", 0, "", 0, fmt.Errorf("failed to decompress: %w", err)
+	}
+
+	// Calculate uncompressed hash
+	uncompressedHash = op.Hash(uncompressedData)
+	uncompressedSize = int64(len(uncompressedData))
+
+	return compressedHash, compressedSize, uncompressedHash, uncompressedSize, nil
+}
