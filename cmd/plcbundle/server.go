@@ -126,12 +126,23 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 			progress := float64(count) / float64(bundle.BUNDLE_SIZE) * 100
 			fmt.Fprintf(w, "  Progress:          %.1f%%\n", progress)
 
+			// ASCII Progress bar
+			barWidth := 50
+			filled := int(float64(barWidth) * float64(count) / float64(bundle.BUNDLE_SIZE))
+			if filled > barWidth {
+				filled = barWidth
+			}
+			bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+			fmt.Fprintf(w, "  [%s]\n", bar)
+
 			if firstTime, ok := mempoolStats["first_time"].(time.Time); ok {
 				fmt.Fprintf(w, "  First op:          %s\n", firstTime.Format("2006-01-02 15:04:05"))
 			}
 			if lastTime, ok := mempoolStats["last_time"].(time.Time); ok {
 				fmt.Fprintf(w, "  Last op:           %s\n", lastTime.Format("2006-01-02 15:04:05"))
 			}
+		} else {
+			fmt.Fprintf(w, "  (empty)\n")
 		}
 	}
 
