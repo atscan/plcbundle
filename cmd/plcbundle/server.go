@@ -170,81 +170,51 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	fmt.Fprintf(w, "plcbundle v%s | https://github.com/atscan/plcbundle\n", version)
 }
 
-// handleSync returns sync status and mempool info
+// handleSync returns sync status and mempool info as JSON
 func handleSync(w http.ResponseWriter, mgr *bundle.Manager) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	index := mgr.GetIndex()
-	stats := index.GetStats()
-	bundleCount := stats["bundle_count"].(int)
-
-	fmt.Fprintf(w, "Sync Status\n")
-	fmt.Fprintf(w, "═══════════\n\n")
-
-	// Bundle info
-	fmt.Fprintf(w, "Bundles\n")
-	fmt.Fprintf(w, "───────\n")
-	fmt.Fprintf(w, "Count:         %d\n", bundleCount)
-
-	if bundleCount > 0 {
-		firstBundle := stats["first_bundle"].(int)
-		lastBundle := stats["last_bundle"].(int)
-		totalSize := stats["total_size"].(int64)
-
-		fmt.Fprintf(w, "Range:         %06d - %06d\n", firstBundle, lastBundle)
-		fmt.Fprintf(w, "Total size:    %.2f MB\n", float64(totalSize)/(1024*1024))
-		fmt.Fprintf(w, "Last updated:  %s\n", stats["updated_at"].(time.Time).Format(time.RFC3339))
-
-		if gaps, ok := stats["gaps"].(int); ok && gaps > 0 {
-			fmt.Fprintf(w, "⚠ Gaps:        %d missing bundles\n", gaps)
-		}
-	}
-
-	// Mempool info
+	indexStats := index.GetStats()
 	mempoolStats := mgr.GetMempoolStats()
-	count := mempoolStats["count"].(int)
-	targetBundle := mempoolStats["target_bundle"].(int)
-	canCreate := mempoolStats["can_create_bundle"].(bool)
-	minTimestamp := mempoolStats["min_timestamp"].(time.Time)
-	validated := mempoolStats["validated"].(bool)
 
-	fmt.Fprintf(w, "\nMempool\n")
-	fmt.Fprintf(w, "───────\n")
-	fmt.Fprintf(w, "Target bundle:     %06d\n", targetBundle)
-	fmt.Fprintf(w, "Operations:        %d / %d\n", count, bundle.BUNDLE_SIZE)
-	fmt.Fprintf(w, "Can create bundle: %v\n", canCreate)
-	fmt.Fprintf(w, "Min timestamp:     %s\n", minTimestamp.Format(time.RFC3339))
-	fmt.Fprintf(w, "Validated:         %v\n", validated)
-
-	if count > 0 {
-		progress := float64(count) / float64(bundle.BUNDLE_SIZE) * 100
-		fmt.Fprintf(w, "Progress:          %.1f%%\n", progress)
-
-		// Progress bar
-		barWidth := 50
-		filled := int(float64(barWidth) * float64(count) / float64(bundle.BUNDLE_SIZE))
-		if filled > barWidth {
-			filled = barWidth
-		}
-		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
-		fmt.Fprintf(w, "\n[%s]\n\n", bar)
-
-		if sizeBytes, ok := mempoolStats["size_bytes"].(int); ok {
-			fmt.Fprintf(w, "Size:              %.2f KB\n", float64(sizeBytes)/1024)
-		}
-		if firstTime, ok := mempoolStats["first_time"].(time.Time); ok {
-			fmt.Fprintf(w, "First operation:   %s\n", firstTime.Format(time.RFC3339))
-		}
-		if lastTime, ok := mempoolStats["last_time"].(time.Time); ok {
-			fmt.Fprintf(w, "Last operation:    %s\n", lastTime.Format(time.RFC3339))
-		}
-	} else {
-		fmt.Fprintf(w, "\n(empty)\n")
+	// Build response
+	response := map[string]interface{}{
+		"bundles": map[string]interface{}{
+			"count":      indexStats["bundle_count"],
+			"total_size": indexStats["total_size"],
+			"updated_at": indexStats["updated_at"],
+		},
+		"mempool": mempoolStats,
 	}
 
-	fmt.Fprintf(w, "\nEndpoints:\n")
-	fmt.Fprintf(w, "  /sync/mempool - JSONL stream of mempool operations\n")
+	// Add bundle range if bundles exist
+	if bundleCount, ok := indexStats["bundle_count"].(int); ok && bundleCount > 0 {
+		response["bundles"].(map[string]interface{})["first_bundle"] = indexStats["first_bundle"]
+		response["bundles"].(map[string]interface{})["last_bundle"] = indexStats["last_bundle"]
+		response["bundles"].(map[string]interface{})["start_time"] = indexStats["start_time"]
+		response["bundles"].(map[string]interface{})["end_time"] = indexStats["end_time"]
+
+		if gaps, ok := indexStats["gaps"].(int); ok {
+			response["bundles"].(map[string]interface{})["gaps"] = gaps
+		}
+	}
+
+	// Calculate mempool progress percentage
+	if count, ok := mempoolStats["count"].(int); ok {
+		progress := float64(count) / float64(bundle.BUNDLE_SIZE) * 100
+		response["mempool"].(map[string]interface{})["progress_percent"] = progress
+		response["mempool"].(map[string]interface{})["bundle_size"] = bundle.BUNDLE_SIZE
+	}
+
+	data, err := json.MarshalIndent(response, "", "  ")
+	if err != nil {
+		http.Error(w, "Failed to marshal sync status", http.StatusInternalServerError)
+		return
+	}
+
+	w.Write(data)
 }
 
 // handleSyncMempool streams mempool operations as JSONL
