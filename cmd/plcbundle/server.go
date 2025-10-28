@@ -23,6 +23,47 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// getScheme returns the appropriate HTTP scheme (http or https)
+func getScheme(r *http.Request) string {
+	// Check if TLS is active
+	if r.TLS != nil {
+		return "https"
+	}
+
+	// Check X-Forwarded-Proto header (set by reverse proxies)
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		return proto
+	}
+
+	// Check if behind a proxy with X-Forwarded-Ssl
+	if r.Header.Get("X-Forwarded-Ssl") == "on" {
+		return "https"
+	}
+
+	// Default to http
+	return "http"
+}
+
+// getWSScheme returns the appropriate WebSocket scheme (ws or wss)
+func getWSScheme(r *http.Request) string {
+	if getScheme(r) == "https" {
+		return "wss"
+	}
+	return "ws"
+}
+
+// getBaseURL returns the full base URL (with scheme)
+func getBaseURL(r *http.Request) string {
+	scheme := getScheme(r)
+	return fmt.Sprintf("%s://%s", scheme, r.Host)
+}
+
+// getWSURL returns the WebSocket base URL
+func getWSURL(r *http.Request) string {
+	scheme := getWSScheme(r)
+	return fmt.Sprintf("%s://%s", scheme, r.Host)
+}
+
 func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.Handler {
 	mux := http.NewServeMux()
 
@@ -32,7 +73,7 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.H
 			http.NotFound(w, r)
 			return
 		}
-		handleRoot(w, r, mgr, syncMode, wsEnabled) // UPDATED
+		handleRoot(w, r, mgr, syncMode, wsEnabled)
 	})
 
 	// Index JSON
@@ -103,23 +144,9 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 	bundles := index.GetBundles()
 
 	if len(bundles) == 0 {
-		// Send empty response and close
-		conn.WriteJSON(map[string]interface{}{
-			"type":    "status",
-			"message": "no bundles available",
-		})
 		return
 	}
 
-	// Send initial status message
-	conn.WriteJSON(map[string]interface{}{
-		"type":          "status",
-		"message":       "starting stream",
-		"cursor":        cursor,
-		"total_bundles": len(bundles),
-	})
-
-	recordsSent := 0
 	currentRecord := 0
 
 	// Stream all operations from all bundles
@@ -127,10 +154,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 		// Load bundle
 		b, err := mgr.LoadBundle(ctx, meta.BundleNumber)
 		if err != nil {
-			conn.WriteJSON(map[string]interface{}{
-				"type":    "error",
-				"message": fmt.Sprintf("failed to load bundle %d: %v", meta.BundleNumber, err),
-			})
+			fmt.Fprintf(os.Stderr, "Failed to load bundle %d: %v\n", meta.BundleNumber, err)
 			continue
 		}
 
@@ -142,40 +166,36 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 				continue
 			}
 
-			// Prepare message
-			msg := map[string]interface{}{
-				"type":   "record",
-				"cursor": currentRecord,
-				"bundle": meta.BundleNumber,
-				"record": op,
+			// Send raw JSON if available, otherwise marshal the operation
+			var data []byte
+			if len(op.RawJSON) > 0 {
+				data = op.RawJSON
+			} else {
+				data, err = json.Marshal(op)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to marshal operation: %v\n", err)
+					currentRecord++
+					continue
+				}
 			}
 
-			// Send via WebSocket
-			if err := conn.WriteJSON(msg); err != nil {
+			// Send raw JSON as text message
+			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 				// Connection closed or error
 				fmt.Fprintf(os.Stderr, "WebSocket write error: %v\n", err)
 				return
 			}
 
-			recordsSent++
 			currentRecord++
 
-			// Optional: Check for client disconnect periodically
-			if recordsSent%1000 == 0 {
-				// Send a ping or check connection
+			// Optional: Send ping periodically to keep connection alive
+			if currentRecord%1000 == 0 {
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					return
 				}
 			}
 		}
 	}
-
-	// Send completion message
-	conn.WriteJSON(map[string]interface{}{
-		"type":         "complete",
-		"records_sent": recordsSent,
-		"final_cursor": currentRecord,
-	})
 }
 
 func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syncMode bool, wsEnabled bool) {
@@ -184,6 +204,9 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	index := mgr.GetIndex()
 	stats := index.GetStats()
 	bundleCount := stats["bundle_count"].(int)
+
+	baseURL := getBaseURL(r)
+	wsURL := getWSURL(r)
 
 	fmt.Fprint(w, `
 ||||| PLC Bundle Server |||||
@@ -278,6 +301,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 		fmt.Fprintf(w, "\nWebSocket Endpoints\n")
 		fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━\n")
 		fmt.Fprintf(w, "  WS   /ws?cursor=N         Stream all records from cursor N\n")
+		fmt.Fprintf(w, "                            (cursor defaults to 0)\n")
 	}
 
 	if syncMode {
@@ -290,24 +314,28 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	fmt.Fprintf(w, "\nExamples\n")
 	fmt.Fprintf(w, "━━━━━━━━\n")
 	fmt.Fprintf(w, "  # Get bundle metadata\n")
-	fmt.Fprintf(w, "  curl http://%s/bundle/1\n\n", r.Host)
+	fmt.Fprintf(w, "  curl %s/bundle/1\n\n", baseURL)
 	fmt.Fprintf(w, "  # Download compressed bundle\n")
-	fmt.Fprintf(w, "  curl http://%s/data/1 -o 000001.jsonl.zst\n\n", r.Host)
+	fmt.Fprintf(w, "  curl %s/data/1 -o 000001.jsonl.zst\n\n", baseURL)
 	fmt.Fprintf(w, "  # Stream decompressed operations\n")
-	fmt.Fprintf(w, "  curl http://%s/jsonl/1\n\n", r.Host)
+	fmt.Fprintf(w, "  curl %s/jsonl/1\n\n", baseURL)
 
 	if wsEnabled {
-		fmt.Fprintf(w, "  # Connect to WebSocket (start from beginning)\n")
-		fmt.Fprintf(w, "  wscat -c ws://%s/ws\n\n", r.Host)
-		fmt.Fprintf(w, "  # Connect to WebSocket (start from cursor 10000)\n")
-		fmt.Fprintf(w, "  wscat -c ws://%s/ws?cursor=10000\n\n", r.Host)
+		fmt.Fprintf(w, "  # Stream all operations via WebSocket (from beginning)\n")
+		fmt.Fprintf(w, "  websocat %s/ws\n\n", wsURL)
+		fmt.Fprintf(w, "  # Stream from cursor 10000\n")
+		fmt.Fprintf(w, "  websocat '%s/ws?cursor=10000'\n\n", wsURL)
+		fmt.Fprintf(w, "  # Stream and save to file\n")
+		fmt.Fprintf(w, "  websocat %s/ws > all_operations.jsonl\n\n", wsURL)
+		fmt.Fprintf(w, "  # Stream with jq for pretty printing\n")
+		fmt.Fprintf(w, "  websocat %s/ws | jq .\n\n", wsURL)
 	}
 
 	if syncMode {
 		fmt.Fprintf(w, "  # Get sync status\n")
-		fmt.Fprintf(w, "  curl http://%s/sync\n\n", r.Host)
+		fmt.Fprintf(w, "  curl %s/sync\n\n", baseURL)
 		fmt.Fprintf(w, "  # Get mempool operations\n")
-		fmt.Fprintf(w, "  curl http://%s/sync/mempool\n\n", r.Host)
+		fmt.Fprintf(w, "  curl %s/sync/mempool\n\n", baseURL)
 	}
 
 	fmt.Fprintf(w, "\n────────────────────────────────────────────────────────────────\n")
