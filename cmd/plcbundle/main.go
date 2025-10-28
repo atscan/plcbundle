@@ -47,6 +47,8 @@ func main() {
 		cmdMempool()
 	case "serve":
 		cmdServe()
+	case "compare":
+		cmdCompare()
 	case "version":
 		fmt.Printf("plcbundle version %s\n", version)
 		fmt.Printf("  commit: %s\n", gitCommit)
@@ -73,6 +75,7 @@ Commands:
   backfill   Fetch/load all bundles and stream to stdout
   mempool    Show mempool status and operations
   serve      Start HTTP server to serve bundle data
+  compare    Compare local index with target index
   version    Show version
 
 The tool works with the current directory.
@@ -869,6 +872,72 @@ func cmdServe() {
 
 	if err := server.ListenAndServe(); err != nil {
 		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdCompare() {
+	fs := flag.NewFlagSet("compare", flag.ExitOnError)
+	verbose := fs.Bool("v", false, "verbose output (show all differences)")
+	fetchMissing := fs.Bool("fetch-missing", false, "fetch missing bundles from target")
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: plcbundle compare <target>\n")
+		fmt.Fprintf(os.Stderr, "  target: path to plc_bundles.json or URL\n")
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle compare /path/to/plc_bundles.json\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle compare https://example.com/index.json\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle compare https://example.com/index.json --fetch-missing\n")
+		os.Exit(1)
+	}
+
+	target := fs.Arg(0)
+
+	mgr, dir, err := getManager("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer mgr.Close()
+
+	fmt.Printf("Comparing: %s\n", dir)
+	fmt.Printf("  Against: %s\n\n", target)
+
+	// Load local index
+	localIndex := mgr.GetIndex()
+
+	// Load target index
+	fmt.Printf("Loading target index...\n")
+	targetIndex, err := loadTargetIndex(target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading target index: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Perform comparison
+	comparison := compareIndexes(localIndex, targetIndex)
+
+	// Display results
+	displayComparison(comparison, *verbose)
+
+	// Fetch missing bundles if requested
+	if *fetchMissing && len(comparison.MissingBundles) > 0 {
+		fmt.Printf("\n")
+		if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
+			fmt.Fprintf(os.Stderr, "Error: --fetch-missing only works with remote URLs\n")
+			os.Exit(1)
+		}
+
+		baseURL := strings.TrimSuffix(target, "/index.json")
+		baseURL = strings.TrimSuffix(baseURL, "/plc_bundles.json")
+
+		fmt.Printf("Fetching %d missing bundles...\n\n", len(comparison.MissingBundles))
+		fetchMissingBundles(mgr, baseURL, comparison.MissingBundles)
+	}
+
+	// Exit with error if there are differences
+	if comparison.HasDifferences() {
 		os.Exit(1)
 	}
 }
