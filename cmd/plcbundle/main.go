@@ -1000,6 +1000,7 @@ func cmdServe() {
 	sync := fs.Bool("sync", false, "enable sync mode (auto-sync from PLC)")
 	plcURL := fs.String("plc", "https://plc.directory", "PLC directory URL (for sync mode)")
 	syncInterval := fs.Duration("sync-interval", 5*time.Minute, "sync interval for sync mode")
+	enableWebSocket := fs.Bool("websocket", false, "enable WebSocket endpoint for streaming records") // RE-ADDED
 	workers := fs.Int("workers", 4, "number of workers for auto-rebuild (0 = CPU count)")
 	fs.Parse(os.Args[2:])
 
@@ -1094,6 +1095,16 @@ func cmdServe() {
 		fmt.Printf("  Sync mode: disabled\n")
 	}
 
+	if *enableWebSocket {
+		wsScheme := "ws"
+		if strings.Contains(addr, "0.0.0.0") || strings.Contains(addr, "127.0.0.1") {
+			wsScheme = "ws"
+		}
+		fmt.Printf("  WebSocket: ENABLED (%s://%s/ws)\n", wsScheme, addr)
+	} else {
+		fmt.Printf("  WebSocket: disabled (use --websocket to enable)\n")
+	}
+
 	// Show current status
 	index := mgr.GetIndex()
 	bundleCount := index.Count()
@@ -1117,7 +1128,7 @@ func cmdServe() {
 
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      newServerHandler(mgr, *sync, false), // WebSocket disabled for now
+		Handler:      newServerHandler(mgr, *sync, *enableWebSocket), // FIXED - pass the flag
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
