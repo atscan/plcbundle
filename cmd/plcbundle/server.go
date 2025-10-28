@@ -132,6 +132,9 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 		}
 	}
 
+	// Check if client wants to keep connection alive
+	keepAlive := r.URL.Query().Get("keepalive") == "true"
+
 	// Upgrade to WebSocket
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -140,25 +143,38 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 	}
 	defer conn.Close()
 
+	// Set up ping/pong handlers for keepalive
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
 	ctx := context.Background()
 	index := mgr.GetIndex()
 	bundles := index.GetBundles()
 
 	if len(bundles) == 0 {
+		if !keepAlive {
+			closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "no bundles available")
+			conn.WriteMessage(websocket.CloseMessage, closeMsg)
+		}
 		return
 	}
 
 	// Calculate starting bundle and position from cursor
-	// Each bundle has exactly BUNDLE_SIZE (10,000) operations
-	// Cursor 88410345 = bundle 8841, position 345
 	startBundleIdx := cursor / bundle.BUNDLE_SIZE
 	startPosition := cursor % bundle.BUNDLE_SIZE
 
 	// Validate starting bundle exists
 	if startBundleIdx >= len(bundles) {
-		// Cursor is beyond all bundles, check mempool
 		currentRecord := len(bundles) * bundle.BUNDLE_SIZE
-		streamMempool(conn, mgr, cursor, currentRecord)
+		if err := streamMempool(conn, mgr, cursor, currentRecord); err != nil {
+			return
+		}
+		if !keepAlive {
+			closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "stream complete")
+			conn.WriteMessage(websocket.CloseMessage, closeMsg)
+		}
 		return
 	}
 
@@ -168,31 +184,26 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 	for i := startBundleIdx; i < len(bundles); i++ {
 		meta := bundles[i]
 
-		// Load bundle
 		b, err := mgr.LoadBundle(ctx, meta.BundleNumber)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to load bundle %d: %v\n", meta.BundleNumber, err)
 			continue
 		}
 
-		// Determine starting position in this bundle
 		startPos := 0
 		if i == startBundleIdx {
 			startPos = startPosition
 		}
 
-		// Send operations from this bundle
 		for j := startPos; j < len(b.Operations); j++ {
 			op := b.Operations[j]
 
-			// Send raw JSON
 			if err := sendOperation(conn, op); err != nil {
 				return
 			}
 
 			currentRecord++
 
-			// Send ping periodically to keep connection alive
 			if currentRecord%1000 == 0 {
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					return
@@ -201,8 +212,32 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 		}
 	}
 
-	// Stream mempool operations after all bundles
-	streamMempool(conn, mgr, cursor, currentRecord)
+	// Stream mempool
+	if err := streamMempool(conn, mgr, cursor, currentRecord); err != nil {
+		return
+	}
+
+	if keepAlive {
+		// Keep connection open and wait for client to close
+		fmt.Fprintf(os.Stderr, "WebSocket: stream complete, keeping connection alive\n")
+
+		// Read messages from client (to detect close)
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		for {
+			_, _, err := conn.ReadMessage()
+			if err != nil {
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+					fmt.Fprintf(os.Stderr, "WebSocket: client closed connection\n")
+				}
+				break
+			}
+		}
+	} else {
+		// Close gracefully
+		closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "stream complete")
+		conn.WriteMessage(websocket.CloseMessage, closeMsg)
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // streamMempool streams mempool operations if cursor is in range
