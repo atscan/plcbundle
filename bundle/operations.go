@@ -389,7 +389,7 @@ func (op *Operations) CreateBundle(bundleNumber int, operations []plc.PLCOperati
 
 // CalculateBundleMetadata calculates complete metadata for a bundle
 // This is the ONE method everyone should use for metadata calculation
-func (op *Operations) CalculateBundleMetadata(bundleNumber int, path string, operations []plc.PLCOperation, parent string) (*BundleMetadata, error) {
+func (op *Operations) CalculateBundleMetadata(bundleNumber int, path string, operations []plc.PLCOperation, parent string, cursor string) (*BundleMetadata, error) {
 	if len(operations) == 0 {
 		return nil, fmt.Errorf("bundle is empty")
 	}
@@ -419,12 +419,6 @@ func (op *Operations) CalculateBundleMetadata(bundleNumber int, path string, ope
 	// Calculate chain hash
 	chainHash := op.CalculateChainHash(parent, contentHash)
 
-	// Determine cursor
-	cursor := ""
-	if bundleNumber > 1 {
-		cursor = operations[0].CreatedAt.Format(time.RFC3339Nano)
-	}
-
 	return &BundleMetadata{
 		BundleNumber:     bundleNumber,
 		StartTime:        operations[0].CreatedAt,
@@ -444,7 +438,7 @@ func (op *Operations) CalculateBundleMetadata(bundleNumber int, path string, ope
 
 // CalculateBundleMetadataFast calculates metadata quickly without chain hash
 // Used during parallel scanning - chain hash calculated later sequentially
-func (op *Operations) CalculateBundleMetadataFast(bundleNumber int, path string, operations []plc.PLCOperation) (*BundleMetadata, error) {
+func (op *Operations) CalculateBundleMetadataFast(bundleNumber int, path string, operations []plc.PLCOperation, cursor string) (*BundleMetadata, error) {
 	if len(operations) == 0 {
 		return nil, fmt.Errorf("bundle is empty")
 	}
@@ -458,7 +452,7 @@ func (op *Operations) CalculateBundleMetadataFast(bundleNumber int, path string,
 	// Extract unique DIDs
 	dids := op.ExtractUniqueDIDs(operations)
 
-	// Note: Hash and Parent are set to empty - will be calculated later sequentially
+	// Note: Hash, Parent, and Cursor are set to empty - will be calculated later sequentially
 	return &BundleMetadata{
 		BundleNumber:     bundleNumber,
 		StartTime:        operations[0].CreatedAt,
@@ -471,6 +465,7 @@ func (op *Operations) CalculateBundleMetadataFast(bundleNumber int, path string,
 		CompressedHash:   compressedHash,
 		CompressedSize:   compressedSize,
 		UncompressedSize: contentSize,
+		Cursor:           cursor,
 		CreatedAt:        time.Now().UTC(),
 	}, nil
 }

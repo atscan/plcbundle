@@ -746,15 +746,17 @@ func (m *Manager) ScanDirectory() (*DirectoryScanResult, error) {
 		size, _ := m.operations.GetFileSize(path)
 		totalSize += size
 
-		// Calculate parent
+		// Calculate parent and cursor from previous bundle
 		var parent string
+		var cursor string
 		if num > 1 && len(newMetadata) > 0 {
 			prevMeta := newMetadata[len(newMetadata)-1]
 			parent = prevMeta.Hash
+			cursor = prevMeta.EndTime.Format(time.RFC3339Nano)
 		}
 
 		// Use the ONE method for metadata calculation
-		meta, err := m.operations.CalculateBundleMetadata(num, path, ops, parent)
+		meta, err := m.operations.CalculateBundleMetadata(num, path, ops, parent, cursor)
 		if err != nil {
 			m.logger.Printf("Warning: failed to calculate metadata for bundle %d: %v", num, err)
 			continue
@@ -866,8 +868,8 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 					continue
 				}
 
-				// Use the FAST method (no chain hash yet)
-				meta, err := m.operations.CalculateBundleMetadataFast(num, path, ops)
+				// Use the FAST method (cursor will be set later in sequential phase)
+				meta, err := m.operations.CalculateBundleMetadataFast(num, path, ops, "")
 				if err != nil {
 					results <- bundleResult{index: num, err: err}
 					continue
@@ -919,10 +921,16 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 	var newMetadata []*BundleMetadata
 	var parent string // Parent chain hash
 
-	for _, num := range bundleNumbers {
+	for i, num := range bundleNumbers {
 		meta, ok := metadataMap[num]
 		if !ok {
 			continue // Skip failed bundles
+		}
+
+		// Set cursor from previous bundle's EndTime
+		if i > 0 && len(newMetadata) > 0 {
+			prevMeta := newMetadata[len(newMetadata)-1]
+			meta.Cursor = prevMeta.EndTime.Format(time.RFC3339Nano)
 		}
 
 		// Now calculate chain hash (must be done sequentially)
@@ -1022,16 +1030,18 @@ func (m *Manager) ScanBundle(path string, bundleNumber int) (*BundleMetadata, er
 		return nil, fmt.Errorf("bundle is empty")
 	}
 
-	// Get parent chain hash from index
+	// Get parent chain hash and cursor from previous bundle
 	var parent string
+	var cursor string
 	if bundleNumber > 1 {
 		if prevMeta, err := m.index.GetBundle(bundleNumber - 1); err == nil {
 			parent = prevMeta.Hash
+			cursor = prevMeta.EndTime.Format(time.RFC3339Nano)
 		}
 	}
 
 	// Use the ONE method
-	return m.operations.CalculateBundleMetadata(bundleNumber, path, operations, parent)
+	return m.operations.CalculateBundleMetadata(bundleNumber, path, operations, parent, cursor)
 }
 
 // ScanAndIndexBundle scans a bundle file and adds it to the index
