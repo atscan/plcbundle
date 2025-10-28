@@ -383,12 +383,15 @@ func (m *Mempool) Stats() map[string]interface{} {
 		stats["first_time"] = m.operations[0].CreatedAt
 		stats["last_time"] = m.operations[len(m.operations)-1].CreatedAt
 
-		// Calculate size
+		// Calculate size and unique DIDs
 		totalSize := 0
+		didSet := make(map[string]bool)
 		for _, op := range m.operations {
 			totalSize += len(op.RawJSON)
+			didSet[op.DID] = true
 		}
 		stats["size_bytes"] = totalSize
+		stats["did_count"] = len(didSet) // ← ADDED
 	}
 
 	return stats
