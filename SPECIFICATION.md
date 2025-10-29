@@ -4,7 +4,7 @@
 
 ## 1. Abstract
 
-`plcbundle` is a system for archiving and distributing [DID PLC (Placeholder) directory](plc.directory) operations in a secure, verifiable, and efficient manner. It groups chronological operations from the PLC directory into immutable, compressed bundles. These bundles are cryptographically linked, forming a verifiable chain of history. This specification details the V1 format for the bundles, the index file that describes them, and the processes for creating and verifying them to ensure interoperability between implementations.
+`plcbundle` is a system for archiving and distributing [DID PLC (Placeholder) directory](https://plc.directory) operations in a secure, verifiable, and efficient manner. It groups chronological operations from the PLC directory into immutable, compressed bundles. These bundles are cryptographically linked, forming a verifiable chain of history. This specification details the V1 format for the bundles, the index file that describes them, and the processes for creating and verifying them to ensure interoperability between implementations.
 
 ---
 
