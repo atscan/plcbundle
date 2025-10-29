@@ -115,7 +115,7 @@ Bundles are cryptographically chained but require external verification:
 
 ## Reference Implementations
 
-- [TypeScript, Python, Ruby](https://tangled.org/@atscan.net/plcbundle-js/blob/main/plcbundle.ts)
+- [TypeScript, Python, Ruby](https://tangled.org/@atscan.net/plcbundle-ref/)
 
 ## Documentation
 
