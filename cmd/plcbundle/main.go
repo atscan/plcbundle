@@ -111,7 +111,9 @@ Security Model:
   - Verify against original PLC directory
   - Compare with multiple independent mirrors
   - Check published root and head hashes
-  - Anyone can reproduce bundles from PLC directory`, version)
+  - Anyone can reproduce bundles from PLC directory
+
+`, version)
 }
 
 // getManager creates or opens a bundle manager in the detected directory

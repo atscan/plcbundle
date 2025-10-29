@@ -36,7 +36,8 @@ This repository contains a reference library and a CLI tool written in Go langua
 
 The technical specification for the plcbundle V1 format, index, and creation process can be found in the [specification document](./SPECIFICATION.md).
 
-[Article "Introducing plcbundle: A Transparent and Verifiable Way to Sync the AT Protocol's PLC Directory"](https://leaflet.pub/feb982b4-64cb-4549-9d25-d7e68cecb11a) | [TypeScript implementation](https://github.com/atscan/plcbundle-js/blob/main/plcbundle.ts)
+* [Article "Introducing plcbundle: A Transparent and Verifiable Way to Sync the AT Protocol's PLC Directory"](https://leaflet.pub/feb982b4-64cb-4549-9d25-d7e68cecb11a)
+* [Reference implementations in TypeScript, Python, Ruby](https://tangled.org/@atscan.net/plcbundle-js/blob/main/plcbundle.ts)
 
 ## Features
 
