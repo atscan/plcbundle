@@ -82,6 +82,8 @@ func main() {
 		cmdServe()
 	case "compare":
 		cmdCompare()
+	case "validate-plc":
+		cmdValidatePLC()
 	case "version":
 		fmt.Printf("plcbundle version %s\n", version)
 		fmt.Printf("  commit: %s\n", gitCommit)
@@ -867,20 +869,52 @@ func cmdExport() {
 	}
 
 	ctx := context.Background()
-	ops, err := mgr.ExportOperations(ctx, afterTime, *count)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Export failed: %v\n", err)
-		os.Exit(1)
-	}
 
-	// Output as JSONL
-	for _, op := range ops {
-		if len(op.RawJSON) > 0 {
-			fmt.Println(string(op.RawJSON))
+	// OLD WAY (loads everything into memory):
+	// ops, err := mgr.ExportOperations(ctx, afterTime, *count)
+
+	// NEW WAY (streams immediately):
+	index := mgr.GetIndex()
+	bundles := index.GetBundles()
+
+	exported := 0
+
+	for _, meta := range bundles {
+		// Stop if we hit the count
+		if *count > 0 && exported >= *count {
+			break
+		}
+
+		// Skip bundles before afterTime
+		if !afterTime.IsZero() && meta.EndTime.Before(afterTime) {
+			continue
+		}
+
+		// Load bundle
+		bundle, err := mgr.LoadBundle(ctx, meta.BundleNumber)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load bundle %d: %v\n", meta.BundleNumber, err)
+			continue
+		}
+
+		// Output operations immediately (streaming)
+		for _, op := range bundle.Operations {
+			if !afterTime.IsZero() && op.CreatedAt.Before(afterTime) {
+				continue
+			}
+
+			if len(op.RawJSON) > 0 {
+				fmt.Println(string(op.RawJSON))
+			}
+
+			exported++
+			if *count > 0 && exported >= *count {
+				break
+			}
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "Exported %d operations\n", len(ops))
+	fmt.Fprintf(os.Stderr, "Exported %d operations\n", exported)
 }
 
 func cmdBackfill() {
@@ -983,6 +1017,118 @@ func cmdBackfill() {
 	fmt.Fprintf(os.Stderr, "  Loaded from disk: %d\n", loadedCount)
 	fmt.Fprintf(os.Stderr, "  Total operations: %d\n", operationCount)
 	fmt.Fprintf(os.Stderr, "  Range: %06d - %06d\n", *startFrom, currentBundle-1)
+}
+
+func cmdValidatePLC() {
+	fs := flag.NewFlagSet("validate-plc", flag.ExitOnError)
+	bundleNum := fs.Int("bundle", 0, "specific bundle to validate (0 = all)")
+	csvOutput := fs.Bool("csv", false, "output invalid operations as CSV (cid,reason)")
+	fs.Parse(os.Args[2:])
+
+	mgr, _, err := getManager("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer mgr.Close()
+
+	ctx := context.Background()
+
+	// CSV callback - outputs immediately to stdout
+	invalidCount := 0
+	csvCallback := func(inv bundle.InvalidOperation) {
+		if invalidCount == 0 {
+			// Print header once
+			fmt.Println("cid,reason")
+		}
+		invalidCount++
+
+		// Escape reason for CSV
+		reason := inv.Reason
+		if strings.Contains(reason, ",") || strings.Contains(reason, "\"") {
+			reason = "\"" + strings.ReplaceAll(reason, "\"", "\"\"") + "\""
+		}
+
+		// Output immediately to stdout
+		fmt.Printf("%s,%s\n", inv.CID, reason)
+	}
+
+	if *bundleNum > 0 {
+		// Validate single bundle
+		if !*csvOutput {
+			fmt.Fprintf(os.Stderr, "Validating bundle %06d using go-didplc...\n", *bundleNum)
+		}
+
+		start := time.Now()
+		var err error
+
+		if *csvOutput {
+			err = mgr.ValidateBundleStreaming(ctx, *bundleNum, csvCallback)
+		} else {
+			err = mgr.ValidateBundleStreaming(ctx, *bundleNum, nil)
+		}
+
+		elapsed := time.Since(start)
+
+		if *csvOutput {
+			if invalidCount == 0 {
+				// No invalid operations, still print header
+				fmt.Println("cid,reason")
+			}
+			fmt.Fprintf(os.Stderr, "# Validation complete: %d invalid operations (took %s)\n",
+				invalidCount, elapsed.Round(time.Millisecond))
+		} else {
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "✗ Validation failed: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "✓ Bundle %06d is valid (took %s)\n",
+				*bundleNum, elapsed.Round(time.Millisecond))
+		}
+	} else {
+		// Validate all bundles
+		index := mgr.GetIndex()
+		total := index.Count()
+
+		if !*csvOutput {
+			fmt.Fprintf(os.Stderr, "Validating all %d bundles using go-didplc...\n\n", total)
+		} else {
+			fmt.Fprintf(os.Stderr, "# Validating %d bundles...\n", total)
+		}
+
+		start := time.Now()
+
+		err := mgr.ValidateAllBundlesStreaming(ctx,
+			func(inv bundle.InvalidOperation) {
+				if *csvOutput {
+					csvCallback(inv)
+				}
+			},
+			func(current, total int) {
+				// Progress to stderr so it doesn't interfere with CSV
+				if current%10 == 0 || current == total {
+					fmt.Fprintf(os.Stderr, "\r# Progress: %d/%d (%.1f%%)    ",
+						current, total, float64(current)/float64(total)*100)
+				}
+			})
+
+		elapsed := time.Since(start)
+
+		if *csvOutput {
+			if invalidCount == 0 {
+				fmt.Println("cid,reason")
+			}
+			fmt.Fprintf(os.Stderr, "\n# Validation complete: %d invalid operations (took %s)\n",
+				invalidCount, elapsed.Round(time.Second))
+		} else {
+			fmt.Fprintf(os.Stderr, "\n")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "✗ Validation failed: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "✓ All bundles valid (took %s)\n", elapsed.Round(time.Second))
+		}
+	}
 }
 
 func cmdMempool() {

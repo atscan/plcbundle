@@ -1205,3 +1205,141 @@ func filterBundleFiles(files []string) []string {
 	}
 	return filtered
 }
+
+// ValidateBundle validates all operations in a bundle using go-didplc
+func (m *Manager) ValidateBundle(ctx context.Context, bundleNumber int) error {
+	bundle, err := m.LoadBundle(ctx, bundleNumber)
+	if err != nil {
+		return err
+	}
+
+	validator := NewValidator(m.logger)
+	return validator.ValidateBundleOperations(bundle.Operations)
+}
+
+// ValidateAllBundles validates all bundles in the repository
+func (m *Manager) ValidateAllBundles(ctx context.Context, progressFunc func(current, total int)) error {
+	index := m.GetIndex()
+	bundles := index.GetBundles()
+
+	m.logger.Printf("Validating %d bundles...", len(bundles))
+
+	validator := NewValidator(m.logger)
+	errors := 0
+
+	for i, meta := range bundles {
+		if progressFunc != nil {
+			progressFunc(i+1, len(bundles))
+		}
+
+		bundle, err := m.LoadBundle(ctx, meta.BundleNumber)
+		if err != nil {
+			m.logger.Printf("Failed to load bundle %d: %v", meta.BundleNumber, err)
+			errors++
+			continue
+		}
+
+		if err := validator.ValidateBundleOperations(bundle.Operations); err != nil {
+			m.logger.Printf("Bundle %d validation failed: %v", meta.BundleNumber, err)
+			errors++
+		}
+	}
+
+	if errors > 0 {
+		return fmt.Errorf("%d bundles failed validation", errors)
+	}
+
+	return nil
+}
+
+// ValidateBundleWithDetails validates a bundle and returns invalid operations
+func (m *Manager) ValidateBundleWithDetails(ctx context.Context, bundleNumber int) ([]InvalidOperation, error) {
+	bundle, err := m.LoadBundle(ctx, bundleNumber)
+	if err != nil {
+		return nil, err
+	}
+
+	validator := NewValidator(m.logger)
+	return validator.ValidateBundleOperationsWithDetails(bundle.Operations)
+}
+
+// ValidateAllBundlesWithDetails validates all bundles and returns all invalid operations
+func (m *Manager) ValidateAllBundlesWithDetails(ctx context.Context, progressFunc func(current, total int)) ([]InvalidOperation, error) {
+	index := m.GetIndex()
+	bundles := index.GetBundles()
+
+	validator := NewValidator(m.logger)
+	var allInvalid []InvalidOperation
+	errors := 0
+
+	for i, meta := range bundles {
+		if progressFunc != nil {
+			progressFunc(i+1, len(bundles))
+		}
+
+		bundle, err := m.LoadBundle(ctx, meta.BundleNumber)
+		if err != nil {
+			m.logger.Printf("Failed to load bundle %d: %v", meta.BundleNumber, err)
+			errors++
+			continue
+		}
+
+		invalid, err := validator.ValidateBundleOperationsWithDetails(bundle.Operations)
+		if err != nil {
+			m.logger.Printf("Bundle %d validation failed: %v", meta.BundleNumber, err)
+			errors++
+		}
+
+		allInvalid = append(allInvalid, invalid...)
+	}
+
+	if errors > 0 {
+		return allInvalid, fmt.Errorf("%d bundles failed validation", errors)
+	}
+
+	return allInvalid, nil
+}
+
+// ValidateBundleStreaming validates a bundle and streams invalid operations
+func (m *Manager) ValidateBundleStreaming(ctx context.Context, bundleNumber int, callback InvalidCallback) error {
+	bundle, err := m.LoadBundle(ctx, bundleNumber)
+	if err != nil {
+		return err
+	}
+
+	validator := NewValidator(m.logger)
+	return validator.ValidateBundleOperationsStreaming(bundle.Operations, callback)
+}
+
+// ValidateAllBundlesStreaming validates all bundles and streams invalid operations
+func (m *Manager) ValidateAllBundlesStreaming(ctx context.Context, callback InvalidCallback, progressFunc func(current, total int)) error {
+	index := m.GetIndex()
+	bundles := index.GetBundles()
+
+	validator := NewValidator(m.logger)
+	errors := 0
+
+	for i, meta := range bundles {
+		if progressFunc != nil {
+			progressFunc(i+1, len(bundles))
+		}
+
+		bundle, err := m.LoadBundle(ctx, meta.BundleNumber)
+		if err != nil {
+			m.logger.Printf("Failed to load bundle %d: %v", meta.BundleNumber, err)
+			errors++
+			continue
+		}
+
+		if err := validator.ValidateBundleOperationsStreaming(bundle.Operations, callback); err != nil {
+			// Errors already streamed via callback, just count them
+			errors++
+		}
+	}
+
+	if errors > 0 {
+		return fmt.Errorf("%d bundles had validation errors", errors)
+	}
+
+	return nil
+}

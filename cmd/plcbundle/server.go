@@ -299,6 +299,11 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.H
 		})
 	}
 
+	// Validation endpoint
+	mux.HandleFunc("/validate/", func(w http.ResponseWriter, r *http.Request) {
+		handleValidate(w, r, mgr)
+	})
+
 	return mux
 }
 
@@ -828,4 +833,44 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager) {
 		// Add a small delay between fetches to be nice to the PLC directory
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+// handleValidate validates a bundle via HTTP
+func handleValidate(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager) {
+	// Extract bundle number from URL
+	path := strings.TrimPrefix(r.URL.Path, "/validate/")
+
+	var bundleNum int
+	if _, err := fmt.Sscanf(path, "%d", &bundleNum); err != nil {
+		http.Error(w, "Invalid bundle number", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+
+	// Validate the bundle
+	start := time.Now()
+	err := mgr.ValidateBundle(ctx, bundleNum)
+	elapsed := time.Since(start)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if err != nil {
+		result := map[string]interface{}{
+			"bundle_number": bundleNum,
+			"valid":         false,
+			"error":         err.Error(),
+			"elapsed_ms":    elapsed.Milliseconds(),
+		}
+		w.WriteHeader(http.StatusOK) // Still 200, just invalid result
+		json.NewEncoder(w).Encode(result)
+		return
+	}
+
+	result := map[string]interface{}{
+		"bundle_number": bundleNum,
+		"valid":         true,
+		"elapsed_ms":    elapsed.Milliseconds(),
+	}
+	json.NewEncoder(w).Encode(result)
 }
