@@ -1,17 +1,19 @@
-# plcbundle V1 Specification
+# plcbundle V1 (draft) Specification
+
+> ⚠️ **Preview Version - Request for Comments!**
 
 ## 1. Abstract
 
-`plcbundle` is a system for archiving and distributing DID PLC (Placeholder) directory operations in a secure, verifiable, and efficient manner. It groups chronological operations from the PLC directory into immutable, compressed bundles. These bundles are cryptographically linked, forming a verifiable chain of history. This specification details the V1 format for the bundles, the index file that describes them, and the processes for creating and verifying them to ensure interoperability between implementations.
+`plcbundle` is a system for archiving and distributing [DID PLC (Placeholder) directory](plc.directory) operations in a secure, verifiable, and efficient manner. It groups chronological operations from the PLC directory into immutable, compressed bundles. These bundles are cryptographically linked, forming a verifiable chain of history. This specification details the V1 format for the bundles, the index file that describes them, and the processes for creating and verifying them to ensure interoperability between implementations.
 
 ---
 
 ## 2. Key Terminology
 
-*   **Operation:** A single DID PLC operation, as exported from a PLC directory's `/export` endpoint. It is represented as a single JSON object.
+*   **Operation:** A single DID PLC operation, as exported from a PLC directory's [`/export` endpoint](https://web.plc.directory/api/redoc#operation/Export). It is represented as a single JSON object.
 *   **Bundle:** A single compressed file containing a fixed number of operations.
 *   **Index:** A JSON file named `plc_bundles.json` that contains metadata for all available bundles in the repository. It is the entry point for discovering and verifying bundles.
-*   **Content Hash:** The SHA-256 hash of the *uncompressed* JSONL content of a single bundle. This hash uniquely identifies the bundle's data.
+*   **Content Hash:** The [SHA-256](https://en.wikipedia.org/wiki/SHA-2) hash of the *uncompressed* [JSONL](https://jsonlines.org/) content of a single bundle. This hash uniquely identifies the bundle's data.
 *   **Chain Hash:** A cumulative SHA-256 hash that links a bundle to its predecessor, ensuring the integrity and order of the entire chain.
 *   **Compressed Hash:** The SHA-256 hash of the *compressed* `.jsonl.zst` bundle file. This is used to verify file integrity during downloads.
 
@@ -30,7 +32,7 @@ To guarantee that bundles are byte-for-byte reproducible, the order of operation
 *   **Naming Convention:** Bundles are named sequentially with six-digit zero-padding, following the format `%06d.jsonl.zst`.
     *   *Examples:* `000001.jsonl.zst`, `000123.jsonl.zst`.
 *   **Content:** Each bundle contains exactly **10,000** PLC operations.
-*   **Compression:** The JSONL content is compressed using Zstandard (zstd).
+*   **Compression:** The JSONL content is compressed using [Zstandard](https://facebook.github.io/zstd/) (zstd).
 
 ### 4.2. Serialization and Data Integrity
 
@@ -90,16 +92,16 @@ The creation of a new bundle is a sequential process that ensures the integrity 
 
 ### 6.1. Collecting Operations
 
-1.  **Mempool:** Operations are fetched from the PLC directory's `/export` endpoint and collected into a temporary staging area, or "mempool".
-2.  **Chronological Validation:** The mempool must enforce that operations are added in chronological order, as described in Section 3.
+1.  **Mempool:** Operations are fetched from the PLC directory's [`/export` endpoint](https://web.plc.directory/api/redoc#operation/Export) and collected into a temporary staging area, or "mempool".
+2.  **Chronological Validation:** The mempool must enforce that operations are added in chronological order, as described in [Section 3](#3-operation-order-and-reproducibility).
 3.  **Boundary Deduplication:** To prevent including the same operation in two adjacent bundles, the system must use a "boundary CID" mechanism. When creating bundle `N+1`, it must ignore any fetched operations whose `createdAt` timestamp and `CID` match those from the very end of bundle `N`.
 4.  **Filling the Mempool:** The process continues fetching and deduplicating operations until at least 10,000 are collected in the mempool.
 
 ### 6.2. Creating a Bundle File
 
 1.  **Take Operations:** Exactly 10,000 operations are taken from the front of the mempool.
-2.  **Serialize:** These operations are serialized into a single block of newline-delimited JSON (JSONL), adhering to the integrity rules in Section 4.2.
-3.  **Compress and Save:** The JSONL data is compressed using Zstandard and saved to a file with the appropriate sequential name (e.g., `000001.jsonl.zst`).
+2.  **Serialize:** These operations are serialized into a single block of newline-delimited JSON ([JSONL](https://jsonlines.org/)), adhering to the integrity rules in [Section 4.2](#42-serialization-and-data-integrity).
+3.  **Compress and Save:** The JSONL data is compressed using [Zstandard](https://facebook.github.io/zstd/) and saved to a file with the appropriate sequential name (e.g., `000001.jsonl.zst`).
 
 ### 6.3. Hash Calculation
 
@@ -123,7 +125,7 @@ Three distinct hashes are calculated for each bundle. All use the **SHA-256** al
 
 ### 6.4. Updating the Index
 
-1.  A new `BundleMetadata` object is created for the new bundle, populated with all the information described in Section 5.2.
+1.  A new `BundleMetadata` object is created for the new bundle, populated with all the information described in [Section 5.2](#52-bundlemetadata-object).
 2.  This metadata object is appended to the `bundles` array in the main `Index` object.
 3.  The `Index` object's top-level fields (`last_bundle`, `updated_at`, `total_size_bytes`) are updated to reflect the new state.
 4.  The entire `Index` object is serialized to JSON and saved, atomically overwriting the existing `plc_bundles.json` file.

@@ -30,7 +30,7 @@
 >
 > This project and plcbundle specification is currently unstable and under heavy development. Things can break at any time. Bundle hashes or data formats may change. **Do not** use this for production systems. Please wait for the **`1.0`** release.
 
-plcbundle archives AT Protocol's DID PLC Directory operations into immutable, cryptographically-chained bundles of 10,000 operations. Each bundle is hashed (SHA-256), compressed (zstd), and linked to the previous bundle, creating a verifiable chain of DID operations.
+plcbundle archives AT Protocol's [DID PLC Directory](https://plc.directory/) operations into immutable, cryptographically-chained bundles of 10,000 operations. Each bundle is hashed (SHA-256), compressed (zstd), and linked to the previous bundle, creating a verifiable chain of DID operations.
 
 This repository contains a reference library and a CLI tool written in Go language.
 
