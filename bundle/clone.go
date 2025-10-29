@@ -119,6 +119,8 @@ func (m *Manager) CloneFromRemote(ctx context.Context, opts CloneOptions) (*Clon
 		opts.Workers,
 		opts.ProgressFunc,
 		opts.Verbose,
+		&downloadedBundles,
+		&downloadedMu,
 	)
 
 	result.Downloaded = len(successList)
@@ -151,6 +153,8 @@ func (m *Manager) downloadBundlesConcurrent(
 	workers int,
 	progressFunc func(downloaded, total int, bytesDownloaded, bytesTotal int64),
 	verbose bool,
+	downloadedBundles *[]int,
+	downloadedMu *sync.Mutex,
 ) (successList []int, failedList []int, downloadedBytes int64) {
 
 	type job struct {
@@ -209,6 +213,11 @@ func (m *Manager) downloadBundlesConcurrent(
 				if err == nil {
 					processedBytes += bytes
 					success = append(success, j.bundleNum)
+					if downloadedMu != nil && downloadedBundles != nil {
+						downloadedMu.Lock()
+						*downloadedBundles = append(*downloadedBundles, j.bundleNum)
+						downloadedMu.Unlock()
+					}
 				} else {
 					failed = append(failed, j.bundleNum)
 				}
