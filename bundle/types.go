@@ -190,3 +190,26 @@ func DefaultConfig(bundleDir string) *Config {
 		Logger:          nil,
 	}
 }
+
+// CloneOptions configures cloning behavior
+type CloneOptions struct {
+	RemoteURL    string
+	Workers      int
+	SkipExisting bool
+	ProgressFunc func(downloaded, total int, bytesDownloaded, bytesTotal int64)
+	SaveInterval time.Duration
+	Verbose      bool
+	Logger       Logger
+}
+
+// CloneResult contains cloning results
+type CloneResult struct {
+	RemoteBundles int
+	Downloaded    int
+	Failed        int
+	Skipped       int
+	TotalBytes    int64
+	Duration      time.Duration
+	Interrupted   bool
+	FailedBundles []int
+}

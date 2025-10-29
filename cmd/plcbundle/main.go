@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"tangled.org/atscan.net/plcbundle/bundle"
@@ -61,6 +64,8 @@ func main() {
 	switch command {
 	case "fetch":
 		cmdFetch()
+	case "clone":
+		cmdClone()
 	case "rebuild":
 		cmdRebuild()
 	case "verify":
@@ -96,6 +101,7 @@ Usage:
 
 Commands:
   fetch      Fetch next bundle from PLC directory
+  clone      Clone bundles from remote HTTP endpoint 
   rebuild    Rebuild index from existing bundle files
   verify     Verify bundle integrity
   info       Show bundle information
@@ -237,6 +243,136 @@ func cmdFetch() {
 	} else {
 		fmt.Printf("\n✓ Already up to date!\n")
 	}
+}
+
+func cmdClone() {
+	fs := flag.NewFlagSet("clone", flag.ExitOnError)
+	workers := fs.Int("workers", 4, "number of concurrent download workers")
+	verbose := fs.Bool("v", false, "verbose output")
+	skipExisting := fs.Bool("skip-existing", true, "skip bundles that already exist locally")
+	saveInterval := fs.Duration("save-interval", 5*time.Second, "interval to save index during download")
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: plcbundle clone <remote-url> [options]\n")
+		fmt.Fprintf(os.Stderr, "\nClone bundles from a remote plcbundle HTTP endpoint\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		fs.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle clone https://plc.example.com\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle clone https://plc.example.com --workers 8\n")
+		os.Exit(1)
+	}
+
+	remoteURL := strings.TrimSuffix(fs.Arg(0), "/")
+
+	// Create manager
+	mgr, dir, err := getManager("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer mgr.Close()
+
+	fmt.Printf("Cloning from: %s\n", remoteURL)
+	fmt.Printf("Target directory: %s\n", dir)
+	fmt.Printf("Workers: %d\n", *workers)
+	fmt.Printf("(Press Ctrl+C to safely interrupt - progress will be saved)\n\n")
+
+	// Set up signal handling
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Printf("\n\n⚠️  Interrupt received! Finishing current downloads and saving progress...\n")
+		cancel()
+	}()
+
+	// Set up progress bar
+	var progress *ProgressBar
+	var progressMu sync.Mutex
+
+	// Clone with library
+	result, err := mgr.CloneFromRemote(ctx, bundle.CloneOptions{
+		RemoteURL:    remoteURL,
+		Workers:      *workers,
+		SkipExisting: *skipExisting,
+		SaveInterval: *saveInterval,
+		Verbose:      *verbose,
+		ProgressFunc: func(downloaded, total int, bytesDownloaded, bytesTotal int64) {
+			progressMu.Lock()
+			defer progressMu.Unlock()
+
+			if progress == nil {
+				progress = NewProgressBarWithBytes(total, bytesTotal)
+				progress.showBytes = true
+			}
+			progress.SetWithBytes(downloaded, bytesDownloaded)
+		},
+	})
+
+	if progress != nil {
+		progress.Finish()
+	}
+
+	fmt.Printf("\n")
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Clone failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Display results
+	if result.Interrupted {
+		fmt.Printf("⚠️  Download interrupted by user\n")
+	} else {
+		fmt.Printf("✓ Clone complete in %s\n", result.Duration.Round(time.Millisecond))
+	}
+
+	fmt.Printf("\nResults:\n")
+	fmt.Printf("  Remote bundles: %d\n", result.RemoteBundles)
+	if result.Skipped > 0 {
+		fmt.Printf("  Skipped (existing): %d\n", result.Skipped)
+	}
+	fmt.Printf("  Downloaded: %d\n", result.Downloaded)
+	if result.Failed > 0 {
+		fmt.Printf("  Failed: %d\n", result.Failed)
+	}
+	fmt.Printf("  Total size: %s\n", formatBytes(result.TotalBytes))
+
+	if result.Duration.Seconds() > 0 && result.Downloaded > 0 {
+		mbPerSec := float64(result.TotalBytes) / result.Duration.Seconds() / (1024 * 1024)
+		bundlesPerSec := float64(result.Downloaded) / result.Duration.Seconds()
+		fmt.Printf("  Average speed: %.1f MB/s (%.1f bundles/s)\n", mbPerSec, bundlesPerSec)
+	}
+
+	if result.Failed > 0 {
+		fmt.Printf("\n⚠️  Failed bundles: ")
+		for i, num := range result.FailedBundles {
+			if i > 0 {
+				fmt.Printf(", ")
+			}
+			if i > 10 {
+				fmt.Printf("... and %d more", len(result.FailedBundles)-10)
+				break
+			}
+			fmt.Printf("%06d", num)
+		}
+		fmt.Printf("\n")
+		fmt.Printf("Re-run the clone command to retry failed bundles.\n")
+		os.Exit(1)
+	}
+
+	if result.Interrupted {
+		fmt.Printf("\n✓ Progress saved. Re-run the clone command to resume.\n")
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n✓ Clone complete!\n")
 }
 
 // isEndOfDataError checks if the error indicates we've reached the end of available data
