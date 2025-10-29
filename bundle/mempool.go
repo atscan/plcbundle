@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/atscan/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plc"
 )
 
 const MEMPOOL_FILE_PREFIX = "plc_mempool_"

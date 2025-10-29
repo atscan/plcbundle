@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/atscan/plcbundle/bundle"
-	"github.com/atscan/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/bundle"
+	"tangled.org/atscan.net/plcbundle/plc"
 )
 
 // TestPLCOperation tests operation parsing and methods

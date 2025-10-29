@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/atscan/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plc"
 )
 
 // defaultLogger is a simple logger implementation

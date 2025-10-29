@@ -5,8 +5,8 @@ import (
 	"io"
 	"time"
 
-	"github.com/atscan/plcbundle/bundle"
-	"github.com/atscan/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/bundle"
+	"tangled.org/atscan.net/plcbundle/plc"
 )
 
 // Re-export commonly used types for convenience

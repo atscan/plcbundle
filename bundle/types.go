@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/atscan/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plc"
 )
 
 const (

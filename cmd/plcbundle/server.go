@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/atscan/plcbundle/bundle"
-	"github.com/atscan/plcbundle/plc"
 	"github.com/gorilla/websocket"
+	"tangled.org/atscan.net/plcbundle/bundle"
+	"tangled.org/atscan.net/plcbundle/plc"
 )
 
 var upgrader = websocket.Upgrader{
@@ -79,7 +79,7 @@ plcbundle %s
 	fmt.Fprintf(w, "immutable, cryptographically-chained bundles of 10,000 operations.\n")
 	fmt.Fprintf(w, "Each bundle is hashed (SHA-256), compressed (zstd), and linked to\n")
 	fmt.Fprintf(w, "the previous bundle, creating a verifiable chain of DID operations.\n\n")
-	fmt.Fprintf(w, "More info: https://github.com/atscan/plcbundle\n\n")
+	fmt.Fprintf(w, "More info: https://tangled.org/@atscan.net/plcbundle\n\n")
 
 	fmt.Fprintf(w, "Server Stats\n")
 	fmt.Fprintf(w, "━━━━━━━━━━━━\n")
@@ -203,7 +203,7 @@ plcbundle %s
 	}
 
 	fmt.Fprintf(w, "\n────────────────────────────────────────────────────────────────\n")
-	fmt.Fprintf(w, "plcbundle %s | https://github.com/atscan/plcbundle\n", version)
+	fmt.Fprintf(w, "plcbundle %s | https://tangled.org/@atscan.net/plcbundle\n", version)
 }
 
 // getScheme returns the appropriate HTTP scheme (http or https)

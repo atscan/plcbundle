@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/atscan/plcbundle/bundle"
+	"tangled.org/atscan.net/plcbundle/bundle"
 )
 
 func showGeneralInfo(mgr *bundle.Manager, dir string, verbose bool, showBundles bool, verify bool, showTimeline bool) {

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/atscan/plcbundle/bundle"
+	"tangled.org/atscan.net/plcbundle/bundle"
 )
 
 // IndexComparison holds comparison results

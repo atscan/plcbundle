@@ -1,4 +1,4 @@
-module github.com/atscan/plcbundle
+module tangled.org/atscan.net/plcbundle
 
 go 1.23
 

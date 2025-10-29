@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/atscan/plcbundle/bundle"
-	"github.com/atscan/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/bundle"
+	"tangled.org/atscan.net/plcbundle/plc"
 )
 
 // Version information (injected at build time via ldflags or read from build info)
