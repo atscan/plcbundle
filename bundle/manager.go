@@ -66,17 +66,25 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 
 	// Check for bundle files in directory
 	bundleFiles, _ := filepath.Glob(filepath.Join(config.BundleDir, "*.jsonl.zst"))
-	bundleFiles = filterBundleFiles(bundleFiles) // ← ADD THIS
+	bundleFiles = filterBundleFiles(bundleFiles)
 	hasBundleFiles := len(bundleFiles) > 0
+
+	// Check if clone/download is in progress (look for .tmp files)
+	tmpFiles, _ := filepath.Glob(filepath.Join(config.BundleDir, "*.tmp"))
+	cloneInProgress := len(tmpFiles) > 0
 
 	needsRebuild := false
 
 	if err != nil {
 		// Index doesn't exist or is invalid
 		if hasBundleFiles {
-			// We have bundles but no index - need to rebuild
-			config.Logger.Printf("No valid index found, but detected %d bundle files", len(bundleFiles))
-			needsRebuild = true
+			if cloneInProgress {
+				config.Logger.Printf("Clone/download in progress, skipping auto-rebuild")
+			} else {
+				// We have bundles but no index - need to rebuild
+				config.Logger.Printf("No valid index found, but detected %d bundle files", len(bundleFiles))
+				needsRebuild = true
+			}
 		} else {
 			// No index and no bundles - create fresh index
 			config.Logger.Printf("Creating new index at %s", indexPath)
@@ -91,9 +99,13 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 
 		// Check if there are bundle files not in the index
 		if hasBundleFiles && len(bundleFiles) > index.Count() {
-			config.Logger.Printf("Detected %d bundle files but index only has %d entries - rebuilding",
-				len(bundleFiles), index.Count())
-			needsRebuild = true
+			if cloneInProgress {
+				config.Logger.Printf("Clone/download in progress (%d .tmp files), skipping auto-rebuild", len(tmpFiles))
+			} else {
+				config.Logger.Printf("Detected %d bundle files but index only has %d entries - rebuilding",
+					len(bundleFiles), index.Count())
+				needsRebuild = true
+			}
 		}
 	}
 
@@ -168,10 +180,10 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		bundles := index.GetBundles()
 		missingHashes := 0
 		for i, meta := range bundles {
-			if meta.ContentHash == "" { // ← Changed from meta.Hash
+			if meta.ContentHash == "" {
 				missingHashes++
 			}
-			if i > 0 && meta.Hash == "" { // ← This is now the chain hash
+			if i > 0 && meta.Hash == "" {
 				missingHashes++
 			}
 		}
