@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -82,6 +83,8 @@ func main() {
 		cmdServe()
 	case "compare":
 		cmdCompare()
+	case "detector":
+		cmdDetector()
 	case "version":
 		fmt.Printf("plcbundle version %s\n", version)
 		fmt.Printf("  commit: %s\n", gitCommit)
@@ -110,6 +113,7 @@ Commands:
   mempool    Show mempool status and operations
   serve      Start HTTP server to serve bundle data
   compare    Compare local index with target index
+  detector
   version    Show version
 
 Security Model:
@@ -845,10 +849,26 @@ func showBundleInfo(mgr *bundle.Manager, dir string, bundleNum int, verbose bool
 
 func cmdExport() {
 	fs := flag.NewFlagSet("export", flag.ExitOnError)
-	count := fs.Int("count", 1000, "number of operations to export")
+	bundles := fs.String("bundles", "", "bundle number or range (e.g., '42' or '1-100')")
+	all := fs.Bool("all", false, "export all bundles")
+	count := fs.Int("count", 0, "limit number of operations (0 = all)")
 	after := fs.String("after", "", "timestamp to start after (RFC3339)")
 	fs.Parse(os.Args[2:])
 
+	// Validate flags
+	if !*all && *bundles == "" {
+		fmt.Fprintf(os.Stderr, "Usage: plcbundle export --bundles <number|range> [options]\n")
+		fmt.Fprintf(os.Stderr, "   or: plcbundle export --all [options]\n")
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle export --bundles 42\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle export --bundles 1-100\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle export --all\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle export --all --count 50000\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle export --bundles 42 | jq .\n")
+		os.Exit(1)
+	}
+
+	// Load manager
 	mgr, _, err := getManager("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -856,7 +876,40 @@ func cmdExport() {
 	}
 	defer mgr.Close()
 
-	// Parse after time
+	// Determine bundle range
+	var start, end int
+	if *all {
+		// Export all bundles
+		index := mgr.GetIndex()
+		bundles := index.GetBundles()
+		if len(bundles) == 0 {
+			fmt.Fprintf(os.Stderr, "No bundles available\n")
+			os.Exit(1)
+		}
+		start = bundles[0].BundleNumber
+		end = bundles[len(bundles)-1].BundleNumber
+
+		fmt.Fprintf(os.Stderr, "Exporting all bundles (%d-%d)\n", start, end)
+	} else {
+		// Parse bundle range
+		start, end, err = parseBundleRange(*bundles)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Exporting bundles %d-%d\n", start, end)
+	}
+
+	// Log to stderr
+	if *count > 0 {
+		fmt.Fprintf(os.Stderr, "Limit: %d operations\n", *count)
+	}
+	if *after != "" {
+		fmt.Fprintf(os.Stderr, "After: %s\n", *after)
+	}
+	fmt.Fprintf(os.Stderr, "\n")
+
+	// Parse after time if provided
 	var afterTime time.Time
 	if *after != "" {
 		afterTime, err = time.Parse(time.RFC3339, *after)
@@ -867,20 +920,52 @@ func cmdExport() {
 	}
 
 	ctx := context.Background()
-	ops, err := mgr.ExportOperations(ctx, afterTime, *count)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Export failed: %v\n", err)
-		os.Exit(1)
-	}
+	exported := 0
 
-	// Output as JSONL
-	for _, op := range ops {
-		if len(op.RawJSON) > 0 {
-			fmt.Println(string(op.RawJSON))
+	// Export operations from bundles
+	for bundleNum := start; bundleNum <= end; bundleNum++ {
+		// Check if we've reached the limit
+		if *count > 0 && exported >= *count {
+			break
+		}
+
+		fmt.Fprintf(os.Stderr, "Processing bundle %d...\r", bundleNum)
+
+		bundle, err := mgr.LoadBundle(ctx, bundleNum)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\nWarning: failed to load bundle %d: %v\n", bundleNum, err)
+			continue
+		}
+
+		// Output operations
+		for _, op := range bundle.Operations {
+			// Check after time filter
+			if !afterTime.IsZero() && op.CreatedAt.Before(afterTime) {
+				continue
+			}
+
+			// Check count limit
+			if *count > 0 && exported >= *count {
+				break
+			}
+
+			// Output operation as JSONL
+			if len(op.RawJSON) > 0 {
+				fmt.Println(string(op.RawJSON))
+			} else {
+				// Fallback to marshaling
+				data, _ := json.Marshal(op)
+				fmt.Println(string(data))
+			}
+
+			exported++
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "Exported %d operations\n", len(ops))
+	// Final stats to stderr
+	fmt.Fprintf(os.Stderr, "\n\n")
+	fmt.Fprintf(os.Stderr, "✓ Export complete\n")
+	fmt.Fprintf(os.Stderr, "  Exported: %d operations\n", exported)
 }
 
 func cmdBackfill() {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -80,7 +81,7 @@ func (pb *ProgressBar) Finish() {
 	pb.current = pb.total
 	pb.currentBytes = pb.totalBytes
 	pb.print()
-	fmt.Println() // New line after completion
+	fmt.Fprintf(os.Stderr, "\n") // ← FIXED: Use stderr
 }
 
 // print renders the progress bar (must be called with lock held)
@@ -113,13 +114,13 @@ func (pb *ProgressBar) print() {
 		eta = time.Duration(float64(remaining)/speed) * time.Second
 	}
 
-	// Print progress bar
-	if pb.showBytes && pb.totalBytes > 0 {
+	// Show MB/s if bytes are being tracked (changed condition)
+	if pb.showBytes && pb.currentBytes > 0 {
 		// Calculate MB/s (using decimal units: 1 MB = 1,000,000 bytes)
 		mbProcessed := float64(pb.currentBytes) / (1000 * 1000)
 		mbPerSec := mbProcessed / elapsed.Seconds()
 
-		fmt.Printf("\r  [%s] %6.2f%% | %d/%d bundles | %.1f/s | %.1f MB/s | ETA: %s ",
+		fmt.Fprintf(os.Stderr, "\r  [%s] %6.2f%% | %d/%d bundles | %.1f/s | %.1f MB/s | ETA: %s ",
 			bar,
 			percent,
 			pb.current,
@@ -128,7 +129,7 @@ func (pb *ProgressBar) print() {
 			mbPerSec,
 			formatETA(eta))
 	} else {
-		fmt.Printf("\r  [%s] %6.2f%% | %d/%d bundles | %.1f/s | ETA: %s ",
+		fmt.Fprintf(os.Stderr, "\r  [%s] %6.2f%% | %d/%d bundles | %.1f/s | ETA: %s ",
 			bar,
 			percent,
 			pb.current,
