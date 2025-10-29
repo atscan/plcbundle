@@ -101,7 +101,7 @@ The creation of a new bundle is a sequential process that ensures the integrity 
 
 1.  **Take Operations:** Exactly 10,000 operations are taken from the front of the mempool.
 2.  **Serialize:** These operations are serialized into a single block of newline-delimited JSON ([JSONL](https://jsonlines.org/)), adhering to the integrity rules in [Section 4.2](#42-serialization-and-data-integrity).
-3.  **Compress and Save:** The JSONL data is compressed using [Zstandard](https://facebook.github.io/zstd/) and saved to a file with the appropriate sequential name (e.g., `000001.jsonl.zst`).
+3.  **Compress and Save:** The [JSONL](https://jsonlines.org/) data is compressed using [Zstandard](https://facebook.github.io/zstd/) and saved to a file with the appropriate sequential name (e.g., `000001.jsonl.zst`).
 
 ### 6.3. Hash Calculation
 
