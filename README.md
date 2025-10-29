@@ -51,13 +51,13 @@ The technical specification for the plcbundle V1 format, index, and creation pro
 ## Installation
 
 ```bash
-go get tangled.org/@atscan.net/plcbundle
+go get tangled.org/atscan.net/plcbundle
 ```
 
 For the CLI tool:
 
 ```bash
-go install tangled.org/@atscan.net/plcbundle/cmd/plcbundle@latest
+go install tangled.org/atscan.net/plcbundle/cmd/plcbundle@latest
 ```
 
 ## Quick Start (Library)
@@ -70,7 +70,7 @@ import (
     "log"
     "time"
     
-    plcbundle "tangled.org/@atscan.net/plcbundle"
+    plcbundle "tangled.org/atscan.net/plcbundle"
 )
 
 func main() {
@@ -100,7 +100,7 @@ func main() {
 ```go
 import (
     "context"
-    plcbundle "tangled.org/@atscan.net/plcbundle"
+    "plcbundle tangled.org/atscan.net/plcbundle"
 )
 
 // Create manager with defaults
@@ -115,8 +115,8 @@ defer mgr.Close()
 
 ```go
 import (
-    "tangled.org/@atscan.net/plcbundle/bundle"
-    "tangled.org/@atscan.net/plcbundle/plc"
+    "tangled.org/atscan.net/plcbundle/bundle"
+    "tangled.org/atscan.net/plcbundle/plc"
 )
 
 // Custom config
@@ -148,7 +148,7 @@ import (
     "log"
     "time"
     
-    plcbundle "tangled.org/@atscan.net/plcbundle"
+    plcbundle "tangled.org/atscan.net/plcbundle"
 )
 
 type PLCSync struct {
@@ -399,7 +399,7 @@ import (
     "syscall"
     "time"
     
-    plcbundle "tangled.org/@atscan.net/plcbundle"
+    plcbundle "tangled.org/atscan.net/plcbundle"
 )
 
 type PLCService struct {
