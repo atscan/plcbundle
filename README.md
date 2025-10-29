@@ -30,7 +30,11 @@
 >
 > This project and plcbundle specification is currently unstable and under heavy development. Things can break at any time. Bundle hashes or data formats may change. **Do not** use this for production systems. Please wait for the **`1.0`** release.
 
-A Go library and CLI tool for managing [DID PLC Directory](https://plc.directory/) bundles with transparent synchronization, compression, and verification.
+plcbundle archives AT Protocol's DID PLC Directory operations into immutable, cryptographically-chained bundles of 10,000 operations. Each bundle is hashed (SHA-256), compressed (zstd), and linked to the previous bundle, creating a verifiable chain of DID operations.
+
+This repository contains a reference library and a CLI tool written in Go language.
+
+The technical specification for the plcbundle V1 format, index, and creation process can be found in the [specification document](./SPECIFICATION.md).
 
 ## Features
 
@@ -645,30 +649,7 @@ type Config struct {
     VerifyOnLoad     bool               // Verify hashes when loading
     Logger           Logger             // Custom logger
 }
-
-// Compression levels
-const (
-    CompressionFastest  // Fastest compression
-    CompressionDefault  // Balanced
-    CompressionBetter   // Better compression (default)
-    CompressionBest     // Best compression
-)
 ```
-
-## Bundle Format
-
-- **File naming**: `NNNNNN.jsonl.zst` (e.g., `000001.jsonl.zst`)
-- **Size**: 10,000 operations per bundle
-- **Compression**: Zstandard
-- **Index**: `plc_bundles.json` (metadata and chain info)
-
-## Best Practices
-
-1. **Regular Updates**: Run periodic updates (5-10 minutes) to stay synchronized
-2. **Error Handling**: Handle "insufficient operations" error as "caught up" signal
-3. **Verification**: Periodically verify chain integrity
-4. **Rate Limiting**: Default 90 req/min is safe for PLC directory
-5. **Storage**: Plan ~1-2 GB per million operations (compressed)
 
 ## License
 
