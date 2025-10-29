@@ -286,15 +286,24 @@ func cmdClone() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	go func() {
-		<-sigChan
-		fmt.Printf("\n\n⚠️  Interrupt received! Finishing current downloads and saving progress...\n")
-		cancel()
-	}()
-
-	// Set up progress bar
+	// Set up progress bar with interrupt tracking
 	var progress *ProgressBar
 	var progressMu sync.Mutex
+	progressActive := true // Track if progress should be updated
+
+	go func() {
+		<-sigChan
+		// Stop progress updates immediately
+		progressMu.Lock()
+		progressActive = false
+		if progress != nil {
+			fmt.Println() // Move to new line after progress bar
+		}
+		progressMu.Unlock()
+
+		fmt.Printf("\n⚠️  Interrupt received! Finishing current downloads and saving progress...\n")
+		cancel()
+	}()
 
 	// Clone with library
 	result, err := mgr.CloneFromRemote(ctx, bundle.CloneOptions{
@@ -307,6 +316,11 @@ func cmdClone() {
 			progressMu.Lock()
 			defer progressMu.Unlock()
 
+			// Stop updating progress if interrupted
+			if !progressActive {
+				return
+			}
+
 			if progress == nil {
 				progress = NewProgressBarWithBytes(total, bytesTotal)
 				progress.showBytes = true
@@ -315,11 +329,10 @@ func cmdClone() {
 		},
 	})
 
-	if progress != nil {
-		progress.Finish()
-	}
-
-	fmt.Printf("\n")
+	// Ensure progress is stopped
+	progressMu.Lock()
+	progressActive = false
+	progressMu.Unlock()
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Clone failed: %v\n", err)
@@ -330,7 +343,7 @@ func cmdClone() {
 	if result.Interrupted {
 		fmt.Printf("⚠️  Download interrupted by user\n")
 	} else {
-		fmt.Printf("✓ Clone complete in %s\n", result.Duration.Round(time.Millisecond))
+		fmt.Printf("\n✓ Clone complete in %s\n", result.Duration.Round(time.Millisecond))
 	}
 
 	fmt.Printf("\nResults:\n")
