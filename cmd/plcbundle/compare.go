@@ -57,6 +57,11 @@ func loadTargetIndex(target string) (*bundle.Index, error) {
 
 // loadIndexFromURL downloads and parses an index from a URL
 func loadIndexFromURL(url string) (*bundle.Index, error) {
+	// Smart URL handling - if it doesn't end with .json, append /index.json
+	if !strings.HasSuffix(url, ".json") {
+		url = strings.TrimSuffix(url, "/") + "/index.json"
+	}
+
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}

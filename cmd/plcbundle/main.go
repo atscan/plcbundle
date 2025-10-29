@@ -1293,12 +1293,15 @@ func cmdCompare() {
 	fs.Parse(os.Args[2:])
 
 	if fs.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: plcbundle compare <target>\n")
-		fmt.Fprintf(os.Stderr, "  target: path to plc_bundles.json or URL\n")
+		fmt.Fprintf(os.Stderr, "Usage: plcbundle compare <target> [options]\n")
+		fmt.Fprintf(os.Stderr, "  target: URL or path to remote plcbundle server/index\n")
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle compare https://plc.example.com\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle compare https://plc.example.com/index.json\n")
 		fmt.Fprintf(os.Stderr, "  plcbundle compare /path/to/plc_bundles.json\n")
-		fmt.Fprintf(os.Stderr, "  plcbundle compare https://example.com/index.json\n")
-		fmt.Fprintf(os.Stderr, "  plcbundle compare https://example.com/index.json --fetch-missing\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle compare https://plc.example.com --fetch-missing\n")
+		fmt.Fprintf(os.Stderr, "\nOptions:\n")
+		fs.PrintDefaults()
 		os.Exit(1)
 	}
 
