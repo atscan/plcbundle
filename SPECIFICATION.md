@@ -10,10 +10,10 @@
 
 ## 2. Key Terminology
 
-*   **Operation:** A single DID PLC operation, as exported from a PLC directory's [`/export` endpoint](https://web.plc.directory/api/redoc#operation/Export). It is represented as a single JSON object.
+*   **Operation:** A single DID PLC operation, as exported from a PLC directory's export endpoint. It is represented as a single JSON object.
 *   **Bundle:** A single compressed file containing a fixed number of operations.
 *   **Index:** A JSON file named `plc_bundles.json` that contains metadata for all available bundles in the repository. It is the entry point for discovering and verifying bundles.
-*   **Content Hash:** The [SHA-256](https://en.wikipedia.org/wiki/SHA-2) hash of the *uncompressed* [JSONL](https://jsonlines.org/) content of a single bundle. This hash uniquely identifies the bundle's data.
+*   **Content Hash:** The SHA-256 hash of the *uncompressed* content of a single bundle. This hash uniquely identifies the bundle's data.
 *   **Chain Hash:** A cumulative SHA-256 hash that links a bundle to its predecessor, ensuring the integrity and order of the entire chain.
 *   **Compressed Hash:** The SHA-256 hash of the *compressed* `.jsonl.zst` bundle file. This is used to verify file integrity during downloads.
 
@@ -105,7 +105,7 @@ The creation of a new bundle is a sequential process that ensures the integrity 
 
 ### 6.3. Hash Calculation
 
-Three distinct hashes are calculated for each bundle. All use the **SHA-256** algorithm.
+Three distinct hashes are calculated for each bundle. All use the [SHA-256](https://en.wikipedia.org/wiki/SHA-2) algorithm.
 
 1.  **Content Hash (`content_hash`):**
     *   This hash is calculated on the **uncompressed** JSONL data.
