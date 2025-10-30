@@ -11,20 +11,22 @@ import (
 
 // InvalidHandleDetector detects operations with invalid handle patterns
 type InvalidHandleDetector struct {
-	// Valid handle regex: lowercase letters, numbers, hyphens, dots only
+	// Valid handle regex based on AT Protocol handle specification
 	validHandlePattern *regexp.Regexp
 }
 
 func NewInvalidHandleDetector() *InvalidHandleDetector {
 	return &InvalidHandleDetector{
-		// Valid handle: alphanumeric, hyphens, dots (no underscores!)
-		validHandlePattern: regexp.MustCompile(`^at://[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*\.[a-z]+$`),
+		// Valid handle pattern: domain segments + TLD
+		// Each segment: alphanumeric start/end, hyphens allowed in middle, max 63 chars per segment
+		// TLD must start with letter
+		validHandlePattern: regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`),
 	}
 }
 
 func (d *InvalidHandleDetector) Name() string { return "invalid_handle" }
 func (d *InvalidHandleDetector) Description() string {
-	return "Detects operations with invalid handle patterns (underscores, invalid chars)"
+	return "Detects operations with invalid handle patterns (underscores, invalid chars, malformed)"
 }
 func (d *InvalidHandleDetector) Version() string { return "1.0.0" }
 
@@ -37,30 +39,122 @@ func (d *InvalidHandleDetector) Detect(ctx context.Context, op plc.PLCOperation)
 					continue
 				}
 
+				// Extract handle (remove at:// prefix)
+				handle := strings.TrimPrefix(str, "at://")
+
+				// Remove any path component (e.g., at://user.bsky.social/profile -> user.bsky.social)
+				if idx := strings.Index(handle, "/"); idx > 0 {
+					handle = handle[:idx]
+				}
+
 				// Check for underscore (invalid in Bluesky handles)
-				if strings.Contains(str, "_") {
+				if strings.Contains(handle, "_") {
 					return &Match{
 						Reason:     "underscore_in_handle",
 						Category:   "invalid_handle",
 						Confidence: 0.99,
-						Note:       "Handle contains underscore which is invalid in Bluesky",
+						Note:       "Handle contains underscore which is invalid in AT Protocol",
 						Metadata: map[string]interface{}{
 							"invalid_handle": str,
+							"extracted":      handle,
 							"violation":      "underscore_character",
 						},
 					}, nil
 				}
 
-				// Check if handle matches valid pattern
-				if !d.validHandlePattern.MatchString(str) {
+				// Check for other invalid characters (anything not alphanumeric, hyphen, or dot)
+				invalidChars := regexp.MustCompile(`[^a-zA-Z0-9.-]`)
+				if invalidChars.MatchString(handle) {
+					return &Match{
+						Reason:     "invalid_characters",
+						Category:   "invalid_handle",
+						Confidence: 0.99,
+						Note:       "Handle contains invalid characters",
+						Metadata: map[string]interface{}{
+							"invalid_handle": str,
+							"extracted":      handle,
+							"violation":      "invalid_characters",
+						},
+					}, nil
+				}
+
+				// Check if handle matches valid AT Protocol pattern
+				if !d.validHandlePattern.MatchString(handle) {
 					return &Match{
 						Reason:     "invalid_handle_pattern",
 						Category:   "invalid_handle",
 						Confidence: 0.95,
-						Note:       "Handle does not match valid Bluesky handle pattern",
+						Note:       "Handle does not match valid AT Protocol handle pattern",
 						Metadata: map[string]interface{}{
 							"invalid_handle": str,
+							"extracted":      handle,
 							"violation":      "pattern_mismatch",
+						},
+					}, nil
+				}
+
+				// Additional checks: handle length
+				if len(handle) > 253 { // DNS maximum
+					return &Match{
+						Reason:     "handle_too_long",
+						Category:   "invalid_handle",
+						Confidence: 0.98,
+						Note:       "Handle exceeds maximum length (253 characters)",
+						Metadata: map[string]interface{}{
+							"invalid_handle": str,
+							"extracted":      handle,
+							"length":         len(handle),
+							"violation":      "exceeds_max_length",
+						},
+					}, nil
+				}
+
+				// Check segment lengths (each part between dots should be max 63 chars)
+				segments := strings.Split(handle, ".")
+				for i, segment := range segments {
+					if len(segment) == 0 {
+						return &Match{
+							Reason:     "empty_segment",
+							Category:   "invalid_handle",
+							Confidence: 0.99,
+							Note:       "Handle contains empty segment (consecutive dots)",
+							Metadata: map[string]interface{}{
+								"invalid_handle": str,
+								"extracted":      handle,
+								"violation":      "empty_segment",
+							},
+						}, nil
+					}
+					if len(segment) > 63 {
+						return &Match{
+							Reason:     "segment_too_long",
+							Category:   "invalid_handle",
+							Confidence: 0.98,
+							Note:       "Handle segment exceeds maximum length (63 characters)",
+							Metadata: map[string]interface{}{
+								"invalid_handle": str,
+								"extracted":      handle,
+								"segment":        i,
+								"segment_value":  segment,
+								"length":         len(segment),
+								"violation":      "segment_exceeds_max_length",
+							},
+						}, nil
+					}
+				}
+
+				// Check minimum segments (at least 2: subdomain.tld)
+				if len(segments) < 2 {
+					return &Match{
+						Reason:     "insufficient_segments",
+						Category:   "invalid_handle",
+						Confidence: 0.99,
+						Note:       "Handle must have at least 2 segments (subdomain.tld)",
+						Metadata: map[string]interface{}{
+							"invalid_handle": str,
+							"extracted":      handle,
+							"segments":       len(segments),
+							"violation":      "insufficient_segments",
 						},
 					}, nil
 				}

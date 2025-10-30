@@ -10,7 +10,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	"tangled.org/atscan.net/plcbundle/detector"
 	"tangled.org/atscan.net/plcbundle/plc"
@@ -422,7 +421,7 @@ func cmdDetectorRun() {
 	ctx := context.Background()
 
 	// Write CSV header to stdout
-	fmt.Println("bundle,position,cid,detectors,confidence,detected_at,size")
+	fmt.Println("bundle,position,cid,size,confidence,labels")
 
 	// Track statistics
 	totalOps := 0
@@ -471,7 +470,6 @@ func cmdDetectorRun() {
 			// Collect all matches for this operation
 			var matchedDetectors []string
 			var maxConfidence float64
-			var detectedAt time.Time
 
 			// Run all detectors on this operation
 			for _, det := range detectors {
@@ -493,11 +491,6 @@ func cmdDetectorRun() {
 				if match.Confidence > maxConfidence {
 					maxConfidence = match.Confidence
 				}
-
-				// Use current time for first match
-				if detectedAt.IsZero() {
-					detectedAt = time.Now()
-				}
 			}
 
 			// Output only if at least one detector matched
@@ -505,14 +498,19 @@ func cmdDetectorRun() {
 				matchCount++
 				matchedBytes += int64(opSize)
 
-				fmt.Printf("%d,%d,%s,%s,%.2f,%s,%d\n",
+				// Extract last 4 chars of CID
+				cidShort := op.CID
+				if len(cidShort) > 4 {
+					cidShort = cidShort[len(cidShort)-4:]
+				}
+
+				fmt.Printf("%d,%d,%s,%d,%.2f,%s\n",
 					bundleNum,
 					position,
-					op.CID,
-					strings.Join(matchedDetectors, ";"),
-					maxConfidence,
-					detectedAt.Format("2006-01-02T15:04:05Z"),
+					cidShort,
 					opSize,
+					maxConfidence,
+					strings.Join(matchedDetectors, ";"),
 				)
 			}
 		}
