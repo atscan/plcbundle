@@ -9,6 +9,24 @@ import (
 	"tangled.org/atscan.net/plcbundle/plc"
 )
 
+// NoOpDetector is an empty detector for speed testing
+type NoOpDetector struct{}
+
+func NewNoOpDetector() *NoOpDetector {
+	return &NoOpDetector{}
+}
+
+func (d *NoOpDetector) Name() string { return "noop" }
+func (d *NoOpDetector) Description() string {
+	return "Empty detector for benchmarking (always returns no match)"
+}
+func (d *NoOpDetector) Version() string { return "1.0.0" }
+
+func (d *NoOpDetector) Detect(ctx context.Context, op plc.PLCOperation) (*Match, error) {
+	// Instant return - no work done
+	return nil, nil
+}
+
 // InvalidHandleDetector detects operations with invalid handle patterns
 type InvalidHandleDetector struct {
 	// Valid handle regex based on AT Protocol handle specification

@@ -76,6 +76,8 @@ func (r *Registry) Names() []string {
 func DefaultRegistry() *Registry {
 	r := NewRegistry()
 
+	r.Register(NewNoOpDetector())
+
 	// Register real spam detectors
 	r.Register(NewInvalidHandleDetector())
 	r.Register(NewAlsoKnownAsSpamDetector())
