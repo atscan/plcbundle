@@ -58,22 +58,35 @@ Commands:
   info          Show detailed detector information
 
 Examples:
+  # List all built-in detectors
   plcbundle detector list
-  plcbundle detector test nostr --bundle 42
-  plcbundle detector run all --bundles 1-100 > results.csv
-  plcbundle backfill | plcbundle detector filter all > filtered.jsonl
-  plcbundle detector info nostr
+
+  # Run built-in detector
+  plcbundle detector run invalid_handle --bundles 1-100
+
+  # Run custom JavaScript detector
+  plcbundle detector run ./my_detector.js --bundles 1-100
+
+  # Run multiple detectors (built-in + custom)
+  plcbundle detector run invalid_handle ./my_detector.js --bundles 1-100
+
+  # Run all built-in detectors
+  plcbundle detector run all --bundles 1-100
+
+  # Filter with custom detector
+  plcbundle backfill | plcbundle detector filter ./my_detector.js > clean.jsonl
 `)
 }
 
 // cmdDetectorFilter reads JSONL from stdin, filters OUT spam, outputs clean operations
 func cmdDetectorFilter() {
 	if len(os.Args) < 4 {
-		fmt.Fprintf(os.Stderr, "Usage: plcbundle detector filter <detector1> [detector2...] [--confidence 0.9]\n")
+		fmt.Fprintf(os.Stderr, "Usage: plcbundle detector filter <detector1|script.js> [detector2...] [--confidence 0.9]\n")
 		fmt.Fprintf(os.Stderr, "\nFilters OUT operations that match detectors (outputs clean data)\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
 		fmt.Fprintf(os.Stderr, "  plcbundle backfill | plcbundle detector filter all > clean.jsonl\n")
 		fmt.Fprintf(os.Stderr, "  plcbundle export --bundle 1 | plcbundle detector filter invalid_handle > clean.jsonl\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle backfill | plcbundle detector filter ./my_detector.js > clean.jsonl\n")
 		os.Exit(1)
 	}
 
@@ -103,6 +116,14 @@ func cmdDetectorFilter() {
 	// Setup registry
 	registry := detector.DefaultRegistry()
 
+	// Track script detectors for cleanup
+	var scriptDetectors []*detector.ScriptDetector
+	defer func() {
+		for _, sd := range scriptDetectors {
+			sd.Close()
+		}
+	}()
+
 	// Handle "all" keyword
 	if len(detectorNames) == 1 && detectorNames[0] == "all" {
 		detectorNames = registry.Names()
@@ -112,16 +133,29 @@ func cmdDetectorFilter() {
 	// Get all detectors
 	detectors := make([]detector.Detector, 0, len(detectorNames))
 	for _, name := range detectorNames {
-		d, err := registry.Get(name)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+		// Check if it's a .js file (script detector)
+		if strings.HasSuffix(name, ".js") {
+			scriptDetector, err := detector.NewScriptDetector(name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error loading script %s: %v\n", name, err)
+				os.Exit(1)
+			}
+			scriptDetectors = append(scriptDetectors, scriptDetector)
+			registry.Register(scriptDetector)
+			detectors = append(detectors, scriptDetector)
+			fmt.Fprintf(os.Stderr, "✓ Started detector server: %s\n", scriptDetector.Name())
+		} else {
+			d, err := registry.Get(name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			detectors = append(detectors, d)
 		}
-		detectors = append(detectors, d)
 	}
 
 	// Log to stderr
-	fmt.Fprintf(os.Stderr, "Filtering OUT spam with %d detector(s)\n", len(detectorNames))
+	fmt.Fprintf(os.Stderr, "Filtering OUT spam with %d detector(s)\n", len(detectors))
 	if len(detectorNames) <= 5 {
 		fmt.Fprintf(os.Stderr, "Detectors: %s\n", strings.Join(detectorNames, ", "))
 	}
@@ -137,8 +171,8 @@ func cmdDetectorFilter() {
 	cleanCount := 0
 	filteredCount := 0
 	totalCount := 0
-	totalBytes := int64(0)    // ← Add total bytes
-	filteredBytes := int64(0) // ← Add filtered bytes
+	totalBytes := int64(0)
+	filteredBytes := int64(0)
 
 	// Read JSONL from stdin
 	for scanner.Scan() {
@@ -149,7 +183,7 @@ func cmdDetectorFilter() {
 
 		totalCount++
 		opSize := int64(len(line))
-		totalBytes += opSize // ← Track total
+		totalBytes += opSize
 
 		// Parse operation
 		var op plc.PLCOperation
@@ -180,7 +214,7 @@ func cmdDetectorFilter() {
 			fmt.Println(string(line))
 		} else {
 			filteredCount++
-			filteredBytes += opSize // ← Track filtered bytes
+			filteredBytes += opSize
 		}
 
 		// Progress to stderr
@@ -201,10 +235,12 @@ func cmdDetectorFilter() {
 	fmt.Fprintf(os.Stderr, "  Total operations: %d\n", totalCount)
 	fmt.Fprintf(os.Stderr, "  Clean: %d (%.2f%%)\n", cleanCount, float64(cleanCount)/float64(totalCount)*100)
 	fmt.Fprintf(os.Stderr, "  Filtered out: %d (%.2f%%)\n", filteredCount, float64(filteredCount)/float64(totalCount)*100)
+	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  Total size: %s\n", formatBytes(totalBytes))
 	fmt.Fprintf(os.Stderr, "  Filtered size: %s (%.2f%%)\n", formatBytes(filteredBytes), float64(filteredBytes)/float64(totalBytes)*100)
 	fmt.Fprintf(os.Stderr, "  Clean size: %s (%.2f%%)\n", formatBytes(totalBytes-filteredBytes), float64(totalBytes-filteredBytes)/float64(totalBytes)*100)
-	fmt.Fprintf(os.Stderr, "  Detectors used: %d\n", len(detectorNames))
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  Detectors used: %d\n", len(detectors))
 }
 
 func cmdDetectorList() {
@@ -334,8 +370,12 @@ func cmdDetectorTest() {
 
 func cmdDetectorRun() {
 	if len(os.Args) < 4 {
-		fmt.Fprintf(os.Stderr, "Usage: plcbundle detector run <detector1> [detector2...] --bundles 1-100\n")
-		fmt.Fprintf(os.Stderr, "\nUse 'all' to run all available detectors\n")
+		fmt.Fprintf(os.Stderr, "Usage: plcbundle detector run <detector1|script.js> [detector2...] [--bundles 1-100]\n")
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle detector run invalid_handle --bundles 1-100\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle detector run invalid_handle aka_spam --bundles 1-100\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle detector run ./my_detector.js --bundles 1-100\n")
+		fmt.Fprintf(os.Stderr, "  plcbundle detector run all  # runs on all bundles\n")
 		os.Exit(1)
 	}
 
@@ -346,42 +386,24 @@ func cmdDetectorRun() {
 	for i := 3; i < len(os.Args); i++ {
 		arg := os.Args[i]
 		if strings.HasPrefix(arg, "-") {
-			// This and all remaining are flags
 			flagArgs = os.Args[i:]
 			break
 		}
-		// Detector name
 		detectorNames = append(detectorNames, arg)
 	}
 
 	if len(detectorNames) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: at least one detector name required\n")
-		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  plcbundle detector run invalid_handle --bundles 1-100\n")
-		fmt.Fprintf(os.Stderr, "  plcbundle detector run invalid_handle aka_spam --bundles 1-100\n")
-		fmt.Fprintf(os.Stderr, "  plcbundle detector run all --bundles 1-100\n")
 		os.Exit(1)
 	}
 
 	// Parse flags
 	fs := flag.NewFlagSet("detector run", flag.ExitOnError)
-	bundleRange := fs.String("bundles", "", "bundle range (e.g., '1-100')")
+	bundleRange := fs.String("bundles", "", "bundle range (e.g., '1-100'), default: all bundles")
 	confidence := fs.Float64("confidence", 0.90, "minimum confidence")
 	fs.Parse(flagArgs)
 
-	if *bundleRange == "" {
-		fmt.Fprintf(os.Stderr, "Error: --bundles required\n")
-		os.Exit(1)
-	}
-
-	// Parse bundle range
-	start, end, err := parseBundleRange(*bundleRange)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Load manager
+	// Load manager (needed to determine bundle range)
 	mgr, _, err := getManager("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -389,10 +411,40 @@ func cmdDetectorRun() {
 	}
 	defer mgr.Close()
 
+	// Determine bundle range
+	var start, end int
+	if *bundleRange == "" {
+		// Default to all bundles
+		index := mgr.GetIndex()
+		bundles := index.GetBundles()
+		if len(bundles) == 0 {
+			fmt.Fprintf(os.Stderr, "Error: no bundles available\n")
+			os.Exit(1)
+		}
+		start = bundles[0].BundleNumber
+		end = bundles[len(bundles)-1].BundleNumber
+		fmt.Fprintf(os.Stderr, "No --bundles specified, using all available bundles: %d-%d\n", start, end)
+	} else {
+		// Parse provided range
+		start, end, err = parseBundleRange(*bundleRange)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// Setup registry
 	registry := detector.DefaultRegistry()
 	config := detector.DefaultConfig()
 	config.MinConfidence = *confidence
+
+	// Track script detectors for cleanup
+	var scriptDetectors []*detector.ScriptDetector
+	defer func() {
+		for _, sd := range scriptDetectors {
+			sd.Close()
+		}
+	}()
 
 	// Handle "all" keyword - expand to all available detectors
 	if len(detectorNames) == 1 && detectorNames[0] == "all" {
@@ -400,23 +452,39 @@ func cmdDetectorRun() {
 		fmt.Fprintf(os.Stderr, "Using all available detectors: %s\n", strings.Join(detectorNames, ", "))
 	}
 
+	// Load detectors (built-in or scripts)
+	detectors := make([]detector.Detector, 0, len(detectorNames))
+	for _, name := range detectorNames {
+		// Check if it's a .js file (script detector)
+		if strings.HasSuffix(name, ".js") {
+			scriptDetector, err := detector.NewScriptDetector(name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error loading script %s: %v\n", name, err)
+				os.Exit(1)
+			}
+			// Track for cleanup
+			scriptDetectors = append(scriptDetectors, scriptDetector)
+			// Register it so it can be used
+			registry.Register(scriptDetector)
+			detectors = append(detectors, scriptDetector)
+			fmt.Fprintf(os.Stderr, "✓ Started detector server: %s\n", scriptDetector.Name())
+		} else {
+			// Try to get built-in detector
+			d, err := registry.Get(name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			detectors = append(detectors, d)
+		}
+	}
+
 	// Log to stderr
-	fmt.Fprintf(os.Stderr, "Running %d detector(s) on bundles %d-%d...\n", len(detectorNames), start, end)
+	fmt.Fprintf(os.Stderr, "Running %d detector(s) on bundles %d-%d...\n", len(detectors), start, end)
 	if len(detectorNames) <= 5 {
 		fmt.Fprintf(os.Stderr, "Detectors: %s\n", strings.Join(detectorNames, ", "))
 	}
 	fmt.Fprintf(os.Stderr, "Min confidence: %.2f\n\n", *confidence)
-
-	// Get all detectors
-	detectors := make([]detector.Detector, 0, len(detectorNames))
-	for _, name := range detectorNames {
-		d, err := registry.Get(name)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		detectors = append(detectors, d)
-	}
 
 	ctx := context.Background()
 
@@ -436,13 +504,12 @@ func cmdDetectorRun() {
 	// Create progress bar with byte tracking enabled
 	fmt.Fprintf(os.Stderr, "Processing bundles:\n")
 	progress := NewProgressBar(totalBundles)
-	progress.showBytes = true // Enable byte tracking
+	progress.showBytes = true
 
 	// Process bundles and stream results
 	for bundleNum := start; bundleNum <= end; bundleNum++ {
 		bundle, err := mgr.LoadBundle(ctx, bundleNum)
 		if err != nil {
-			// Don't update progress on error, just log
 			progress.Finish()
 			fmt.Fprintf(os.Stderr, "\n⚠️  Warning: failed to load bundle %d: %v\n", bundleNum, err)
 			progress = NewProgressBar(totalBundles)
@@ -456,19 +523,18 @@ func cmdDetectorRun() {
 
 		// Process each operation with all detectors
 		for position, op := range bundle.Operations {
-			// Calculate operation size first
+			// Calculate operation size
 			var opSize int
 			if len(op.RawJSON) > 0 {
 				opSize = len(op.RawJSON)
 			} else {
-				// Fallback: marshal to get size
 				data, _ := json.Marshal(op)
 				opSize = len(data)
 			}
 			totalBytes += int64(opSize)
 
 			// Collect all matches for this operation
-			var matchedDetectors []string
+			var matchedLabels []string
 			var maxConfidence float64
 
 			// Run all detectors on this operation
@@ -483,8 +549,25 @@ func cmdDetectorRun() {
 					continue
 				}
 
-				// Collect detector name
-				matchedDetectors = append(matchedDetectors, det.Name())
+				// Extract labels from match metadata
+				var labels []string
+				if labelList, ok := match.Metadata["labels"].([]string); ok {
+					labels = labelList
+				} else if labelList, ok := match.Metadata["labels"].([]interface{}); ok {
+					for _, l := range labelList {
+						if str, ok := l.(string); ok {
+							labels = append(labels, str)
+						}
+					}
+				}
+
+				// If no labels in metadata, use detector name
+				if len(labels) == 0 {
+					labels = []string{det.Name()}
+				}
+
+				// Collect all labels
+				matchedLabels = append(matchedLabels, labels...)
 				detectorMatchCounts[det.Name()]++
 
 				// Track highest confidence
@@ -494,7 +577,7 @@ func cmdDetectorRun() {
 			}
 
 			// Output only if at least one detector matched
-			if len(matchedDetectors) > 0 {
+			if len(matchedLabels) > 0 {
 				matchCount++
 				matchedBytes += int64(opSize)
 
@@ -510,7 +593,7 @@ func cmdDetectorRun() {
 					cidShort,
 					opSize,
 					maxConfidence,
-					strings.Join(matchedDetectors, ";"),
+					strings.Join(matchedLabels, ";"),
 				)
 			}
 		}
@@ -542,13 +625,14 @@ func cmdDetectorRun() {
 	}
 
 	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  Detectors used:     %d\n", len(detectorNames))
+	fmt.Fprintf(os.Stderr, "  Detectors used:     %d\n", len(detectors))
 
 	// Show breakdown by detector if multiple used
-	if len(detectorNames) > 1 {
+	if len(detectors) > 1 {
 		fmt.Fprintf(os.Stderr, "\n")
 		fmt.Fprintf(os.Stderr, "  Matches by detector:\n")
-		for _, name := range detectorNames {
+		for _, det := range detectors {
+			name := det.Name()
 			count := detectorMatchCounts[name]
 			if count > 0 {
 				pct := float64(count) / float64(matchCount) * 100
