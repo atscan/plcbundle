@@ -79,7 +79,6 @@ func DefaultRegistry() *Registry {
 	// Register real spam detectors
 	r.Register(NewInvalidHandleDetector())
 	r.Register(NewAlsoKnownAsSpamDetector())
-	r.Register(NewCompositeSpamDetector())
 	r.Register(NewSpamPDSDetector())
 	r.Register(NewServiceAbuseDetector())
 

@@ -251,57 +251,6 @@ func (d *AlsoKnownAsSpamDetector) Detect(ctx context.Context, op plc.PLCOperatio
 	return nil, nil
 }
 
-// CompositeSpamDetector combines multiple signals for higher confidence
-type CompositeSpamDetector struct {
-	invalidHandle *InvalidHandleDetector
-	akaSpam       *AlsoKnownAsSpamDetector
-}
-
-func NewCompositeSpamDetector() *CompositeSpamDetector {
-	return &CompositeSpamDetector{
-		invalidHandle: NewInvalidHandleDetector(),
-		akaSpam:       NewAlsoKnownAsSpamDetector(),
-	}
-}
-
-func (d *CompositeSpamDetector) Name() string { return "composite_spam" }
-func (d *CompositeSpamDetector) Description() string {
-	return "Combines multiple spam signals for high-confidence detection"
-}
-func (d *CompositeSpamDetector) Version() string { return "1.0.0" }
-
-func (d *CompositeSpamDetector) Detect(ctx context.Context, op plc.PLCOperation) (*Match, error) {
-	// Check both detectors
-	invalidHandleMatch, _ := d.invalidHandle.Detect(ctx, op)
-	akaSpamMatch, _ := d.akaSpam.Detect(ctx, op)
-
-	// If both match, very high confidence
-	if invalidHandleMatch != nil && akaSpamMatch != nil {
-		return &Match{
-			Reason:     "multiple_spam_indicators",
-			Category:   "spam",
-			Confidence: 0.99,
-			Note:       "Operation has both invalid handle and excessive alsoKnownAs entries",
-			Metadata: map[string]interface{}{
-				"invalid_handle_reason": invalidHandleMatch.Reason,
-				"aka_spam_reason":       akaSpamMatch.Reason,
-				"invalid_handle_data":   invalidHandleMatch.Metadata,
-				"aka_spam_data":         akaSpamMatch.Metadata,
-			},
-		}, nil
-	}
-
-	// Return whichever matched
-	if invalidHandleMatch != nil {
-		return invalidHandleMatch, nil
-	}
-	if akaSpamMatch != nil {
-		return akaSpamMatch, nil
-	}
-
-	return nil, nil
-}
-
 // SpamPDSDetector detects known spam PDS endpoints
 type SpamPDSDetector struct {
 	spamEndpoints map[string]bool
