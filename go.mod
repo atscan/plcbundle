@@ -1,12 +1,9 @@
 module tangled.org/atscan.net/plcbundle
 
-go 1.23
-
-require github.com/klauspost/compress v1.18.1
-
-require github.com/gorilla/websocket v1.5.3
+go 1.25
 
 require (
-	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
-	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
+	github.com/DataDog/zstd v1.5.7
+	github.com/goccy/go-json v0.10.5
+	github.com/gorilla/websocket v1.5.3
 )

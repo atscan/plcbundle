@@ -2,7 +2,6 @@ package bundle
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/goccy/go-json"
 )
 
 // CloneFromRemote clones bundles from a remote HTTP endpoint

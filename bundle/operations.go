@@ -5,51 +5,27 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
+	gozstd "github.com/DataDog/zstd"
+	"github.com/goccy/go-json"
 	"tangled.org/atscan.net/plcbundle/plc"
 )
 
 // Operations handles low-level bundle file operations
 type Operations struct {
-	encoder *zstd.Encoder
-	decoder *zstd.Decoder
-	logger  Logger
+	logger Logger
 }
 
-// NewOperations creates a new Operations handler with default compression
 func NewOperations(logger Logger) (*Operations, error) {
-	// Always use default compression (level 3 - good balance)
-	encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create zstd encoder: %w", err)
-	}
-
-	decoder, err := zstd.NewReader(nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create zstd decoder: %w", err)
-	}
-
-	return &Operations{
-		encoder: encoder,
-		decoder: decoder,
-		logger:  logger,
-	}, nil
+	return &Operations{logger: logger}, nil
 }
 
-// Close cleans up resources
 func (op *Operations) Close() {
-	if op.encoder != nil {
-		op.encoder.Close()
-	}
-	if op.decoder != nil {
-		op.decoder.Close()
-	}
+	// Nothing to close
 }
 
 // ========================================
@@ -81,34 +57,24 @@ func (op *Operations) SerializeJSONL(operations []plc.PLCOperation) []byte {
 func (op *Operations) ParseJSONL(data []byte) ([]plc.PLCOperation, error) {
 	var operations []plc.PLCOperation
 	scanner := bufio.NewScanner(bytes.NewReader(data))
-
-	// Set a large buffer for long lines
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
-	lineNum := 0
 	for scanner.Scan() {
-		lineNum++
 		line := scanner.Bytes()
-
 		if len(line) == 0 {
 			continue
 		}
 
 		var operation plc.PLCOperation
+		// Use sonic instead of json.Unmarshal
 		if err := json.Unmarshal(line, &operation); err != nil {
-			return nil, fmt.Errorf("failed to parse line %d: %w", lineNum, err)
+			return nil, fmt.Errorf("failed to parse line: %w", err)
 		}
 
-		// Store raw JSON
 		operation.RawJSON = make([]byte, len(line))
 		copy(operation.RawJSON, line)
-
 		operations = append(operations, operation)
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scanner error: %w", err)
 	}
 
 	return operations, nil
@@ -118,38 +84,37 @@ func (op *Operations) ParseJSONL(data []byte) ([]plc.PLCOperation, error) {
 // FILE OPERATIONS (uses JSONL + compression)
 // ========================================
 
-// LoadBundle loads a compressed bundle from disk
+// LoadBundle loads a compressed bundle
 func (op *Operations) LoadBundle(path string) ([]plc.PLCOperation, error) {
-	// Read compressed file
 	compressed, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
-	// Decompress
-	decompressed, err := op.decoder.DecodeAll(compressed, nil)
+	decompressed, err := gozstd.Decompress(nil, compressed)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decompress: %w", err)
 	}
 
-	// Parse JSONL
 	return op.ParseJSONL(decompressed)
 }
 
 // SaveBundle saves operations to disk (compressed)
 // Returns: contentHash, compressedHash, contentSize, compressedSize, error
 func (op *Operations) SaveBundle(path string, operations []plc.PLCOperation) (string, string, int64, int64, error) {
-	// Serialize to JSONL
 	jsonlData := op.SerializeJSONL(operations)
 	contentSize := int64(len(jsonlData))
 	contentHash := op.Hash(jsonlData)
 
-	// Compress
-	compressed := op.encoder.EncodeAll(jsonlData, nil)
+	// DataDog zstd.Compress returns ([]byte, error)
+	compressed, err := gozstd.Compress(nil, jsonlData)
+	if err != nil {
+		return "", "", 0, 0, fmt.Errorf("failed to compress: %w", err)
+	}
+
 	compressedSize := int64(len(compressed))
 	compressedHash := op.Hash(compressed)
 
-	// Write to file
 	if err := os.WriteFile(path, compressed, 0644); err != nil {
 		return "", "", 0, 0, fmt.Errorf("failed to write file: %w", err)
 	}
@@ -177,32 +142,28 @@ func (op *Operations) StreamDecompressed(path string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("failed to open bundle: %w", err)
 	}
 
-	// Create a new decoder for this stream
-	decoder, err := zstd.NewReader(file)
-	if err != nil {
-		file.Close()
-		return nil, fmt.Errorf("failed to create decompressor: %w", err)
-	}
+	// Create zstd reader using DataDog's package
+	reader := gozstd.NewReader(file)
 
-	// Return a wrapper that closes both the decoder and file
+	// Return a wrapper that closes both the reader and file
 	return &decompressedReader{
-		decoder: decoder,
-		file:    file,
+		reader: reader,
+		file:   file,
 	}, nil
 }
 
 // decompressedReader wraps a zstd decoder and underlying file
 type decompressedReader struct {
-	decoder *zstd.Decoder
-	file    *os.File
+	reader io.ReadCloser
+	file   *os.File
 }
 
 func (dr *decompressedReader) Read(p []byte) (int, error) {
-	return dr.decoder.Read(p)
+	return dr.reader.Read(p)
 }
 
 func (dr *decompressedReader) Close() error {
-	dr.decoder.Close()
+	dr.reader.Close()
 	return dr.file.Close()
 }
 
@@ -241,8 +202,8 @@ func (op *Operations) CalculateFileHashes(path string) (compressedHash string, c
 	compressedHash = op.Hash(compressedData)
 	compressedSize = int64(len(compressedData))
 
-	// Decompress
-	decompressed, err := op.decoder.DecodeAll(compressedData, nil)
+	// Decompress with DataDog zstd
+	decompressed, err := gozstd.Decompress(nil, compressedData)
 	if err != nil {
 		return "", 0, "", 0, fmt.Errorf("failed to decompress: %w", err)
 	}

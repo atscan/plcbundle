@@ -1,14 +1,19 @@
 package plc
 
-import "time"
+import (
+	"time"
+
+	"github.com/goccy/go-json"
+)
 
 // PLCOperation represents a single operation from the PLC directory
 type PLCOperation struct {
-	DID       string                 `json:"did"`
-	Operation map[string]interface{} `json:"operation"`
-	CID       string                 `json:"cid"`
-	Nullified interface{}            `json:"nullified,omitempty"`
-	CreatedAt time.Time              `json:"createdAt"`
+	DID string `json:"did"`
+	//Operation map[string]interface{} `json:"operation"`
+	Operation json.RawMessage `json:"operation"`
+	CID       string          `json:"cid"`
+	Nullified interface{}     `json:"nullified,omitempty"`
+	CreatedAt time.Time       `json:"createdAt"`
 
 	// RawJSON stores the original JSON bytes for exact reproduction
 	RawJSON []byte `json:"-"`
@@ -85,4 +90,16 @@ type DIDHistory struct {
 type EndpointInfo struct {
 	Type     string // "pds", "labeler", etc.
 	Endpoint string
+}
+
+// GetOperationMap parses Operation RawMessage into a map
+func (op *PLCOperation) GetOperationMap() (map[string]interface{}, error) {
+	if len(op.Operation) == 0 {
+		return nil, nil
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(op.Operation, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }

@@ -94,7 +94,7 @@ func TestClient(t *testing.T) {
 					DID:       "did:plc:test" + string(rune(i)),
 					CID:       "bafytest" + string(rune(i)),
 					CreatedAt: time.Now(),
-					Operation: map[string]interface{}{"type": "create"},
+					//Operation: map[string]interface{}{"type": "create"},
 				}
 				json.NewEncoder(w).Encode(op)
 			}
@@ -239,7 +239,7 @@ func BenchmarkSerializeJSONL(b *testing.B) {
 			DID:       "did:plc:test",
 			CID:       "bafytest",
 			CreatedAt: time.Now(),
-			Operation: map[string]interface{}{"type": "create"},
+			//Operation: map[string]interface{}{"type": "create"},
 		}
 	}
 

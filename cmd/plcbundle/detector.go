@@ -4,12 +4,16 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/goccy/go-json"
 
 	"tangled.org/atscan.net/plcbundle/detector"
 	"tangled.org/atscan.net/plcbundle/plc"
@@ -311,7 +315,19 @@ func cmdDetectorRun() {
 	fs := flag.NewFlagSet("detector run", flag.ExitOnError)
 	bundleRange := fs.String("bundles", "", "bundle range, default: all bundles")
 	confidence := fs.Float64("confidence", 0.90, "minimum confidence")
+	pprofPort := fs.String("pprof", "", "enable pprof on port (e.g., :6060)")
 	fs.Parse(flagArgs)
+
+	// Start pprof server if requested
+	if *pprofPort != "" {
+		go func() {
+			fmt.Fprintf(os.Stderr, "pprof server starting on http://localhost%s/debug/pprof/\n", *pprofPort)
+			if err := http.ListenAndServe(*pprofPort, nil); err != nil {
+				fmt.Fprintf(os.Stderr, "pprof server failed: %v\n", err)
+			}
+		}()
+		time.Sleep(100 * time.Millisecond) // Let server start
+	}
 
 	// Load manager
 	mgr, _, err := getManager("")

@@ -415,9 +415,9 @@ func makeTestOperations(count int) []plc.PLCOperation {
 			DID:       "did:plc:test" + string(rune(i)),
 			CID:       "bafytest" + string(rune(i)),
 			CreatedAt: baseTime.Add(time.Duration(i) * time.Second),
-			Operation: map[string]interface{}{
+			/*Operation: map[string]interface{}{
 				"type": "create",
-			},
+			},*/
 		}
 	}
 

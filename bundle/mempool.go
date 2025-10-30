@@ -3,12 +3,13 @@ package bundle
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/goccy/go-json"
 
 	"tangled.org/atscan.net/plcbundle/plc"
 )

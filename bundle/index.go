@@ -1,12 +1,13 @@
 package bundle
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/goccy/go-json"
 )
 
 const (

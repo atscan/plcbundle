@@ -4,7 +4,6 @@ package detector
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -12,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/goccy/go-json"
 
 	"tangled.org/atscan.net/plcbundle/plc"
 )

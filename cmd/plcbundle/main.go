@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -16,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/goccy/go-json"
 
 	"tangled.org/atscan.net/plcbundle/bundle"
 	"tangled.org/atscan.net/plcbundle/plc"
@@ -55,6 +56,9 @@ func init() {
 }
 
 func main() {
+
+	debug.SetGCPercent(400)
+
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)

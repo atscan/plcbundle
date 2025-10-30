@@ -10,7 +10,7 @@ function detect({ op }) {
   // Return array of label strings
   // Return empty array [] for no match
 
-  if (op.did.match(/^did:plc:aa/)) {
+  if (op.did.match(/^did:plc:aaa/)) {
     labels.push('test')
   }
   

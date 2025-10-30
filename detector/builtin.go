@@ -49,7 +49,17 @@ func (d *InvalidHandleDetector) Description() string {
 func (d *InvalidHandleDetector) Version() string { return "1.0.0" }
 
 func (d *InvalidHandleDetector) Detect(ctx context.Context, op plc.PLCOperation) (*Match, error) {
-	if alsoKnownAs, ok := op.Operation["alsoKnownAs"].([]interface{}); ok {
+	// Parse Operation field on-demand
+	operation, err := op.GetOperationMap()
+	if err != nil {
+		return nil, err
+	}
+	if operation == nil {
+		return nil, nil
+	}
+
+	if alsoKnownAs, ok := operation["alsoKnownAs"].([]interface{}); ok {
+
 		for _, aka := range alsoKnownAs {
 			if str, ok := aka.(string); ok {
 				// Check if it's an at:// handle
@@ -203,7 +213,15 @@ func (d *AlsoKnownAsSpamDetector) Description() string {
 func (d *AlsoKnownAsSpamDetector) Version() string { return "1.0.0" }
 
 func (d *AlsoKnownAsSpamDetector) Detect(ctx context.Context, op plc.PLCOperation) (*Match, error) {
-	if alsoKnownAs, ok := op.Operation["alsoKnownAs"].([]interface{}); ok {
+	// Parse Operation field on-demand
+	operation, err := op.GetOperationMap()
+	if err != nil {
+		return nil, err
+	}
+	if operation == nil {
+		return nil, nil
+	}
+	if alsoKnownAs, ok := operation["alsoKnownAs"].([]interface{}); ok {
 		entryCount := len(alsoKnownAs)
 
 		// Count different types of entries
@@ -296,8 +314,16 @@ func (d *SpamPDSDetector) Description() string {
 func (d *SpamPDSDetector) Version() string { return "1.0.0" }
 
 func (d *SpamPDSDetector) Detect(ctx context.Context, op plc.PLCOperation) (*Match, error) {
+	// Parse Operation field on-demand
+	operation, err := op.GetOperationMap()
+	if err != nil {
+		return nil, err
+	}
+	if operation == nil {
+		return nil, nil
+	}
 	// Check PDS endpoint
-	if services, ok := op.Operation["services"].(map[string]interface{}); ok {
+	if services, ok := operation["services"].(map[string]interface{}); ok {
 		if pds, ok := services["atproto_pds"].(map[string]interface{}); ok {
 			if endpoint, ok := pds["endpoint"].(string); ok {
 				host := extractHost(endpoint)
@@ -320,7 +346,7 @@ func (d *SpamPDSDetector) Detect(ctx context.Context, op plc.PLCOperation) (*Mat
 	}
 
 	// Check for spam domain claims in alsoKnownAs
-	if alsoKnownAs, ok := op.Operation["alsoKnownAs"].([]interface{}); ok {
+	if alsoKnownAs, ok := operation["alsoKnownAs"].([]interface{}); ok {
 		for _, aka := range alsoKnownAs {
 			if str, ok := aka.(string); ok {
 				if !strings.HasPrefix(str, "at://") {
@@ -391,7 +417,15 @@ func (d *ServiceAbuseDetector) Description() string {
 func (d *ServiceAbuseDetector) Version() string { return "1.0.0" }
 
 func (d *ServiceAbuseDetector) Detect(ctx context.Context, op plc.PLCOperation) (*Match, error) {
-	if services, ok := op.Operation["services"].(map[string]interface{}); ok {
+	// Parse Operation field on-demand
+	operation, err := op.GetOperationMap()
+	if err != nil {
+		return nil, err
+	}
+	if operation == nil {
+		return nil, nil
+	}
+	if services, ok := operation["services"].(map[string]interface{}); ok {
 		// Check for numeric service keys (spam uses "0", "1", "2" instead of proper names)
 		hasNumericKeys := false
 		numericKeyCount := 0
@@ -457,7 +491,7 @@ func (d *ServiceAbuseDetector) Detect(ctx context.Context, op plc.PLCOperation) 
 	}
 
 	// Check for excessively long handles in alsoKnownAs
-	if alsoKnownAs, ok := op.Operation["alsoKnownAs"].([]interface{}); ok {
+	if alsoKnownAs, ok := operation["alsoKnownAs"].([]interface{}); ok {
 		for _, aka := range alsoKnownAs {
 			if str, ok := aka.(string); ok {
 				if strings.HasPrefix(str, "at://") {
@@ -480,11 +514,11 @@ func (d *ServiceAbuseDetector) Detect(ctx context.Context, op plc.PLCOperation) 
 	}
 
 	// Check for empty verificationMethods (common in this spam)
-	if vm, ok := op.Operation["verificationMethods"].(map[string]interface{}); ok {
+	if vm, ok := operation["verificationMethods"].(map[string]interface{}); ok {
 		if len(vm) == 0 {
 			// Empty verificationMethods alone isn't enough, but combined with other signals...
 			// Check if there are other suspicious signals
-			if services, ok := op.Operation["services"].(map[string]interface{}); ok {
+			if services, ok := operation["services"].(map[string]interface{}); ok {
 				if len(services) > 2 {
 					// Multiple services + empty verificationMethods = suspicious
 					return &Match{

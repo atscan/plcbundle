@@ -3,13 +3,14 @@ package plc
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/goccy/go-json"
 )
 
 // Client is a client for the PLC directory
