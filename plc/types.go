@@ -8,15 +8,14 @@ import (
 
 // PLCOperation represents a single operation from the PLC directory
 type PLCOperation struct {
-	DID string `json:"did"`
-	//Operation map[string]interface{} `json:"operation"`
-	Operation json.RawMessage `json:"operation"`
+	DID       string          `json:"did"`
+	Operation json.RawMessage `json:"operation"` // Lazy
 	CID       string          `json:"cid"`
 	Nullified interface{}     `json:"nullified,omitempty"`
 	CreatedAt time.Time       `json:"createdAt"`
 
-	// RawJSON stores the original JSON bytes for exact reproduction
-	RawJSON []byte `json:"-"`
+	RawJSON         []byte                 `json:"-"`
+	ParsedOperation map[string]interface{} `json:"-"` // Pre-parsed cache
 }
 
 // IsNullified checks if this operation has been nullified
@@ -92,14 +91,30 @@ type EndpointInfo struct {
 	Endpoint string
 }
 
-// GetOperationMap parses Operation RawMessage into a map
-func (op *PLCOperation) GetOperationMap() (map[string]interface{}, error) {
+// GetOperationData parses Operation into map (with caching)
+func (op *PLCOperation) GetOperationData() (map[string]interface{}, error) {
+	// Return cached if already parsed
+	if op.ParsedOperation != nil {
+		return op.ParsedOperation, nil
+	}
+
+	// Parse on first call
 	if len(op.Operation) == 0 {
 		return nil, nil
 	}
-	var result map[string]interface{}
-	if err := json.Unmarshal(op.Operation, &result); err != nil {
+
+	var data map[string]interface{}
+	if err := json.UnmarshalNoEscape(op.Operation, &data); err != nil {
 		return nil, err
 	}
-	return result, nil
+
+	// Cache it
+	op.ParsedOperation = data
+
+	return data, nil
+}
+
+// GetOperationMap is an alias for compatibility
+func (op *PLCOperation) GetOperationMap() (map[string]interface{}, error) {
+	return op.GetOperationData()
 }

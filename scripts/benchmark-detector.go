@@ -16,11 +16,11 @@ import (
 
 // Minimal operation struct
 type Operation struct {
-	DID string `json:"did"`
-	//Operation map[string]interface{} `json:"operation"`
-	CID       string      `json:"cid"`
-	Nullified interface{} `json:"nullified,omitempty"`
-	CreatedAt time.Time   `json:"createdAt"`
+	DID       string                 `json:"did"`
+	Operation map[string]interface{} `json:"operation"`
+	CID       string                 `json:"cid"`
+	Nullified interface{}            `json:"nullified,omitempty"`
+	CreatedAt time.Time              `json:"createdAt"`
 
 	// RawJSON stores the original JSON bytes for exact reproduction
 	RawJSON []byte `json:"-"`
@@ -32,6 +32,11 @@ func detect(op *Operation) []string {
 
 	if strings.HasPrefix(op.DID, "did:plc:aa") {
 		labels = append(labels, "test")
+	}
+
+	// Log operation.sig (like console.log in JavaScript)
+	if sig, ok := op.Operation["sig"]; ok {
+		fmt.Fprintf(os.Stderr, "%v\n", sig)
 	}
 
 	return labels

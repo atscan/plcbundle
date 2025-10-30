@@ -1,0 +1,17 @@
+[package]
+name = "benchmark_detector"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sonic-rs = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+zstd = "0.13"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+
+[build]
+rustflags = ["-C", "target-cpu=native"]

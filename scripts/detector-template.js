@@ -10,6 +10,8 @@ function detect({ op }) {
   // Return array of label strings
   // Return empty array [] for no match
 
+    //console.log(JSON.stringify(op))
+
   if (op.did.match(/^did:plc:aaa/)) {
     labels.push('test')
   }

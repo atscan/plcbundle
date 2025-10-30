@@ -545,11 +545,18 @@ func parseAndLoadDetectors(detectorNames []string, confidence float64) (*detecto
 
 // detectOperation runs all detectors on an operation and returns labels + confidence
 func detectOperation(ctx context.Context, detectors []detector.Detector, op plc.PLCOperation, minConfidence float64) ([]string, float64) {
+	// Parse Operation ONCE before running detectors
+	opData, err := op.GetOperationData()
+	if err != nil {
+		return nil, 0
+	}
+	op.ParsedOperation = opData // Set for detectors to use
+
 	var matchedLabels []string
 	var maxConfidence float64
 
 	for _, det := range detectors {
-		match, err := det.Detect(ctx, op)
+		match, err := det.Detect(ctx, op) // ← op now has ParsedOperation set
 		if err != nil || match == nil || match.Confidence < minConfidence {
 			continue
 		}

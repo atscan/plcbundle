@@ -4,19 +4,18 @@
 function detect({ op }) {
   const labels = [];
   
-  if (op.did.match(/^did:plc:aa/)) {
+  if (op.did.startsWith('did:plc:aa')) {
     labels.push('test')
   }
+
+  console.log(op.operation.sig)
   
   return labels;
 }
 
 // ==========================================
-// Pure Bun bundle processor
+// Pure Bun bundle processor with native zstd
 // ==========================================
-
-import { spawn } from 'bun';
-import { readdir } from 'fs/promises';
 
 const BUNDLE_DIR = process.argv[2] || './';
 const START_BUNDLE = parseInt(process.argv[3]) || 1;
@@ -39,9 +38,14 @@ for (let bundleNum = START_BUNDLE; bundleNum <= END_BUNDLE; bundleNum++) {
   const bundleFile = `${BUNDLE_DIR}/${bundleNum.toString().padStart(6, '0')}.jsonl.zst`;
   
   try {
-    // Decompress bundle using zstd command
-    const proc = spawn(['zstd', '-d', '-c', bundleFile]);
-    const text = await new Response(proc.stdout).text();
+    // Read compressed bundle
+    const compressed = await Bun.file(bundleFile).arrayBuffer();
+    
+    // Decompress using native Bun zstd (FAST!)
+    const decompressed = Bun.zstdDecompressSync(compressed);
+    
+    // Convert to text
+    const text = new TextDecoder().decode(decompressed);
     
     const lines = text.split('\n').filter(line => line.trim());
     

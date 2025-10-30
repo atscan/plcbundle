@@ -67,8 +67,7 @@ func (op *Operations) ParseJSONL(data []byte) ([]plc.PLCOperation, error) {
 		}
 
 		var operation plc.PLCOperation
-		// Use sonic instead of json.Unmarshal
-		if err := json.Unmarshal(line, &operation); err != nil {
+		if err := json.UnmarshalNoEscape(line, &operation); err != nil {
 			return nil, fmt.Errorf("failed to parse line: %w", err)
 		}
 
