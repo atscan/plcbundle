@@ -78,15 +78,22 @@ go get tangled.org/atscan.net/plcbundle
 
 ### Docker
 
+[![Docker Hub](https://img.shields.io/docker/v/atscan/plcbundle?label=docker&logo=docker)](https://hub.docker.com/r/atscan/plcbundle)
+[![Docker Image Size](https://img.shields.io/docker/image-size/atscan/plcbundle/latest)](https://hub.docker.com/r/atscan/plcbundle)
+[![Docker Pulls](https://img.shields.io/docker/pulls/atscan/plcbundle)](https://hub.docker.com/r/atscan/plcbundle)
+
 ```bash
-# Build
-docker build -t plcbundle .
+# Pull pre-built image
+docker pull atscan/plcbundle:latest
 
 # Run CLI
-docker run --rm -v $(pwd)/data:/data plcbundle info
-docker run --rm -v $(pwd)/data:/data plcbundle fetch
+docker run --rm -v $(pwd)/data:/data atscan/plcbundle info
 
 # Run as server
+docker run -d -p 8080:8080 -v $(pwd)/data:/data atscan/plcbundle serve --host 0.0.0.0
+
+# Or use docker-compose
+curl -O https://tangled.org/@atscan.net/plcbundle/raw/main/docker-compose.yaml
 docker-compose up -d
 ```
 
