@@ -92,9 +92,9 @@ docker run --rm -v $(pwd)/data:/data atscan/plcbundle info
 # Run as server
 docker run -d -p 8080:8080 -v $(pwd)/data:/data atscan/plcbundle serve --host 0.0.0.0
 
-# Or use docker-compose
+# Or use docker compose
 curl -O https://tangled.org/@atscan.net/plcbundle/raw/main/docker-compose.yaml
-docker-compose up -d
+docker compose up -d
 ```
 
 ### From Source
