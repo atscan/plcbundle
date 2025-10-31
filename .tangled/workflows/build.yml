@@ -9,10 +9,14 @@ engine: "nixery"
 dependencies:
   nixpkgs:
     - go
-    - goreleaser
+    - gcc
+    - git
+    - zstd
+    - zstd.dev
 
 environment:
-  CGO_ENABLED: "0"
+  CGO_ENABLED: "1"
+  GOPATH: "/workspace/go"
 
 steps:
   - name: "Download dependencies"
@@ -24,10 +28,8 @@ steps:
     command: |
       go test -v ./...
 
-  - name: "Build snapshot (test cross-compilation)"
+  - name: "Build binary"
     command: |
-      goreleaser build --snapshot --clean
-
-  - name: "Show artifacts"
-    command: |
-      ls -lh dist/
+      go build -o plcbundle ./cmd/plcbundle
+      ./plcbundle version
+      echo "✓ Build successful"

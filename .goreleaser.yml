@@ -1,36 +1,18 @@
 version: 2
 
-project_name: plcbundle
-
-before:
-  hooks:
-    - go mod tidy
-    - go test ./...
-
 builds:
-  - id: plcbundle
-    main: ./cmd/plcbundle
+  - main: ./cmd/plcbundle
     binary: plcbundle
     env:
       - CGO_ENABLED=1
-    # Only build for current platform locally
-    goos:
-      - darwin
-    goarch:
-      - arm64
+    goos: [linux]
+    goarch: [amd64, arm64]
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
-      - -X main.gitCommit={{.ShortCommit}}
-      - -X main.buildDate={{.Date}}
 
 archives:
   - formats: ["tar.gz"]
-    name_template: >-
-      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
-
-checksum:
-  name_template: 'checksums.txt'
 
 release:
   disable: true

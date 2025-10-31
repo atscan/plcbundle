@@ -10,28 +10,18 @@ clone:
 dependencies:
   nixpkgs:
     - go
+    - goreleaser
     - gcc
-    - gnumake
-    - zstd
     - git
+    - zstd
+    - zstd.dev
+
+environment:
+  CGO_ENABLED: "1"
 
 steps:
-  - name: "Build Linux binaries (native with CGO)"
+  - name: "Build with GoReleaser"
     command: |
-      # Build for current platform (Linux)
-      CGO_ENABLED=1 go build \
-        -ldflags="-s -w -X main.version=$(git describe --tags --always) -X main.gitCommit=$(git rev-parse --short HEAD)" \
-        -o dist/plcbundle_linux_amd64/plcbundle \
-        ./cmd/plcbundle
-      
-      echo "✓ Linux binary built:"
-      ls -lh dist/plcbundle_linux_amd64/plcbundle
-
-  - name: "Create archive"
-    command: |
-      cd dist
-      tar -czf plcbundle_$(git describe --tags)_linux_amd64.tar.gz plcbundle_linux_amd64/
-      sha256sum *.tar.gz > checksums.txt
-      
-      echo "✓ Artifacts:"
-      ls -lh *.tar.gz checksums.txt
+      goreleaser build --clean
+      echo "✓ Binaries built:"
+      ls -lh dist/*/plcbundle
