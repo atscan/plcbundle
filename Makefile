@@ -100,7 +100,7 @@ bump-major:
 release:
 	@echo "Creating release for version $(VERSION)..."
 	@./scripts/release.sh
-	@each "Releasing docker image..."
+	@echo "Releasing docker image..."
 	@make docker-release
 
 # ============================================================================
