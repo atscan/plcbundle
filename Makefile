@@ -1,5 +1,5 @@
-.PHONY: all build install test clean fmt lint help version bump-patch bump-minor bump-major release
-.PHONY: docker-build docker-push docker-run docker-clean docker-shell compose-up compose-down compose-logs
+.PHONY: all build install test clean fmt lint help version bump-patch bump-minor bump-major release release-build
+.PHONY: docker-build docker-buildx docker-push docker-run docker-clean docker-shell compose-up compose-down compose-logs
 
 # Binary name
 BINARY_NAME=plcbundle
@@ -8,9 +8,10 @@ INSTALL_PATH=$(GOPATH)/bin
 # Docker configuration
 DOCKER_IMAGE=plcbundle
 DOCKER_TAG=$(VERSION)
-DOCKER_REGISTRY=atscan
+DOCKER_REGISTRY?=atscan
 DOCKER_FULL_IMAGE=$(if $(DOCKER_REGISTRY),$(DOCKER_REGISTRY)/,)$(DOCKER_IMAGE):$(DOCKER_TAG)
 DOCKER_LATEST=$(if $(DOCKER_REGISTRY),$(DOCKER_REGISTRY)/,)$(DOCKER_IMAGE):latest
+DOCKER_PLATFORMS?=linux/amd64,linux/arm64
 
 # Version information
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -58,6 +59,7 @@ clean:
 	@echo "Cleaning..."
 	$(GOCLEAN)
 	rm -f $(BINARY_NAME)
+	rm -rf dist/
 
 # Format code
 fmt:
@@ -96,18 +98,30 @@ bump-major:
 	@echo "Bumping major version..."
 	@./scripts/bump-version.sh major
 
-# Create a release (tags and pushes)
+# Build release binaries with GoReleaser (local test)
+release-build:
+	@echo "Building release binaries with GoReleaser..."
+	@goreleaser build --snapshot --clean
+	@echo "✓ Binaries built in dist/"
+
+# Create release (runs your script + GoReleaser)
 release:
 	@echo "Creating release for version $(VERSION)..."
 	@./scripts/release.sh
-	@echo "Releasing docker image..."
-	@make docker-release
+
+# Full release with binaries
+release-full: release release-publish
+
+# Publish release with GoReleaser
+release-publish:
+	@echo "Publishing release with GoReleaser..."
+	@goreleaser release --clean
 
 # ============================================================================
 # Docker Commands
 # ============================================================================
 
-# Build Docker image
+# Build Docker image (local)
 docker-build:
 	@echo "Building Docker image $(DOCKER_FULL_IMAGE)..."
 	docker build \
@@ -118,29 +132,45 @@ docker-build:
 		.
 	@echo "✓ Built: $(DOCKER_FULL_IMAGE)"
 
-# Push Docker image to registry
+# Build multi-platform and push
+docker-buildx:
+	@echo "Building multi-platform image $(DOCKER_FULL_IMAGE)..."
+	docker buildx build \
+		--platform $(DOCKER_PLATFORMS) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--tag $(DOCKER_FULL_IMAGE) \
+		--tag $(DOCKER_LATEST) \
+		--push \
+		.
+	@echo "✓ Built and pushed: $(DOCKER_FULL_IMAGE) ($(DOCKER_PLATFORMS))"
+
+# Push Docker image
 docker-push:
 	@echo "Pushing Docker image..."
 	docker push $(DOCKER_FULL_IMAGE)
 	docker push $(DOCKER_LATEST)
 	@echo "✓ Pushed: $(DOCKER_FULL_IMAGE)"
 
-# Build and push
-docker-release: docker-build docker-push
-
 # Run Docker container as CLI
 docker-run:
-	docker run --rm -v $(PWD)/data:/data $(DOCKER_FULL_IMAGE) $(CMD)
+	@docker run --rm -v $(PWD)/data:/data $(DOCKER_FULL_IMAGE) plcbundle $(CMD)
 
-# Run Docker container as server
+# Shortcuts
+docker-info:
+	@docker run --rm -v $(PWD)/data:/data $(DOCKER_FULL_IMAGE) plcbundle info
+
+docker-fetch:
+	@docker run --rm -v $(PWD)/data:/data $(DOCKER_FULL_IMAGE) plcbundle fetch
+
+docker-verify:
+	@docker run --rm -v $(PWD)/data:/data $(DOCKER_FULL_IMAGE) plcbundle verify
+
+# Run as server
 docker-serve:
-	docker run --rm -it \
-		-p 8080:8080 \
-		-v $(PWD)/data:/data \
-		$(DOCKER_FULL_IMAGE) \
-		plcbundle serve --host 0.0.0.0
+	docker run --rm -it -p 8080:8080 -v $(PWD)/data:/data $(DOCKER_FULL_IMAGE) plcbundle serve --host 0.0.0.0
 
-# Open shell in Docker container
+# Open shell
 docker-shell:
 	docker run --rm -it -v $(PWD)/data:/data $(DOCKER_FULL_IMAGE) sh
 
@@ -167,21 +197,22 @@ help:
 	@echo "  make test-coverage  - Run tests with coverage"
 	@echo "  make fmt            - Format code"
 	@echo "  make deps           - Download dependencies"
-	@echo "  make verify         - Verify dependencies"
 	@echo ""
-	@echo "Versioning:"
+	@echo "Release:"
 	@echo "  make version        - Show current version"
-	@echo "  make bump-patch     - Bump patch version (0.1.0 -> 0.1.1)"
-	@echo "  make bump-minor     - Bump minor version (0.1.0 -> 0.2.0)"
-	@echo "  make bump-major     - Bump major version (0.1.0 -> 1.0.0)"
-	@echo "  make release        - Create and push release tag"
+	@echo "  make bump-patch     - Bump patch (0.1.0 -> 0.1.1)"
+	@echo "  make bump-minor     - Bump minor (0.1.0 -> 0.2.0)"
+	@echo "  make bump-major     - Bump major (0.1.0 -> 1.0.0)"
+	@echo "  make release        - Push tag to trigger release"
+	@echo "  make release-build  - Test build all platforms locally"
+	@echo "  make release-publish- Publish with GoReleaser"
+	@echo "  make release-full   - Complete release (tag + binaries)"
 	@echo ""
 	@echo "Docker:"
-	@echo "  make docker-build   - Build Docker image"
-	@echo "  make docker-push    - Push image to registry"
-	@echo "  make docker-release - Build and push"
-	@echo "  make docker-run     - Run as CLI (CMD='info')"
+	@echo "  make docker-build   - Build image (current platform)"
+	@echo "  make docker-buildx  - Build multi-platform and push"
+	@echo "  make docker-run     - Run CLI (CMD='info')"
+	@echo "  make docker-info    - Show bundle info"
 	@echo "  make docker-serve   - Run as server"
-	@echo "  make docker-shell   - Open shell in container"
-	@echo "  make docker-clean   - Remove Docker images"
+	@echo "  make docker-shell   - Open shell"
 	@echo ""

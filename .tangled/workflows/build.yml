@@ -1,0 +1,33 @@
+# Build workflow - test compilation on pull requests
+
+when:
+  - event: ["push", "pull_request"]
+    branch: ["main", "develop"]
+
+engine: "nixery"
+
+dependencies:
+  nixpkgs:
+    - go
+    - goreleaser
+
+environment:
+  CGO_ENABLED: "0"
+
+steps:
+  - name: "Download dependencies"
+    command: |
+      go mod download
+      go mod verify
+
+  - name: "Run tests"
+    command: |
+      go test -v ./...
+
+  - name: "Build snapshot (test cross-compilation)"
+    command: |
+      goreleaser build --snapshot --clean
+
+  - name: "Show artifacts"
+    command: |
+      ls -lh dist/
