@@ -35,14 +35,67 @@ plcbundle archives AT Protocol's [DID PLC Directory](https://plc.directory/) ope
 * 💻 [CLI Guide](./docs/cli.md)
 * 📰 [Announcement Article](https://leaflet.pub/feb982b4-64cb-4549-9d25-d7e68cecb11a)
 
-## What is `plcbundle`?
+## What is plcbundle?
 
-plcbundle solves the problem of synchronizing and archiving PLC directory operations by:
+plcbundle is a **format specification** for archiving PLC directory operations:
 
 - **Bundling**: Groups 10,000 operations into compressed, immutable files
 - **Chaining**: Each bundle is cryptographically linked to the previous one
 - **Verifiable**: SHA-256 hashes ensure data integrity throughout the chain
 - **Efficient**: Zstandard compression with ~5x compression ratios
+
+### Implementations
+
+- **Go** (this repository) - Full-featured CLI tool, library, and HTTP server
+- [TypeScript, Python, Ruby](https://tangled.org/@atscan.net/plcbundle-ref/) - Reference implementations
+
+## This Implementation (Go)
+
+This Go implementation provides:
+
+- 📚 **Library** - Embed bundle operations in your Go applications
+- 💻 **CLI Tool** - Command-line interface for all operations
+- 🌐 **HTTP Server** - Host and serve bundles over HTTP
+- 🔄 **Auto-sync** - Automatically fetch and bundle new operations
+- 🔌 **WebSocket** - Stream operations in real-time
+- 🔍 **Spam Detection** - Built-in and custom JavaScript detectors
+- ⚡ **Performance** - Parallel processing, efficient compression
+- 🐳 **Docker** - Ready-to-deploy containers
+
+## Installation
+
+### Go Install
+
+```bash
+# CLI tool
+go install tangled.org/atscan.net/plcbundle/cmd/plcbundle@latest
+
+# Library
+go get tangled.org/atscan.net/plcbundle
+```
+
+### Docker
+
+```bash
+# Build
+docker build -t plcbundle .
+
+# Run CLI
+docker run --rm -v $(pwd)/data:/data plcbundle info
+docker run --rm -v $(pwd)/data:/data plcbundle fetch
+
+# Run as server
+docker-compose up -d
+```
+
+### From Source
+
+```bash
+git clone https://tangled.org/@atscan.net/plcbundle
+cd plcbundle
+make build
+sudo make install
+```
 
 ## Quick Start
 
@@ -63,10 +116,7 @@ bundle, _ := mgr.FetchNext(context.Background())
 ### As a CLI Tool
 
 ```bash
-# Install
-go install tangled.org/atscan.net/plcbundle/cmd/plcbundle@latest
-
-# Fetch bundles
+# Fetch bundles from plc.directory
 plcbundle fetch
 
 # Clone from remote
@@ -78,24 +128,15 @@ plcbundle verify
 
 [See full CLI reference →](./docs/cli.md)
 
-## Key Features
-
-- 📦 Automatic bundle management (10,000 operations each)
-- 🔄 Transparent synchronization with PLC directory
-- 🗜️ Efficient zstd compression
-- ✅ Cryptographic verification (SHA-256 + chain validation)
-- 🔍 Fast indexing and gap detection
-- 🌐 HTTP server for hosting bundles
-- 🔌 WebSocket streaming support
-
-## Installation
+### With Docker
 
 ```bash
-# Library
-go get tangled.org/atscan.net/plcbundle
+# CLI usage
+docker run --rm -v $(pwd)/data:/data plcbundle info
 
-# CLI tool
-go install tangled.org/atscan.net/plcbundle/cmd/plcbundle@latest
+# Server mode
+docker-compose up -d
+curl http://localhost:8080/
 ```
 
 ## Use Cases
@@ -113,16 +154,11 @@ Bundles are cryptographically chained but require external verification:
 - ✅ Check published root and head hashes
 - ✅ Anyone can reproduce bundles from PLC directory
 
-## Reference Implementations
-
-- [TypeScript, Python, Ruby](https://tangled.org/@atscan.net/plcbundle-ref/)
-
 ## Documentation
 
 - [Library Guide](./docs/library.md) - Comprehensive API documentation
 - [CLI Guide](./docs/cli.md) - Command-line tool usage
 - [Specification](./docs/specification.md) - Technical format specification
-<!--- [Examples](./docs/examples/) - Common patterns and recipes-->
 
 ## License
 
