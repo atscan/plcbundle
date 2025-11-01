@@ -758,13 +758,32 @@ func runSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Periodic mempool save (every 5 minutes)
+	saveTicker := time.NewTicker(5 * time.Minute)
+	defer saveTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
+			// Save on shutdown
+			if err := mgr.SaveMempool(); err != nil {
+				fmt.Printf("[Sync] Failed to save mempool on shutdown: %v\n", err)
+			}
 			fmt.Printf("[Sync] Sync stopped\n")
 			return
+
 		case <-ticker.C:
 			syncBundles(ctx, mgr)
+
+		case <-saveTicker.C:
+			// Periodic save (every 5 min) - only if mempool has data
+			stats := mgr.GetMempoolStats()
+			if stats["count"].(int) > 0 {
+				fmt.Printf("[Sync] Saving mempool (%d ops)...\n", stats["count"])
+				if err := mgr.SaveMempool(); err != nil {
+					fmt.Printf("[Sync] Failed to save mempool: %v\n", err)
+				}
+			}
 		}
 	}
 }

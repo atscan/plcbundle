@@ -546,11 +546,6 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 
 			totalAdded += added
 			m.logger.Printf("  Added %d new operations (mempool now: %d)", added, m.mempool.Count())
-
-			// Save after each successful addition
-			if err := m.mempool.Save(); err != nil {
-				m.logger.Printf("  Warning: failed to save mempool: %v", err)
-			}
 		}
 
 		// Update cursor
@@ -564,9 +559,6 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 			break
 		}
 	}
-
-	// Final save
-	m.mempool.Save()
 
 	if totalAdded > 0 {
 		m.logger.Printf("✓ Fetch complete: added %d operations (mempool: %d)", totalAdded, m.mempool.Count())
@@ -1234,4 +1226,17 @@ func filterBundleFiles(files []string) []string {
 		filtered = append(filtered, file)
 	}
 	return filtered
+}
+
+// GetMempool returns the current mempool (for manual save operations)
+func (m *Manager) GetMempool() *Mempool {
+	return m.mempool
+}
+
+// SaveMempool saves the current mempool state to disk
+func (m *Manager) SaveMempool() error {
+	if m.mempool == nil {
+		return fmt.Errorf("mempool not initialized")
+	}
+	return m.mempool.Save()
 }

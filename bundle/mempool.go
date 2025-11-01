@@ -26,6 +26,7 @@ type Mempool struct {
 	mu           sync.RWMutex
 	logger       Logger
 	validated    bool // Track if we've validated chronological order
+	dirty        bool // Track if mempool changed
 }
 
 // NewMempool creates a new mempool for a specific bundle number
@@ -108,6 +109,7 @@ func (m *Mempool) Add(ops []plc.PLCOperation) (int, error) {
 	// Add new operations
 	m.operations = append(m.operations, newOps...)
 	m.validated = true
+	m.dirty = true
 
 	return len(newOps), nil
 }
@@ -241,8 +243,12 @@ func (m *Mempool) Clear() {
 
 // Save persists mempool to disk
 func (m *Mempool) Save() error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.dirty {
+		return nil
+	}
 
 	if len(m.operations) == 0 {
 		// Remove file if empty
@@ -278,6 +284,7 @@ func (m *Mempool) Save() error {
 		return fmt.Errorf("failed to rename mempool file: %w", err)
 	}
 
+	m.dirty = false
 	return nil
 }
 
