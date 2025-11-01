@@ -619,16 +619,46 @@ func (m *Manager) VerifyBundle(ctx context.Context, bundleNumber int) (*Verifica
 		return result, nil
 	}
 
-	// Verify hash
-	valid, actualHash, err := m.operations.VerifyHash(path, meta.CompressedHash)
+	// Verify BOTH compressed and content hashes
+	compHash, compSize, contentHash, contentSize, err := m.operations.CalculateFileHashes(path)
 	if err != nil {
 		result.Error = err
 		return result, nil
 	}
 
-	result.LocalHash = actualHash
-	result.HashMatch = valid
-	result.Valid = valid
+	result.LocalHash = compHash
+
+	// Verify compressed hash
+	if compHash != meta.CompressedHash {
+		result.HashMatch = false
+		result.Valid = false
+		result.Error = fmt.Errorf("compressed hash mismatch: expected %s, got %s", meta.CompressedHash, compHash)
+		return result, nil
+	}
+
+	// Verify content hash
+	if contentHash != meta.ContentHash {
+		result.HashMatch = false
+		result.Valid = false
+		result.Error = fmt.Errorf("content hash mismatch: expected %s, got %s", meta.ContentHash, contentHash)
+		return result, nil
+	}
+
+	// Verify sizes match
+	if compSize != meta.CompressedSize {
+		result.Valid = false
+		result.Error = fmt.Errorf("compressed size mismatch: expected %d, got %d", meta.CompressedSize, compSize)
+		return result, nil
+	}
+
+	if contentSize != meta.UncompressedSize {
+		result.Valid = false
+		result.Error = fmt.Errorf("uncompressed size mismatch: expected %d, got %d", meta.UncompressedSize, contentSize)
+		return result, nil
+	}
+
+	result.HashMatch = true
+	result.Valid = true
 
 	return result, nil
 }
