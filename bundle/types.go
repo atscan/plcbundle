@@ -23,7 +23,7 @@ type Bundle struct {
 
 	Hash        string `json:"hash"`         // Chain hash (primary)
 	ContentHash string `json:"content_hash"` // Content hash
-	Parent      string `json:"parent,omitempty"`
+	Parent      string `json:"parent"`
 
 	CompressedHash   string    `json:"compressed_hash"`
 	CompressedSize   int64     `json:"compressed_size"`
