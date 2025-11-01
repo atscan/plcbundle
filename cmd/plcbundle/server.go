@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -360,89 +361,42 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager
 // streamLive streams all historical data then continues with live updates
 func streamLive(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, startCursor int, done chan struct{}) error {
 	index := mgr.GetIndex()
+	bundles := index.GetBundles()
 	currentRecord := startCursor
 
-	// Step 1: Stream all historical bundles
-	bundles := index.GetBundles()
+	// Step 1: Stream historical bundles
 	if len(bundles) > 0 {
 		startBundleIdx := startCursor / bundle.BUNDLE_SIZE
 		startPosition := startCursor % bundle.BUNDLE_SIZE
 
 		if startBundleIdx < len(bundles) {
+			// Stream from startBundleIdx to end
 			for i := startBundleIdx; i < len(bundles); i++ {
-				select {
-				case <-done:
-					return nil // Client disconnected
-				default:
-				}
-
-				meta := bundles[i]
-				b, err := mgr.LoadBundle(ctx, meta.BundleNumber)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to load bundle %d: %v\n", meta.BundleNumber, err)
-					continue
-				}
-
-				startPos := 0
+				skipUntil := 0
 				if i == startBundleIdx {
-					startPos = startPosition
+					skipUntil = startPosition
 				}
 
-				for j := startPos; j < len(b.Operations); j++ {
-					select {
-					case <-done:
-						return nil
-					default:
-					}
-
-					if err := sendOperation(conn, b.Operations[j]); err != nil {
-						return err
-					}
-					currentRecord++
-
-					if currentRecord%1000 == 0 {
-						if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-							return err
-						}
-					}
+				newRecordCount, err := streamBundle(ctx, conn, mgr, bundles[i].BundleNumber, skipUntil, done)
+				if err != nil {
+					return err
 				}
+				currentRecord += newRecordCount
 			}
 		}
 	}
 
 	// Step 2: Stream current mempool
 	lastSeenMempoolCount := 0
-	mempoolOps, err := mgr.GetMempoolOperations()
-	if err == nil {
-		bundleRecordBase := len(bundles) * bundle.BUNDLE_SIZE
-
-		for i, op := range mempoolOps {
-			select {
-			case <-done:
-				return nil
-			default:
-			}
-
-			recordNum := bundleRecordBase + i
-			if recordNum < startCursor {
-				continue
-			}
-
-			if err := sendOperation(conn, op); err != nil {
-				return err
-			}
-			currentRecord++
-			lastSeenMempoolCount = i + 1
-		}
+	if err := streamMempool(conn, mgr, startCursor, len(bundles)*bundle.BUNDLE_SIZE, &currentRecord, &lastSeenMempoolCount, done); err != nil {
+		return err
 	}
 
-	// Step 3: Enter live streaming loop
-	// Poll for new operations in mempool and new bundles
-	ticker := time.NewTicker(2 * time.Second)
+	// Step 3: Live streaming loop
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	lastBundleCount := len(bundles)
-
 	fmt.Fprintf(os.Stderr, "WebSocket: entering live mode at cursor %d\n", currentRecord)
 
 	for {
@@ -452,86 +406,130 @@ func streamLive(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, 
 			return nil
 
 		case <-ticker.C:
-			// Refresh index to check for new bundles
+			// Check for new bundles
 			index = mgr.GetIndex()
 			bundles = index.GetBundles()
 
-			// Check if new bundles were created
 			if len(bundles) > lastBundleCount {
 				fmt.Fprintf(os.Stderr, "WebSocket: detected %d new bundle(s)\n", len(bundles)-lastBundleCount)
 
 				// Stream new bundles
 				for i := lastBundleCount; i < len(bundles); i++ {
-					select {
-					case <-done:
-						return nil
-					default:
-					}
-
-					meta := bundles[i]
-					b, err := mgr.LoadBundle(ctx, meta.BundleNumber)
+					newRecordCount, err := streamBundle(ctx, conn, mgr, bundles[i].BundleNumber, 0, done)
 					if err != nil {
-						fmt.Fprintf(os.Stderr, "Failed to load bundle %d: %v\n", meta.BundleNumber, err)
-						continue
+						return err
 					}
-
-					for _, op := range b.Operations {
-						select {
-						case <-done:
-							return nil
-						default:
-						}
-
-						if err := sendOperation(conn, op); err != nil {
-							return err
-						}
-						currentRecord++
-
-						if currentRecord%1000 == 0 {
-							if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-								return err
-							}
-						}
-					}
+					currentRecord += newRecordCount
 				}
 
 				lastBundleCount = len(bundles)
-				lastSeenMempoolCount = 0 // Reset mempool count after bundle creation
+				lastSeenMempoolCount = 0 // Reset after bundle creation
 			}
 
-			// Check for new operations in mempool
-			mempoolOps, err := mgr.GetMempoolOperations()
-			if err != nil {
-				continue
+			// Check for new mempool operations
+			if err := streamMempool(conn, mgr, startCursor, len(bundles)*bundle.BUNDLE_SIZE, &currentRecord, &lastSeenMempoolCount, done); err != nil {
+				return err
 			}
 
-			if len(mempoolOps) > lastSeenMempoolCount {
-				fmt.Fprintf(os.Stderr, "WebSocket: streaming %d new mempool operation(s)\n",
-					len(mempoolOps)-lastSeenMempoolCount)
-
-				// Stream new mempool operations
-				for i := lastSeenMempoolCount; i < len(mempoolOps); i++ {
-					select {
-					case <-done:
-						return nil
-					default:
-					}
-
-					if err := sendOperation(conn, mempoolOps[i]); err != nil {
-						return err
-					}
-					currentRecord++
-				}
-
-				lastSeenMempoolCount = len(mempoolOps)
-			}
-
-			// Send periodic ping to keep connection alive
+			// Keep-alive ping
 			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+// streamBundle streams a single bundle's operations without parsing
+// Returns number of records streamed
+func streamBundle(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, bundleNumber int, skipUntil int, done chan struct{}) (int, error) {
+	reader, err := mgr.StreamBundleDecompressed(ctx, bundleNumber)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to stream bundle %d: %v\n", bundleNumber, err)
+		return 0, nil // Continue with next bundle
+	}
+	defer reader.Close()
+
+	scanner := bufio.NewScanner(reader)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	position := 0
+	streamed := 0
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		// Skip until start position
+		if position < skipUntil {
+			position++
+			continue
+		}
+
+		select {
+		case <-done:
+			return streamed, nil
+		default:
+		}
+
+		// Send raw JSON line
+		if err := conn.WriteMessage(websocket.TextMessage, line); err != nil {
+			return streamed, err
+		}
+
+		position++
+		streamed++
+
+		if streamed%1000 == 0 {
+			conn.WriteMessage(websocket.PingMessage, nil)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return streamed, fmt.Errorf("scanner error on bundle %d: %w", bundleNumber, err)
+	}
+
+	return streamed, nil
+}
+
+// streamMempool streams new operations from mempool
+func streamMempool(conn *websocket.Conn, mgr *bundle.Manager, startCursor int, bundleRecordBase int, currentRecord *int, lastSeenCount *int, done chan struct{}) error {
+	mempoolOps, err := mgr.GetMempoolOperations()
+	if err != nil {
+		return nil // Not fatal
+	}
+
+	if len(mempoolOps) <= *lastSeenCount {
+		return nil // No new operations
+	}
+
+	newOps := len(mempoolOps) - *lastSeenCount
+	if newOps > 0 {
+		fmt.Fprintf(os.Stderr, "WebSocket: streaming %d new mempool operation(s)\n", newOps)
+	}
+
+	for i := *lastSeenCount; i < len(mempoolOps); i++ {
+		recordNum := bundleRecordBase + i
+		if recordNum < startCursor {
+			continue
+		}
+
+		select {
+		case <-done:
+			return nil
+		default:
+		}
+
+		if err := sendOperation(conn, mempoolOps[i]); err != nil {
+			return err
+		}
+		*currentRecord++
+	}
+
+	*lastSeenCount = len(mempoolOps)
+	return nil
 }
 
 // sendOperation sends a single operation over WebSocket as raw JSON
