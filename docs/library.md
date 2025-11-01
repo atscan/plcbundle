@@ -228,19 +228,54 @@ Each operation represents a DID PLC directory event:
 
 ```go
 type PLCOperation struct {
-    DID       string                 // The DID (did:plc:...)
-    Operation map[string]interface{} // The operation data
-    CID       string                 // Content identifier
-    Nullified interface{}            // nil, false, or CID string
-    CreatedAt time.Time              // When it was created
-    RawJSON   []byte                 // Original JSON bytes
+    DID       string          // The DID (did:plc:...)
+    Operation json.RawMessage // Raw JSON bytes (use GetOperationMap() to parse)
+    CID       string          // Content identifier
+    Nullified interface{}     // nil, false, or CID string
+    CreatedAt time.Time       // When it was created
+    
+    // Internal fields (populated automatically)
+    RawJSON         []byte                 // Original JSON line
+    ParsedOperation map[string]interface{} // Cached parsed data
 }
+
+// Accessing operation data:
+operation, err := op.GetOperationMap()  // Parses Operation field (cached)
+if err != nil || operation == nil {
+    return
+}
+
+// Now you can access fields
+services := operation["services"].(map[string]interface{})
 
 // Check if operation was nullified
 if op.IsNullified() {
     log.Printf("Operation %s was nullified by %s", op.CID, op.GetNullifyingCID())
 }
 ```
+
+### Accessing Operation Data
+
+The `Operation` field uses lazy parsing for performance. Always parse it before accessing:
+
+```go
+// ❌ Wrong - won't compile
+services := op.Operation["services"]
+
+// ✅ Correct
+operation, err := op.GetOperationMap()
+if err != nil || operation == nil {
+    return
+}
+services, ok := operation["services"].(map[string]interface{})
+```
+
+The parsed data is cached, so repeated calls are fast:
+// First call: parses JSON
+data1, _ := op.GetOperationMap()
+
+// Second call: returns cached data (fast)
+data2, _ := op.GetOperationMap()
 
 ---
 
@@ -441,8 +476,14 @@ func (p *OperationProcessor) ProcessAll() error {
 }
 
 func (p *OperationProcessor) processOperation(op plcbundle.PLCOperation) {
+    // Parse Operation field on-demand
+    operation, err := op.GetOperationMap()
+    if err != nil || operation == nil {
+        return
+    }
+    
     // Example: Extract PDS endpoints
-    if services, ok := op.Operation["services"].(map[string]interface{}); ok {
+    if services, ok := operation["services"].(map[string]interface{}); ok {
         if pds, ok := services["atproto_pds"].(map[string]interface{}); ok {
             if endpoint, ok := pds["endpoint"].(string); ok {
                 log.Printf("DID %s uses PDS: %s", op.DID, endpoint)
@@ -450,6 +491,7 @@ func (p *OperationProcessor) processOperation(op plcbundle.PLCOperation) {
         }
     }
 }
+
 
 func main() {
     processor, err := NewOperationProcessor("./plc_data")
@@ -815,7 +857,13 @@ func (pt *PDSTracker) Scan() error {
 }
 
 func (pt *PDSTracker) extractPDS(op plcbundle.PLCOperation) string {
-    services, ok := op.Operation["services"].(map[string]interface{})
+    // Parse Operation field on-demand
+    operation, err := op.GetOperationMap()
+    if err != nil || operation == nil {
+        return ""
+    }
+    
+    services, ok := operation["services"].(map[string]interface{})
     if !ok {
         return ""
     }
@@ -832,6 +880,7 @@ func (pt *PDSTracker) extractPDS(op plcbundle.PLCOperation) string {
     
     return endpoint
 }
+
 
 func (pt *PDSTracker) PrintResults() {
     log.Printf("\nFound %d unique PDS endpoints:\n", len(pt.endpoints))
@@ -1045,8 +1094,11 @@ func (m *Monitor) processNewOperations(bundle *plcbundle.Bundle) {
         }
         
         // Check for new DIDs (operation type "create")
-        if opType, ok := op.Operation["type"].(string); ok && opType == "create" {
-            log.Printf("   ➕ New DID: %s", op.DID)
+        operation, err := op.GetOperationMap()
+        if err == nil && operation != nil {
+            if opType, ok := operation["type"].(string); ok && opType == "create" {
+                log.Printf("   ➕ New DID: %s", op.DID)
+            }
         }
     }
 }
