@@ -208,10 +208,10 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	}
 
 	if syncMode {
-		fmt.Fprintf(w, "  # Get sync status\n")
-		fmt.Fprintf(w, "  curl %s/sync\n\n", baseURL)
+		fmt.Fprintf(w, "  # Get server status\n")
+		fmt.Fprintf(w, "  curl %s/status\n\n", baseURL)
 		fmt.Fprintf(w, "  # Get mempool operations\n")
-		fmt.Fprintf(w, "  curl %s/sync/mempool\n\n", baseURL)
+		fmt.Fprintf(w, "  curl %s/mempool\n\n", baseURL)
 	}
 
 	fmt.Fprintf(w, "\n────────────────────────────────────────────────────────────────\n")
