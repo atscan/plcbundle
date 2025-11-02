@@ -1,3 +1,6 @@
+networks:
+  plcbundle:
+
 services:
   plcbundle:
     build: .
@@ -24,8 +27,19 @@ services:
     networks:
       - plcbundle
 
-networks:
-  plcbundle:
+  # watchtower for automatic updates
+  watchtower:
+    container_name: watchtower
+    image: containrrr/watchtower:latest
+    network_mode: host
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    restart: unless-stopped
+    environment:
+      WATCHTOWER_CLEANUP: true
+      WATCHTOWER_SCHEDULE: "@midnight"
 
 # Optional: Caddy reverse proxy
 #
