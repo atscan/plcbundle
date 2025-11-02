@@ -1240,3 +1240,11 @@ func (m *Manager) SaveMempool() error {
 	}
 	return m.mempool.Save()
 }
+
+// GetPLCOrigin returns the PLC directory origin URL (empty if not configured)
+func (m *Manager) GetPLCOrigin() string {
+	if m.plcClient == nil {
+		return ""
+	}
+	return m.plcClient.GetBaseURL()
+}

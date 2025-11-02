@@ -62,7 +62,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠐⠠⠁⠋⢣⠓⡍⣫⠹⣿⣿⣷⡿⠯⠺⠁⠁⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠋⢀⠋⢈⡿⠿⠁⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 
-plcbundle %s
+                        plcbundle server
 
 *~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*
 | ⚠️ Preview Version – Do Not Use In Production!                 |
@@ -73,7 +73,7 @@ plcbundle %s
 | Please wait for the 1.0 release.                               |
 |________________________________________________________________|
 
-`, version)
+`)
 
 	fmt.Fprintf(w, "What is PLC Bundle?\n")
 	fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━━\n")
@@ -83,20 +83,23 @@ plcbundle %s
 	fmt.Fprintf(w, "the previous bundle, creating a verifiable chain of DID operations.\n\n")
 	fmt.Fprintf(w, "More info: https://tangled.org/@atscan.net/plcbundle\n\n")
 
-	fmt.Fprintf(w, "Server Stats\n")
-	fmt.Fprintf(w, "━━━━━━━━━━━━\n")
-	fmt.Fprintf(w, "  Bundle count:  %d\n", bundleCount)
-	fmt.Fprintf(w, "  Sync mode:     %v\n", syncMode)
-	fmt.Fprintf(w, "  WebSocket:     %v\n", wsEnabled)
-
 	if bundleCount > 0 {
+		fmt.Fprintf(w, "Bundles\n")
+		fmt.Fprintf(w, "━━━━━━━\n")
+		fmt.Fprintf(w, "  Bundle count:  %d\n", bundleCount)
+
 		firstBundle := stats["first_bundle"].(int)
 		lastBundle := stats["last_bundle"].(int)
 		totalSize := stats["total_size"].(int64)
+		totalUncompressed := stats["total_uncompressed_size"].(int64)
 
+		fmt.Fprintf(w, "  Last bundle:   %d (%s)\n", lastBundle,
+			stats["updated_at"].(time.Time).Format("2006-01-02 15:04:05"))
 		fmt.Fprintf(w, "  Range:         %06d - %06d\n", firstBundle, lastBundle)
 		fmt.Fprintf(w, "  Total size:    %.2f MB\n", float64(totalSize)/(1000*1000))
-		fmt.Fprintf(w, "  Updated:       %s\n", stats["updated_at"].(time.Time).Format("2006-01-02 15:04:05"))
+		fmt.Fprintf(w, "  Uncompressed:  %.2f MB (%.2fx)\n",
+			float64(totalUncompressed)/(1000*1000),
+			float64(totalUncompressed)/float64(totalSize))
 
 		if gaps, ok := stats["gaps"].(int); ok && gaps > 0 {
 			fmt.Fprintf(w, "  ⚠ Gaps:        %d missing bundles\n", gaps)
@@ -123,7 +126,7 @@ plcbundle %s
 
 		fmt.Fprintf(w, "\nMempool Stats\n")
 		fmt.Fprintf(w, "━━━━━━━━━━━━━\n")
-		fmt.Fprintf(w, "  Target bundle:     %06d\n", targetBundle)
+		fmt.Fprintf(w, "  Target bundle:     %d\n", targetBundle)
 		fmt.Fprintf(w, "  Operations:        %d / %d\n", count, bundle.BUNDLE_SIZE)
 		fmt.Fprintf(w, "  Can create bundle: %v\n", canCreate)
 
@@ -150,6 +153,18 @@ plcbundle %s
 			fmt.Fprintf(w, "  (empty)\n")
 		}
 	}
+	fmt.Fprintf(w, "\n")
+
+	fmt.Fprintf(w, "Server Stats\n")
+	fmt.Fprintf(w, "━━━━━━━━━━━━\n")
+	fmt.Fprintf(w, "  Version:       %s\n", version)
+	if origin := mgr.GetPLCOrigin(); origin != "" {
+		fmt.Fprintf(w, "  Origin:        %s\n", origin)
+	}
+	fmt.Fprintf(w, "  Sync mode:     %v\n", syncMode)
+	fmt.Fprintf(w, "  WebSocket:     %v\n", wsEnabled)
+	fmt.Fprintf(w, "  Uptime:        %s\n", time.Since(serverStartTime).Round(time.Second))
+	fmt.Fprintf(w, "\n")
 
 	fmt.Fprintf(w, "\nAPI Endpoints\n")
 	fmt.Fprintf(w, "━━━━━━━━━━━━━\n")
@@ -158,6 +173,8 @@ plcbundle %s
 	fmt.Fprintf(w, "  GET  /bundle/:number      Bundle metadata (JSON)\n")
 	fmt.Fprintf(w, "  GET  /data/:number        Raw bundle (zstd compressed)\n")
 	fmt.Fprintf(w, "  GET  /jsonl/:number       Decompressed JSONL stream\n")
+	fmt.Fprintf(w, "  GET  /status              Server status\n")
+	fmt.Fprintf(w, "  GET  /mempool             Mempool operations (JSONL)\n")
 
 	if wsEnabled {
 		fmt.Fprintf(w, "\nWebSocket Endpoints\n")
@@ -168,13 +185,6 @@ plcbundle %s
 		fmt.Fprintf(w, "                            Connection stays open until client closes\n")
 		fmt.Fprintf(w, "                            Cursor: global record number (0-based)\n")
 		fmt.Fprintf(w, "                            Example: 88410345 = bundle 8841, pos 345\n")
-	}
-
-	if syncMode {
-		fmt.Fprintf(w, "\nSync Endpoints\n")
-		fmt.Fprintf(w, "━━━━━━━━━━━━━━\n")
-		fmt.Fprintf(w, "  GET  /sync                Sync status & mempool info (JSON)\n")
-		fmt.Fprintf(w, "  GET  /sync/mempool        Mempool operations (JSONL)\n")
 	}
 
 	fmt.Fprintf(w, "\nExamples\n")
@@ -205,7 +215,7 @@ plcbundle %s
 	}
 
 	fmt.Fprintf(w, "\n────────────────────────────────────────────────────────────────\n")
-	fmt.Fprintf(w, "plcbundle %s | https://tangled.org/@atscan.net/plcbundle\n", version)
+	fmt.Fprintf(w, "https://tangled.org/@atscan.net/plcbundle\n")
 }
 
 // getScheme returns the appropriate HTTP scheme (http or https)
@@ -283,6 +293,11 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.H
 		handleBundleJSONL(w, r, mgr)
 	})
 
+	// Status endpoint
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		handleStatus(w, mgr, syncMode, wsEnabled)
+	})
+
 	// WebSocket endpoint (if enabled)
 	if wsEnabled {
 		mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -292,12 +307,8 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.H
 
 	// Sync endpoints (only if sync mode enabled)
 	if syncMode {
-		mux.HandleFunc("/sync", func(w http.ResponseWriter, r *http.Request) {
-			handleSync(w, mgr)
-		})
-
-		mux.HandleFunc("/sync/mempool", func(w http.ResponseWriter, r *http.Request) {
-			handleSyncMempool(w, mgr)
+		mux.HandleFunc("/mempool", func(w http.ResponseWriter, r *http.Request) {
+			handleMempool(w, mgr)
 		})
 	}
 
@@ -559,47 +570,167 @@ func sendOperation(conn *websocket.Conn, op plc.PLCOperation) error {
 	return nil
 }
 
-// handleSync returns sync status and mempool info as JSON
-func handleSync(w http.ResponseWriter, mgr *bundle.Manager) {
+// StatusResponse represents the /status endpoint response
+type StatusResponse struct {
+	Bundles BundleStatus   `json:"bundles"`
+	Mempool *MempoolStatus `json:"mempool,omitempty"` // nil if sync disabled
+	Server  ServerStatus   `json:"server"`
+}
+
+type ServerStatus struct {
+	Version          string `json:"version"`
+	UptimeSeconds    int    `json:"uptime_seconds"`
+	SyncMode         bool   `json:"sync_mode"`
+	WebSocketEnabled bool   `json:"websocket_enabled"`
+	Origin           string `json:"origin,omitempty"` // PLC directory URL
+}
+
+type BundleStatus struct {
+	Count            int       `json:"count"`
+	FirstBundle      int       `json:"first_bundle,omitempty"`
+	LastBundle       int       `json:"last_bundle,omitempty"`
+	TotalSize        int64     `json:"total_size"`
+	UncompressedSize int64     `json:"uncompressed_size,omitempty"`
+	CompressionRatio float64   `json:"compression_ratio,omitempty"`
+	TotalOperations  int       `json:"total_operations,omitempty"`
+	AvgOpsPerHour    int       `json:"avg_ops_per_hour,omitempty"`
+	StartTime        time.Time `json:"start_time,omitempty"`
+	EndTime          time.Time `json:"end_time,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	HeadAgeSeconds   int       `json:"head_age_seconds,omitempty"`
+	RootHash         string    `json:"root_hash,omitempty"`
+	HeadHash         string    `json:"head_hash,omitempty"`
+	Gaps             int       `json:"gaps,omitempty"`
+	HasGaps          bool      `json:"has_gaps"`
+	GapNumbers       []int     `json:"gap_numbers,omitempty"`
+}
+
+type MempoolStatus struct {
+	Count                int       `json:"count"`
+	TargetBundle         int       `json:"target_bundle"`
+	CanCreateBundle      bool      `json:"can_create_bundle"`
+	MinTimestamp         time.Time `json:"min_timestamp"`
+	Validated            bool      `json:"validated"`
+	ProgressPercent      float64   `json:"progress_percent"`
+	BundleSize           int       `json:"bundle_size"`
+	OperationsNeeded     int       `json:"operations_needed"`
+	FirstTime            time.Time `json:"first_time,omitempty"`
+	LastTime             time.Time `json:"last_time,omitempty"`
+	TimespanSeconds      int       `json:"timespan_seconds,omitempty"`
+	LastOpAgeSeconds     int       `json:"last_op_age_seconds,omitempty"`
+	EtaNextBundleSeconds int       `json:"eta_next_bundle_seconds,omitempty"`
+}
+
+// handleStatus returns repository status and statistics
+func handleStatus(w http.ResponseWriter, mgr *bundle.Manager, syncMode bool, wsEnabled bool) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	index := mgr.GetIndex()
 	indexStats := index.GetStats()
-	mempoolStats := mgr.GetMempoolStats()
 
-	// Build response
-	response := map[string]interface{}{
-		"bundles": map[string]interface{}{
-			"count":      indexStats["bundle_count"],
-			"total_size": indexStats["total_size"],
-			"updated_at": indexStats["updated_at"],
+	// Build response with proper types
+	response := StatusResponse{
+		Server: ServerStatus{
+			Version:          version,
+			UptimeSeconds:    int(time.Since(serverStartTime).Seconds()),
+			SyncMode:         syncMode,
+			WebSocketEnabled: wsEnabled,
+			Origin:           mgr.GetPLCOrigin(),
 		},
-		"mempool": mempoolStats,
+		Bundles: BundleStatus{
+			Count:            indexStats["bundle_count"].(int),
+			TotalSize:        indexStats["total_size"].(int64),
+			UncompressedSize: indexStats["total_uncompressed_size"].(int64),
+			//UpdatedAt:        indexStats["updated_at"].(time.Time),
+		},
 	}
 
-	// Add bundle range if bundles exist
-	if bundleCount, ok := indexStats["bundle_count"].(int); ok && bundleCount > 0 {
-		response["bundles"].(map[string]interface{})["first_bundle"] = indexStats["first_bundle"]
-		response["bundles"].(map[string]interface{})["last_bundle"] = indexStats["last_bundle"]
-		response["bundles"].(map[string]interface{})["start_time"] = indexStats["start_time"]
-		response["bundles"].(map[string]interface{})["end_time"] = indexStats["end_time"]
+	// Add bundle details if bundles exist
+	if bundleCount := response.Bundles.Count; bundleCount > 0 {
+		firstBundle := indexStats["first_bundle"].(int)
+		lastBundle := indexStats["last_bundle"].(int)
 
+		response.Bundles.FirstBundle = firstBundle
+		response.Bundles.LastBundle = lastBundle
+		response.Bundles.StartTime = indexStats["start_time"].(time.Time)
+		response.Bundles.EndTime = indexStats["end_time"].(time.Time)
+
+		// Hashes
+		if firstMeta, err := index.GetBundle(firstBundle); err == nil {
+			response.Bundles.RootHash = firstMeta.Hash
+		}
+
+		if lastMeta, err := index.GetBundle(lastBundle); err == nil {
+			response.Bundles.HeadHash = lastMeta.Hash
+			response.Bundles.HeadAgeSeconds = int(time.Since(lastMeta.EndTime).Seconds())
+		}
+
+		// Gaps
 		if gaps, ok := indexStats["gaps"].(int); ok {
-			response["bundles"].(map[string]interface{})["gaps"] = gaps
+			response.Bundles.Gaps = gaps
+			response.Bundles.HasGaps = gaps > 0
+			if gaps > 0 {
+				response.Bundles.GapNumbers = index.FindGaps()
+			}
+		}
+
+		// Total operations
+		totalOps := bundleCount * bundle.BUNDLE_SIZE
+		response.Bundles.TotalOperations = totalOps
+
+		// Performance metrics
+		duration := response.Bundles.EndTime.Sub(response.Bundles.StartTime)
+		if duration.Hours() > 0 {
+			response.Bundles.AvgOpsPerHour = int(float64(totalOps) / duration.Hours())
 		}
 	}
 
-	// Calculate mempool progress percentage
-	if count, ok := mempoolStats["count"].(int); ok {
-		progress := float64(count) / float64(bundle.BUNDLE_SIZE) * 100
-		response["mempool"].(map[string]interface{})["progress_percent"] = progress
-		response["mempool"].(map[string]interface{})["bundle_size"] = bundle.BUNDLE_SIZE
+	// Only include mempool if sync mode is enabled
+	if syncMode {
+		mempoolStats := mgr.GetMempoolStats()
+
+		if count, ok := mempoolStats["count"].(int); ok {
+			mempool := &MempoolStatus{
+				Count:            count,
+				TargetBundle:     mempoolStats["target_bundle"].(int),
+				CanCreateBundle:  mempoolStats["can_create_bundle"].(bool),
+				MinTimestamp:     mempoolStats["min_timestamp"].(time.Time),
+				Validated:        mempoolStats["validated"].(bool),
+				ProgressPercent:  float64(count) / float64(bundle.BUNDLE_SIZE) * 100,
+				BundleSize:       bundle.BUNDLE_SIZE,
+				OperationsNeeded: bundle.BUNDLE_SIZE - count,
+			}
+
+			// Optional time fields
+			if firstTime, ok := mempoolStats["first_time"].(time.Time); ok {
+				mempool.FirstTime = firstTime
+				mempool.TimespanSeconds = int(time.Since(firstTime).Seconds())
+			}
+			if lastTime, ok := mempoolStats["last_time"].(time.Time); ok {
+				mempool.LastTime = lastTime
+				mempool.LastOpAgeSeconds = int(time.Since(lastTime).Seconds())
+			}
+
+			// ETA calculation
+			if count > 100 && count < bundle.BUNDLE_SIZE {
+				if !mempool.FirstTime.IsZero() && !mempool.LastTime.IsZero() {
+					timespan := mempool.LastTime.Sub(mempool.FirstTime)
+					if timespan.Seconds() > 0 {
+						opsPerSec := float64(count) / timespan.Seconds()
+						remaining := bundle.BUNDLE_SIZE - count
+						mempool.EtaNextBundleSeconds = int(float64(remaining) / opsPerSec)
+					}
+				}
+			}
+
+			response.Mempool = mempool
+		}
 	}
 
 	data, err := json.MarshalIndent(response, "", "  ")
 	if err != nil {
-		http.Error(w, "Failed to marshal sync status", http.StatusInternalServerError)
+		http.Error(w, "Failed to marshal status", http.StatusInternalServerError)
 		return
 	}
 
@@ -607,7 +738,7 @@ func handleSync(w http.ResponseWriter, mgr *bundle.Manager) {
 }
 
 // handleSyncMempool streams mempool operations as JSONL
-func handleSyncMempool(w http.ResponseWriter, mgr *bundle.Manager) {
+func handleMempool(w http.ResponseWriter, mgr *bundle.Manager) {
 	ops, err := mgr.GetMempoolOperations()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get mempool operations: %v", err), http.StatusInternalServerError)

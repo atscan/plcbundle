@@ -20,11 +20,12 @@ const (
 
 // Index represents the JSON index file
 type Index struct {
-	Version    string            `json:"version"`
-	LastBundle int               `json:"last_bundle"`
-	UpdatedAt  time.Time         `json:"updated_at"`
-	TotalSize  int64             `json:"total_size_bytes"`
-	Bundles    []*BundleMetadata `json:"bundles"`
+	Version               string            `json:"version"`
+	LastBundle            int               `json:"last_bundle"`
+	UpdatedAt             time.Time         `json:"updated_at"`
+	TotalSize             int64             `json:"total_size_bytes"`
+	TotalUncompressedSize int64             `json:"total_uncompressed_size_bytes"`
+	Bundles               []*BundleMetadata `json:"bundles"`
 
 	mu sync.RWMutex `json:"-"`
 }
@@ -54,6 +55,9 @@ func LoadIndex(path string) (*Index, error) {
 	if idx.Version != INDEX_VERSION {
 		return nil, fmt.Errorf("unsupported index version: %s (expected %s)", idx.Version, INDEX_VERSION)
 	}
+
+	// Recalculate derived fields (handles new fields added to Index)
+	idx.recalculate()
 
 	return &idx, nil
 }
@@ -197,8 +201,9 @@ func (idx *Index) GetStats() map[string]interface{} {
 
 	if len(idx.Bundles) == 0 {
 		return map[string]interface{}{
-			"bundle_count": 0,
-			"total_size":   0,
+			"bundle_count":            0,
+			"total_size":              0,
+			"total_uncompressed_size": 0,
 		}
 	}
 
@@ -206,14 +211,15 @@ func (idx *Index) GetStats() map[string]interface{} {
 	last := idx.Bundles[len(idx.Bundles)-1]
 
 	return map[string]interface{}{
-		"bundle_count": len(idx.Bundles),
-		"first_bundle": first.BundleNumber,
-		"last_bundle":  last.BundleNumber,
-		"total_size":   idx.TotalSize,
-		"start_time":   first.StartTime,
-		"end_time":     last.EndTime,
-		"updated_at":   idx.UpdatedAt,
-		"gaps":         len(idx.FindGaps()),
+		"bundle_count":            len(idx.Bundles),
+		"first_bundle":            first.BundleNumber,
+		"last_bundle":             last.BundleNumber,
+		"total_size":              idx.TotalSize,
+		"total_uncompressed_size": idx.TotalUncompressedSize,
+		"start_time":              first.StartTime,
+		"end_time":                last.EndTime,
+		"updated_at":              idx.UpdatedAt,
+		"gaps":                    len(idx.FindGaps()),
 	}
 }
 
@@ -229,22 +235,26 @@ func (idx *Index) recalculate() {
 	if len(idx.Bundles) == 0 {
 		idx.LastBundle = 0
 		idx.TotalSize = 0
+		idx.TotalUncompressedSize = 0
 		return
 	}
 
 	// Find last bundle
 	maxBundle := 0
 	totalSize := int64(0)
+	totalUncompressed := int64(0)
 
 	for _, meta := range idx.Bundles {
 		if meta.BundleNumber > maxBundle {
 			maxBundle = meta.BundleNumber
 		}
 		totalSize += meta.CompressedSize
+		totalUncompressed += meta.UncompressedSize
 	}
 
 	idx.LastBundle = maxBundle
 	idx.TotalSize = totalSize
+	idx.TotalUncompressedSize = totalUncompressed
 }
 
 // Rebuild rebuilds the index from bundle metadata

@@ -1255,6 +1255,8 @@ func cmdMempool() {
 	fmt.Printf("File: %s\n", filepath.Join(dir, mempoolFilename))
 }
 
+var serverStartTime time.Time
+
 func cmdServe() {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	port := fs.String("port", "8080", "HTTP server port")
@@ -1265,6 +1267,8 @@ func cmdServe() {
 	enableWebSocket := fs.Bool("websocket", false, "enable WebSocket endpoint for streaming records")
 	workers := fs.Int("workers", 4, "number of workers for auto-rebuild (0 = CPU count)")
 	fs.Parse(os.Args[2:])
+
+	serverStartTime = time.Now()
 
 	// Auto-detect CPU count
 	if *workers == 0 {

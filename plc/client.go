@@ -284,3 +284,8 @@ func (c *Client) GetStats() map[string]interface{} {
 		"timeout":  c.httpClient.Timeout,
 	}
 }
+
+// GetBaseURL returns the PLC directory base URL
+func (c *Client) GetBaseURL() string {
+	return c.baseURL
+}
