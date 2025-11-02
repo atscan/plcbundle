@@ -16,7 +16,7 @@ DOCKER_PLATFORMS?=linux/amd64,linux/arm64
 # Version information
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-BUILD_DATE := $(shell date -u '+%Y-%m-%d_%H:%M:%S')
+BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Go commands
 GOCMD=go
@@ -113,7 +113,7 @@ docker-build:
 	docker build \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
-		--build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
+		--build-arg BUILD_DATE="$(BUILD_DATE)" \
 		-t $(DOCKER_FULL_IMAGE) \
 		-t $(DOCKER_LATEST) \
 		.
@@ -126,7 +126,7 @@ docker-buildx:
 		--platform $(DOCKER_PLATFORMS) \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
-  		--build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \		
+  		--build-arg BUILD_DATE="$(BUILD_DATE)" \
 		--tag $(DOCKER_FULL_IMAGE) \
 		--tag $(DOCKER_LATEST) \
 		--push \
