@@ -113,6 +113,7 @@ docker-build:
 	docker build \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
 		-t $(DOCKER_FULL_IMAGE) \
 		-t $(DOCKER_LATEST) \
 		.
@@ -125,6 +126,7 @@ docker-buildx:
 		--platform $(DOCKER_PLATFORMS) \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+  		--build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \		
 		--tag $(DOCKER_FULL_IMAGE) \
 		--tag $(DOCKER_LATEST) \
 		--push \
