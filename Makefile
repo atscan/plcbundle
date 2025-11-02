@@ -98,24 +98,10 @@ bump-major:
 	@echo "Bumping major version..."
 	@./scripts/bump-version.sh major
 
-# Build release binaries with GoReleaser (local test)
-release-build:
-	@echo "Building release binaries with GoReleaser..."
-	@goreleaser build --snapshot --clean
-	@echo "✓ Binaries built in dist/"
-
-# Create release (runs your script + GoReleaser)
+# Create release
 release:
 	@echo "Creating release for version $(VERSION)..."
 	@./scripts/release.sh
-
-# Full release with binaries
-release-full: release release-publish
-
-# Publish release with GoReleaser
-release-publish:
-	@echo "Publishing release with GoReleaser..."
-	@goreleaser release --clean
 
 # ============================================================================
 # Docker Commands
@@ -204,9 +190,6 @@ help:
 	@echo "  make bump-minor     - Bump minor (0.1.0 -> 0.2.0)"
 	@echo "  make bump-major     - Bump major (0.1.0 -> 1.0.0)"
 	@echo "  make release        - Push tag to trigger release"
-	@echo "  make release-build  - Test build all platforms locally"
-	@echo "  make release-publish- Publish with GoReleaser"
-	@echo "  make release-full   - Complete release (tag + binaries)"
 	@echo ""
 	@echo "Docker:"
 	@echo "  make docker-build   - Build image (current platform)"

@@ -11,8 +11,12 @@ RUN go mod download
 
 COPY . .
 
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
+
 RUN CGO_ENABLED=1 go build \
-    -ldflags="-w -s" \
+    -ldflags="-w -s -X 'main.version=${VERSION}' -X 'main.gitCommit=${GIT_COMMIT}' -X 'main.buildDate=${BUILD_DATE}'" \
     -trimpath \
     -o plcbundle \
     ./cmd/plcbundle
