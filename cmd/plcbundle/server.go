@@ -182,12 +182,27 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	if wsEnabled {
 		fmt.Fprintf(w, "\nWebSocket Endpoints\n")
 		fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━\n")
-		fmt.Fprintf(w, "  WS   /ws?cursor=N         Live stream all records from cursor N\n")
-		fmt.Fprintf(w, "                            Streams all bundles, then mempool\n")
-		fmt.Fprintf(w, "                            Continues streaming new operations live\n")
-		fmt.Fprintf(w, "                            Connection stays open until client closes\n")
-		fmt.Fprintf(w, "                            Cursor: global record number (0-based)\n")
-		fmt.Fprintf(w, "                            Example: 88410345 = bundle 8841, pos 345\n")
+		fmt.Fprintf(w, "  WS   /ws                      Live stream (new operations only)\n")
+		fmt.Fprintf(w, "  WS   /ws?cursor=0             Stream all from beginning\n")
+		fmt.Fprintf(w, "  WS   /ws?cursor=N             Stream from cursor N\n")
+		fmt.Fprintf(w, "\n")
+		fmt.Fprintf(w, "Cursor Format:\n")
+		fmt.Fprintf(w, "  Global record number: (bundleNumber × 10,000) + position\n")
+		fmt.Fprintf(w, "  Example: 88410345 = bundle 8841, position 345\n")
+		fmt.Fprintf(w, "  Default: starts from latest (skips all historical data)\n")
+
+		// Get current cursor
+		latestCursor := mgr.GetCurrentCursor()
+		bundledOps := len(index.GetBundles()) * bundle.BUNDLE_SIZE
+		mempoolOps := latestCursor - bundledOps
+
+		if syncMode && mempoolOps > 0 {
+			fmt.Fprintf(w, "  Current latest: %d (%d bundled + %d mempool)\n",
+				latestCursor, bundledOps, mempoolOps)
+		} else {
+			fmt.Fprintf(w, "  Current latest: %d (%d bundles)\n",
+				latestCursor, len(index.GetBundles()))
+		}
 	}
 
 	fmt.Fprintf(w, "\nExamples\n")
@@ -200,14 +215,14 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	fmt.Fprintf(w, "  curl %s/jsonl/1\n\n", baseURL)
 
 	if wsEnabled {
-		fmt.Fprintf(w, "  # Stream all operations via WebSocket (from beginning)\n")
+		fmt.Fprintf(w, "  # Stream live updates only (default)\n")
 		fmt.Fprintf(w, "  websocat %s/ws\n\n", wsURL)
-		fmt.Fprintf(w, "  # Stream from cursor 10000\n")
-		fmt.Fprintf(w, "  websocat '%s/ws?cursor=10000'\n\n", wsURL)
-		fmt.Fprintf(w, "  # Stream and save to file\n")
-		fmt.Fprintf(w, "  websocat %s/ws > all_operations.jsonl\n\n", wsURL)
-		fmt.Fprintf(w, "  # Stream with jq for pretty printing\n")
-		fmt.Fprintf(w, "  websocat %s/ws | jq .\n\n", wsURL)
+		fmt.Fprintf(w, "  # Stream everything from the beginning\n")
+		fmt.Fprintf(w, "  websocat '%s/ws?cursor=0'\n\n", wsURL)
+		fmt.Fprintf(w, "  # Stream from specific bundle (e.g., bundle 100)\n")
+		fmt.Fprintf(w, "  websocat '%s/ws?cursor=1000000'\n\n", wsURL)
+		fmt.Fprintf(w, "  # Resume from last position\n")
+		fmt.Fprintf(w, "  websocat '%s/ws?cursor=88410345'\n\n", wsURL)
 	}
 
 	if syncMode {
@@ -321,10 +336,15 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.H
 // handleWebSocket streams all records via WebSocket starting from cursor
 // Keeps connection alive and streams new records as they arrive
 func handleWebSocket(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager) {
-	// Parse cursor from query parameter (defaults to 0)
+	// Parse cursor from query parameter
 	cursorStr := r.URL.Query().Get("cursor")
-	cursor := 0
-	if cursorStr != "" {
+	var cursor int
+
+	if cursorStr == "" {
+		// DEFAULT: Start from latest (current state including mempool)
+		cursor = mgr.GetCurrentCursor()
+	} else {
+		// Explicit cursor provided
 		var err error
 		cursor, err = strconv.Atoi(cursorStr)
 		if err != nil || cursor < 0 {

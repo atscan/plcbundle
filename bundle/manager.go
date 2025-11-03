@@ -1296,3 +1296,19 @@ func (m *Manager) GetPLCOrigin() string {
 	}
 	return m.plcClient.GetBaseURL()
 }
+
+// GetCurrentCursor returns the current latest cursor position (including mempool)
+// Cursor format: (bundleNumber × BUNDLE_SIZE) + position
+func (m *Manager) GetCurrentCursor() int {
+	index := m.GetIndex()
+	bundles := index.GetBundles()
+	cursor := len(bundles) * BUNDLE_SIZE
+
+	// Add mempool operations to get true latest position
+	mempoolStats := m.GetMempoolStats()
+	if count, ok := mempoolStats["count"].(int); ok {
+		cursor += count
+	}
+
+	return cursor
+}
