@@ -406,7 +406,6 @@ func streamLive(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, 
 		startPosition := startCursor % bundle.BUNDLE_SIZE
 
 		if startBundleIdx < len(bundles) {
-			// Stream from startBundleIdx to end
 			for i := startBundleIdx; i < len(bundles); i++ {
 				skipUntil := 0
 				if i == startBundleIdx {
@@ -440,7 +439,9 @@ func streamLive(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, 
 	for {
 		select {
 		case <-done:
-			fmt.Fprintf(os.Stderr, "WebSocket: client disconnected, stopping stream\n")
+			if verboseMode {
+				fmt.Fprintf(os.Stderr, "WebSocket: client disconnected, stopping stream\n")
+			}
 			return nil
 
 		case <-ticker.C:
@@ -449,22 +450,20 @@ func streamLive(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, 
 			bundles = index.GetBundles()
 
 			if len(bundles) > lastBundleCount {
-				fmt.Fprintf(os.Stderr, "WebSocket: detected %d new bundle(s)\n", len(bundles)-lastBundleCount)
+				// New bundle(s) created - DON'T stream them (already sent from mempool)
+				newBundleCount := len(bundles) - lastBundleCount
 
-				// Stream new bundles
-				for i := lastBundleCount; i < len(bundles); i++ {
-					newRecordCount, err := streamBundle(ctx, conn, mgr, bundles[i].BundleNumber, 0, done)
-					if err != nil {
-						return err
-					}
-					currentRecord += newRecordCount
+				if verboseMode {
+					fmt.Fprintf(os.Stderr, "WebSocket: %d new bundle(s) created (operations already streamed from mempool)\n", newBundleCount)
 				}
 
+				// Just update tracking - operations were already sent from mempool
+				currentRecord += newBundleCount * bundle.BUNDLE_SIZE
 				lastBundleCount = len(bundles)
-				lastSeenMempoolCount = 0 // Reset after bundle creation
+				lastSeenMempoolCount = 0 // Mempool was cleared when bundle created
 			}
 
-			// Check for new mempool operations
+			// Check for new mempool operations (these ARE new)
 			if err := streamMempool(conn, mgr, startCursor, len(bundles)*bundle.BUNDLE_SIZE, &currentRecord, &lastSeenMempoolCount, done); err != nil {
 				return err
 			}
