@@ -348,7 +348,7 @@ func (m *Manager) LoadBundle(ctx context.Context, bundleNumber int) (*Bundle, er
 }
 
 // SaveBundle saves a bundle to disk and updates the index
-func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
+func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) error {
 	if err := bundle.ValidateForSave(); err != nil {
 		return fmt.Errorf("bundle validation failed: %w", err)
 	}
@@ -361,47 +361,27 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
 		return fmt.Errorf("failed to save bundle: %w", err)
 	}
 
-	// Set content hash and compressed metadata
 	bundle.ContentHash = uncompressedHash
 	bundle.CompressedHash = compressedHash
 	bundle.UncompressedSize = uncompressedSize
 	bundle.CompressedSize = compressedSize
 	bundle.CreatedAt = time.Now().UTC()
 
-	// Get parent (previous chain hash)
+	// Get parent
 	var parent string
 	if bundle.BundleNumber > 1 {
 		prevBundle := m.index.GetLastBundle()
 		if prevBundle != nil {
-			parent = prevBundle.Hash // Get previous chain hash
-
-			m.logger.Printf("Previous bundle %06d: hash=%s, content=%s",
-				prevBundle.BundleNumber,
-				formatHashPreview(prevBundle.Hash),
-				formatHashPreview(prevBundle.ContentHash))
+			parent = prevBundle.Hash
 		} else {
-			// Try to get specific previous bundle
 			if prevMeta, err := m.index.GetBundle(bundle.BundleNumber - 1); err == nil {
 				parent = prevMeta.Hash
-
-				m.logger.Printf("Found previous bundle %06d: hash=%s, content=%s",
-					prevMeta.BundleNumber,
-					formatHashPreview(prevMeta.Hash),
-					formatHashPreview(prevMeta.ContentHash))
 			}
 		}
 	}
 
 	bundle.Parent = parent
-
-	// Calculate chain hash (now stored as primary Hash)
 	bundle.Hash = m.operations.CalculateChainHash(parent, bundle.ContentHash)
-
-	m.logger.Printf("Bundle %06d: hash=%s, content=%s, parent=%s",
-		bundle.BundleNumber,
-		formatHashPreview(bundle.Hash),
-		formatHashPreview(bundle.ContentHash),
-		formatHashPreview(bundle.Parent))
 
 	// Add to index
 	m.index.AddBundle(bundle.ToMetadata())
@@ -411,19 +391,13 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
 		return fmt.Errorf("failed to save index: %w", err)
 	}
 
-	m.logger.Printf("Saved bundle %06d (hash: %s)",
-		bundle.BundleNumber,
-		formatHashPreview(bundle.Hash))
-
-	// IMPORTANT: Clean up old mempool and create new one for next bundle
+	// Clean up old mempool (silent unless verbose)
 	oldMempoolFile := m.mempool.GetFilename()
-	if err := m.mempool.Delete(); err != nil {
+	if err := m.mempool.Delete(); err != nil && !quiet {
 		m.logger.Printf("Warning: failed to delete old mempool %s: %v", oldMempoolFile, err)
-	} else {
-		m.logger.Printf("Deleted mempool: %s", oldMempoolFile)
 	}
 
-	// Create new mempool for next bundle
+	// Create new mempool
 	nextBundle := bundle.BundleNumber + 1
 	minTimestamp := bundle.EndTime
 
@@ -433,21 +407,8 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle) error {
 	}
 
 	m.mempool = newMempool
-	m.logger.Printf("Created new mempool for bundle %06d (min timestamp: %s)",
-		nextBundle, minTimestamp.Format(time.RFC3339Nano))
 
 	return nil
-}
-
-// formatHashPreview safely formats a hash for display
-func formatHashPreview(hash string) string {
-	if len(hash) == 0 {
-		return "(empty)"
-	}
-	if len(hash) < 16 {
-		return hash
-	}
-	return hash[:16] + "..."
 }
 
 // FetchNextBundle fetches the next bundle from PLC directory
@@ -456,7 +417,6 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		return nil, fmt.Errorf("PLC client not configured")
 	}
 
-	// Determine next bundle number
 	lastBundle := m.index.GetLastBundle()
 	nextBundleNum := 1
 	var afterTime string
@@ -468,7 +428,6 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		afterTime = lastBundle.EndTime.Format(time.RFC3339Nano)
 		prevBundleHash = lastBundle.Hash
 
-		// Try to load boundary CIDs from previous bundle
 		prevBundle, err := m.LoadBundle(ctx, lastBundle.BundleNumber)
 		if err == nil {
 			_, prevBoundaryCIDs = m.operations.GetBoundaryCIDs(prevBundle.Operations)
@@ -479,7 +438,6 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		m.logger.Printf("Preparing bundle %06d (mempool: %d ops)...", nextBundleNum, m.mempool.Count())
 	}
 
-	// Keep fetching until we have enough operations
 	for m.mempool.Count() < BUNDLE_SIZE {
 		if !quiet {
 			m.logger.Printf("Fetching more operations (have %d/%d)...", m.mempool.Count(), BUNDLE_SIZE)
@@ -487,26 +445,23 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 
 		err := m.fetchToMempool(ctx, afterTime, prevBoundaryCIDs, BUNDLE_SIZE-m.mempool.Count(), quiet)
 		if err != nil {
-			// If we can't fetch more, check if we have enough
 			if m.mempool.Count() >= BUNDLE_SIZE {
-				break // We have enough now
+				break
 			}
-			// Save current state and return error
 			m.mempool.Save()
 			return nil, fmt.Errorf("insufficient operations: have %d, need %d", m.mempool.Count(), BUNDLE_SIZE)
 		}
 
-		// Check if we made progress
 		if m.mempool.Count() < BUNDLE_SIZE {
-			// Didn't get enough, but got some - save and return error
 			m.mempool.Save()
 			return nil, fmt.Errorf("insufficient operations: have %d, need %d (no more available)", m.mempool.Count(), BUNDLE_SIZE)
 		}
 	}
 
-	// Create bundle from mempool
-	m.logger.Printf("Creating bundle %06d from mempool", nextBundleNum)
-	operations, err := m.mempool.Take(BUNDLE_SIZE) // ✅ Fixed - handle both return values
+	if !quiet {
+		m.logger.Printf("Creating bundle %06d from mempool", nextBundleNum)
+	}
+	operations, err := m.mempool.Take(BUNDLE_SIZE)
 	if err != nil {
 		m.mempool.Save()
 		return nil, fmt.Errorf("failed to take operations from mempool: %w", err)
@@ -514,13 +469,14 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 
 	bundle := m.operations.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash)
 
-	// Save mempool state
 	if err := m.mempool.Save(); err != nil {
 		m.logger.Printf("Warning: failed to save mempool: %v", err)
 	}
 
-	m.logger.Printf("✓ Bundle %06d ready (%d ops, mempool: %d remaining)",
-		nextBundleNum, len(operations), m.mempool.Count())
+	if !quiet {
+		m.logger.Printf("✓ Bundle %06d ready (%d ops, mempool: %d remaining)",
+			nextBundleNum, len(operations), m.mempool.Count())
+	}
 
 	return bundle, nil
 }

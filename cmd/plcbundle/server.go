@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -28,6 +29,7 @@ var upgrader = websocket.Upgrader{
 
 var serverStartTime time.Time
 var syncInterval time.Duration
+var verboseMode bool
 
 func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syncMode bool, wsEnabled bool) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -431,7 +433,9 @@ func streamLive(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, 
 	defer ticker.Stop()
 
 	lastBundleCount := len(bundles)
-	fmt.Fprintf(os.Stderr, "WebSocket: entering live mode at cursor %d\n", currentRecord)
+	if verboseMode {
+		fmt.Fprintf(os.Stderr, "WebSocket: entering live mode at cursor %d\n", currentRecord)
+	}
 
 	for {
 		select {
@@ -540,7 +544,7 @@ func streamMempool(conn *websocket.Conn, mgr *bundle.Manager, startCursor int, b
 	}
 
 	newOps := len(mempoolOps) - *lastSeenCount
-	if newOps > 0 {
+	if newOps > 0 && verboseMode {
 		fmt.Fprintf(os.Stderr, "WebSocket: streaming %d new mempool operation(s)\n", newOps)
 	}
 
@@ -908,41 +912,35 @@ func handleBundleJSONL(w http.ResponseWriter, r *http.Request, mgr *bundle.Manag
 
 // runSync continuously fetches new bundles in the background
 func runSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration, verbose bool) {
-	fmt.Printf("[Sync] Starting sync loop (interval: %s)\n", interval)
-
-	// Do initial sync immediately
+	// Do initial sync immediately (could take hours if starting from scratch)
 	syncBundles(ctx, mgr, verbose)
+
+	// NOW start the periodic sync loop
+	log.Printf("[Sync] Starting sync loop (interval: %s)", interval)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Periodic mempool save (every 5 minutes)
 	saveTicker := time.NewTicker(5 * time.Minute)
 	defer saveTicker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			// Save on shutdown
 			if err := mgr.SaveMempool(); err != nil {
-				fmt.Printf("[Sync] Failed to save mempool on shutdown: %v\n", err)
+				log.Printf("[Sync] Failed to save mempool: %v", err)
 			}
-			fmt.Printf("[Sync] Sync stopped\n")
+			log.Printf("[Sync] Stopped")
 			return
 
 		case <-ticker.C:
 			syncBundles(ctx, mgr, verbose)
 
 		case <-saveTicker.C:
-			// Periodic save (every 5 min) - only if mempool has data
 			stats := mgr.GetMempoolStats()
-			if stats["count"].(int) > 0 {
-				if verbose {
-					fmt.Printf("[Sync] Saving mempool (%d ops)...\n", stats["count"])
-				}
-				if err := mgr.SaveMempool(); err != nil {
-					fmt.Printf("[Sync] Failed to save mempool: %v\n", err)
-				}
+			if stats["count"].(int) > 0 && verbose {
+				log.Printf("[Sync] Saving mempool (%d ops)", stats["count"])
+				mgr.SaveMempool()
 			}
 		}
 	}
@@ -959,73 +957,70 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool) {
 		startBundle = lastBundle.BundleNumber + 1
 	}
 
-	mempoolBefore := mgr.GetMempoolStats()["count"].(int)
+	isInitialSync := (lastBundle == nil || lastBundle.BundleNumber < 10)
 
-	if verbose {
-		fmt.Printf("[Sync] Checking for new bundles (current: %06d)...\n", startBundle-1)
+	if isInitialSync && !verbose {
+		log.Printf("[Sync] Initial sync - fast loading mode (bundle %06d → ...)", startBundle)
+	} else if verbose {
+		log.Printf("[Sync] Checking for new bundles (current: %06d)...", startBundle-1)
 	}
 
+	mempoolBefore := mgr.GetMempoolStats()["count"].(int)
 	fetchedCount := 0
-	addedOps := 0
 	consecutiveErrors := 0
-	maxConsecutiveErrors := 3
 
 	for {
 		currentBundle := startBundle + fetchedCount
 
 		b, err := mgr.FetchNextBundle(ctx, !verbose)
 		if err != nil {
-			// Check if we've reached the end
 			if isEndOfDataError(err) {
-				// Success - output summary line
 				mempoolAfter := mgr.GetMempoolStats()["count"].(int)
-				addedOps = mempoolAfter - mempoolBefore
+				addedOps := mempoolAfter - mempoolBefore
 				duration := time.Since(cycleStart)
 
 				if fetchedCount > 0 {
-					fmt.Printf("[Sync] Bundle %06d | Synced %d bundles | Mempool: %d (+%d) | %dms\n",
+					log.Printf("[Sync] ✓ Bundle %06d | Synced: %d | Mempool: %d (+%d) | %dms",
 						currentBundle-1, fetchedCount, mempoolAfter, addedOps, duration.Milliseconds())
-				} else {
-					fmt.Printf("[Sync] Bundle %06d | Up to date | Mempool: %d (+%d) | %dms\n",
+				} else if !isInitialSync {
+					log.Printf("[Sync] ✓ Bundle %06d | Up to date | Mempool: %d (+%d) | %dms",
 						startBundle-1, mempoolAfter, addedOps, duration.Milliseconds())
 				}
 				break
 			}
 
-			// Handle other errors
 			consecutiveErrors++
 			if verbose {
-				fmt.Fprintf(os.Stderr, "[Sync] Error fetching bundle %06d: %v\n", currentBundle, err)
+				log.Printf("[Sync] Error fetching bundle %06d: %v", currentBundle, err)
 			}
 
-			if consecutiveErrors >= maxConsecutiveErrors {
-				fmt.Fprintf(os.Stderr, "[Sync] Too many consecutive errors, stopping sync\n")
+			if consecutiveErrors >= 3 {
+				log.Printf("[Sync] Too many errors, stopping")
 				break
 			}
 
-			// Wait before retry
-			if verbose {
-				fmt.Printf("[Sync] Waiting 5 seconds before retry...\n")
-			}
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
-		// Reset error counter on success
 		consecutiveErrors = 0
 
-		if err := mgr.SaveBundle(ctx, b); err != nil {
-			fmt.Fprintf(os.Stderr, "[Sync] Error saving bundle %06d: %v\n", b.BundleNumber, err)
+		if err := mgr.SaveBundle(ctx, b, !verbose); err != nil {
+			log.Printf("[Sync] Error saving bundle %06d: %v", b.BundleNumber, err)
 			break
 		}
 
 		fetchedCount++
-		if verbose {
-			fmt.Printf("[Sync] ✓ Fetched bundle %06d (%d ops, %d DIDs)\n",
-				b.BundleNumber, len(b.Operations), b.DIDCount)
+
+		if !verbose {
+			log.Printf("[Sync] ✓ %06d | hash=%s | content=%s | %d ops, %d DIDs",
+				b.BundleNumber,
+				b.Hash[:16]+"...",
+				b.ContentHash[:16]+"...",
+				len(b.Operations),
+				b.DIDCount)
 		}
 
-		// Small delay between fetches
 		time.Sleep(500 * time.Millisecond)
 	}
 }

@@ -236,7 +236,7 @@ func cmdFetch() {
 		// Reset error counter on success
 		consecutiveErrors = 0
 
-		if err := mgr.SaveBundle(ctx, b); err != nil {
+		if err := mgr.SaveBundle(ctx, b, !*verbose); err != nil {
 			fmt.Fprintf(os.Stderr, "Error saving bundle %06d: %v\n", b.BundleNumber, err)
 			os.Exit(1)
 		}
@@ -1033,7 +1033,7 @@ func cmdBackfill() {
 			}
 
 			// Save the fetched bundle
-			if err := mgr.SaveBundle(ctx, bundle); err != nil {
+			if err := mgr.SaveBundle(ctx, bundle, !*verbose); err != nil {
 				fmt.Fprintf(os.Stderr, "ERROR saving: %v\n", err)
 				os.Exit(1)
 			}
@@ -1271,6 +1271,7 @@ func cmdServe() {
 
 	serverStartTime = time.Now()
 	syncInterval = *syncIntervalFlag
+	verboseMode = *verbose
 
 	// Auto-detect CPU count
 	if *workers == 0 {

@@ -89,7 +89,7 @@ func (bm *BundleManager) FetchNext(ctx context.Context) (*Bundle, error) {
 	if err != nil {
 		return nil, err
 	}
-	return b, bm.mgr.SaveBundle(ctx, b)
+	return b, bm.mgr.SaveBundle(ctx, b, false)
 }
 
 // Load loads a bundle by number
