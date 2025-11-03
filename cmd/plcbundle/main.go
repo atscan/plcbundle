@@ -1255,20 +1255,19 @@ func cmdMempool() {
 	fmt.Printf("File: %s\n", filepath.Join(dir, mempoolFilename))
 }
 
-var serverStartTime time.Time
-
 func cmdServe() {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	port := fs.String("port", "8080", "HTTP server port")
 	host := fs.String("host", "127.0.0.1", "HTTP server host")
 	sync := fs.Bool("sync", false, "enable sync mode (auto-sync from PLC)")
 	plcURL := fs.String("plc", "https://plc.directory", "PLC directory URL (for sync mode)")
-	syncInterval := fs.Duration("sync-interval", 5*time.Minute, "sync interval for sync mode")
+	syncIntervalFlag := fs.Duration("sync-interval", 5*time.Minute, "sync interval for sync mode")
 	enableWebSocket := fs.Bool("websocket", false, "enable WebSocket endpoint for streaming records")
 	workers := fs.Int("workers", 4, "number of workers for auto-rebuild (0 = CPU count)")
 	fs.Parse(os.Args[2:])
 
 	serverStartTime = time.Now()
+	syncInterval = *syncIntervalFlag
 
 	// Auto-detect CPU count
 	if *workers == 0 {
@@ -1332,7 +1331,7 @@ func cmdServe() {
 	if *sync {
 		fmt.Printf("  Sync mode: ENABLED\n")
 		fmt.Printf("  PLC URL: %s\n", *plcURL)
-		fmt.Printf("  Sync interval: %s\n", *syncInterval)
+		fmt.Printf("  Sync interval: %s\n", syncInterval)
 	} else {
 		fmt.Printf("  Sync mode: disabled\n")
 	}
@@ -1363,7 +1362,7 @@ func cmdServe() {
 	defer cancel()
 
 	if *sync {
-		go runSync(ctx, mgr, *syncInterval)
+		go runSync(ctx, mgr, syncInterval)
 	}
 
 	server := &http.Server{

@@ -26,6 +26,9 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+var serverStartTime time.Time
+var syncInterval time.Duration
+
 func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syncMode bool, wsEnabled bool) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
@@ -578,11 +581,12 @@ type StatusResponse struct {
 }
 
 type ServerStatus struct {
-	Version          string `json:"version"`
-	UptimeSeconds    int    `json:"uptime_seconds"`
-	SyncMode         bool   `json:"sync_mode"`
-	WebSocketEnabled bool   `json:"websocket_enabled"`
-	Origin           string `json:"origin,omitempty"` // PLC directory URL
+	Version             string `json:"version"`
+	UptimeSeconds       int    `json:"uptime_seconds"`
+	SyncMode            bool   `json:"sync_mode"`
+	SyncIntervalSeconds int    `json:"sync_interval_seconds,omitempty"`
+	WebSocketEnabled    bool   `json:"websocket_enabled"`
+	Origin              string `json:"origin,omitempty"` // PLC directory URL
 }
 
 type BundleStatus struct {
@@ -644,6 +648,11 @@ func handleStatus(w http.ResponseWriter, mgr *bundle.Manager, syncMode bool, wsE
 			UncompressedSize: indexStats["total_uncompressed_size"].(int64),
 			//UpdatedAt:        indexStats["updated_at"].(time.Time),
 		},
+	}
+
+	// Add sync interval if sync mode enabled
+	if syncMode && syncInterval > 0 {
+		response.Server.SyncIntervalSeconds = int(syncInterval.Seconds())
 	}
 
 	// Add bundle details if bundles exist
