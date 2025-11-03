@@ -21,6 +21,7 @@ const (
 // Index represents the JSON index file
 type Index struct {
 	Version               string            `json:"version"`
+	Origin                string            `json:"origin"`
 	LastBundle            int               `json:"last_bundle"`
 	UpdatedAt             time.Time         `json:"updated_at"`
 	TotalSize             int64             `json:"total_size_bytes"`
@@ -31,9 +32,10 @@ type Index struct {
 }
 
 // NewIndex creates a new empty index
-func NewIndex() *Index {
+func NewIndex(origin string) *Index {
 	return &Index{
 		Version:   INDEX_VERSION,
+		Origin:    origin,
 		Bundles:   make([]*BundleMetadata, 0),
 		UpdatedAt: time.Now().UTC(),
 	}

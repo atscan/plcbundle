@@ -12,7 +12,7 @@ import (
 // TestIndex tests index operations
 func TestIndex(t *testing.T) {
 	t.Run("CreateNewIndex", func(t *testing.T) {
-		idx := bundle.NewIndex()
+		idx := bundle.NewIndex("test-origin")
 		if idx == nil {
 			t.Fatal("NewIndex returned nil")
 		}
@@ -25,7 +25,7 @@ func TestIndex(t *testing.T) {
 	})
 
 	t.Run("AddBundle", func(t *testing.T) {
-		idx := bundle.NewIndex()
+		idx := bundle.NewIndex("test-origin")
 		meta := &bundle.BundleMetadata{
 			BundleNumber:   1,
 			StartTime:      time.Now(),
@@ -56,7 +56,7 @@ func TestIndex(t *testing.T) {
 		indexPath := filepath.Join(tmpDir, "test_index.json")
 
 		// Create and save
-		idx := bundle.NewIndex()
+		idx := bundle.NewIndex("test-origin")
 		idx.AddBundle(&bundle.BundleMetadata{
 			BundleNumber:   1,
 			StartTime:      time.Now(),
@@ -81,7 +81,7 @@ func TestIndex(t *testing.T) {
 	})
 
 	t.Run("GetBundleRange", func(t *testing.T) {
-		idx := bundle.NewIndex()
+		idx := bundle.NewIndex("test-origin")
 		for i := 1; i <= 5; i++ {
 			idx.AddBundle(&bundle.BundleMetadata{
 				BundleNumber:   i,
@@ -101,7 +101,7 @@ func TestIndex(t *testing.T) {
 	})
 
 	t.Run("FindGaps", func(t *testing.T) {
-		idx := bundle.NewIndex()
+		idx := bundle.NewIndex("test-origin")
 		// Add bundles 1, 2, 4, 5 (missing 3)
 		for _, num := range []int{1, 2, 4, 5} {
 			idx.AddBundle(&bundle.BundleMetadata{

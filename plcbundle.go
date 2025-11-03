@@ -48,8 +48,8 @@ func DefaultConfig(bundleDir string) *Config {
 }
 
 // NewIndex creates a new empty index (convenience wrapper)
-func NewIndex() *Index {
-	return bundle.NewIndex()
+func NewIndex(origin string) *Index {
+	return bundle.NewIndex(origin)
 }
 
 // LoadIndex loads an index from a file (convenience wrapper)

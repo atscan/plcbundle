@@ -60,6 +60,12 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		return nil, fmt.Errorf("failed to initialize operations: %w", err)
 	}
 
+	// Determine origin
+	var origin string
+	if plcClient != nil {
+		origin = plcClient.GetBaseURL()
+	}
+
 	// Load or create index
 	indexPath := filepath.Join(config.BundleDir, INDEX_FILE)
 	index, err := LoadIndex(indexPath)
@@ -81,21 +87,41 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 			if cloneInProgress {
 				config.Logger.Printf("Clone/download in progress, skipping auto-rebuild")
 			} else {
-				// We have bundles but no index - need to rebuild
 				config.Logger.Printf("No valid index found, but detected %d bundle files", len(bundleFiles))
 				needsRebuild = true
 			}
 		} else {
 			// No index and no bundles - create fresh index
 			config.Logger.Printf("Creating new index at %s", indexPath)
-			index = NewIndex()
+			index = NewIndex(origin) // Pass origin
 			if err := index.Save(indexPath); err != nil {
 				return nil, fmt.Errorf("failed to save new index: %w", err)
 			}
 		}
 	} else {
-		// Index exists - check if it's complete
-		config.Logger.Printf("Loaded index with %d bundles", index.Count())
+		// Index exists - auto-populate origin if missing (ONLY TIME THIS HAPPENS)
+		if index.Origin == "" {
+			if origin != "" {
+				config.Logger.Printf("⚠️  Upgrading old index: setting origin to %s", origin)
+				index.Origin = origin
+				if err := index.Save(indexPath); err != nil {
+					return nil, fmt.Errorf("failed to update index with origin: %w", err)
+				}
+			} else {
+				config.Logger.Printf("⚠️  Warning: index has no origin and no PLC client configured")
+			}
+		}
+
+		// Validate origin matches if both are set
+		if index.Origin != "" && origin != "" && index.Origin != origin {
+			return nil, fmt.Errorf(
+				"origin mismatch: index has origin %q but PLC client points to %q\n"+
+					"Cannot mix bundles from different sources. Use a different directory or reconfigure PLC client",
+				index.Origin, origin,
+			)
+		}
+
+		config.Logger.Printf("Loaded index with %d bundles (origin: %s)", index.Count(), index.Origin)
 
 		// Check if there are bundle files not in the index
 		if hasBundleFiles && len(bundleFiles) > index.Count() {
@@ -109,6 +135,28 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		}
 	}
 
+	if index != nil && plcClient != nil {
+		currentOrigin := plcClient.GetBaseURL()
+
+		// Check if origins match
+		if index.Origin != "" && index.Origin != currentOrigin {
+			return nil, fmt.Errorf(
+				"origin mismatch: index has origin %q but PLC client points to %q. "+
+					"Cannot mix bundles from different sources",
+				index.Origin, currentOrigin,
+			)
+		}
+
+		// Set origin if not set (for backward compatibility with old indexes)
+		if index.Origin == "" && currentOrigin != "" {
+			index.Origin = currentOrigin
+			config.Logger.Printf("Setting origin for existing index: %s", currentOrigin)
+			if err := index.Save(indexPath); err != nil {
+				return nil, fmt.Errorf("failed to update index with origin: %w", err)
+			}
+		}
+	}
+
 	// Perform rebuild if needed (using parallel scan)
 	if needsRebuild && config.AutoRebuild {
 		config.Logger.Printf("Rebuilding index from %d bundle files...", len(bundleFiles))
@@ -117,7 +165,7 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		tempMgr := &Manager{
 			config:     config,
 			operations: ops,
-			index:      NewIndex(),
+			index:      NewIndex("test-origin"),
 			indexPath:  indexPath,
 			logger:     config.Logger,
 		}
@@ -193,7 +241,7 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 	}
 
 	if index == nil {
-		index = NewIndex()
+		index = NewIndex("test-origin")
 	}
 
 	// Initialize mempool for next bundle

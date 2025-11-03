@@ -16,12 +16,13 @@
 *   **Content Hash:** The SHA-256 hash of the *uncompressed* content of a single bundle. This hash uniquely identifies the bundle's data.
 *   **Chain Hash:** A cumulative SHA-256 hash that links a bundle to its predecessor, ensuring the integrity and order of the entire chain.
 *   **Compressed Hash:** The SHA-256 hash of the *compressed* `.jsonl.zst` bundle file. This is used to verify file integrity during downloads.
+*   **Origin:** The base URL of the PLC directory from which the operations were sourced (e.g., `https://plc.directory`).
 
 ---
 
 ## 3. Operation Order and Reproducibility
 
-To guarantee that bundles are byte-for-byte reproducible, the order of operations must be deterministic. The PLC directory's `⁠/export` endpoint streams operations in a pre-sorted, chronological order. A compliant implementation must preserve this exact order.
+To guarantee that bundles are byte-for-byte reproducible, the order of operations must be deterministic. The PLC directory's `/export` endpoint streams operations in a pre-sorted, chronological order. A compliant implementation must preserve this exact order.
 
 ---
 
@@ -56,13 +57,26 @@ The index is a single JSON file that acts as the manifest for the entire bundle 
 
 ### 5.1. Top-Level Index Object
 
-| Field              | Type                      | Description                                                                                             |
-| ------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `version`          | string                    | The version of the index format. For V1, this is always `"1.0"`.                                        |
-| `last_bundle`      | integer                   | The bundle number of the most recent bundle in the index.                                               |
-| `updated_at`       | string (RFC3339Nano)      | The timestamp in UTC when the index was last updated.                                                   |
-| `total_size_bytes` | integer                   | The total size of all compressed bundle files in the repository, in bytes.                              |
-| `bundles`          | array of `BundleMetadata` | An array containing metadata for each bundle, sorted by `bundle_number`.                                |
+| Field                               | Type                      | Required | Description                                                                                             |
+| ----------------------------------- | ------------------------- | -------- | ------------------------------------------------------------------------------------------------------- |
+| `version`                           | string                    | Yes      | The version of the index format. For V1, this is always `"1.0"`.                                        |
+| `origin`                            | string                    | Yes      | The base URL of the PLC directory from which operations were sourced (e.g., `"https://plc.directory"`). **This field is required to ensure data provenance and prevent mixing bundles from different sources.** |
+| `last_bundle`                       | integer                   | Yes      | The bundle number of the most recent bundle in the index.                                               |
+| `updated_at`                        | string (RFC3339Nano)      | Yes      | The timestamp in UTC when the index was last updated.                                                   |
+| `total_size_bytes`                  | integer                   | Yes      | The total size of all compressed bundle files in the repository, in bytes.                              |
+| `total_uncompressed_size_bytes`     | integer                   | Yes      | The total size of all uncompressed JSONL content across all bundles, in bytes.                          |
+| `bundles`                           | array of `BundleMetadata` | Yes      | An array containing metadata for each bundle, sorted by `bundle_number`.                                |
+
+**Origin Field Requirements:**
+
+- **New Repositories:** When creating a new bundle repository, implementations **must** set the `origin` field to the base URL of the PLC directory being archived.
+- **Origin Validation:** Before adding bundles to an existing repository, implementations **must** verify that the source PLC directory matches the index's `origin` field.
+- **Origin Mismatch:** If the configured PLC directory URL does not match the index's `origin`, the implementation **must** reject the operation with a clear error message indicating the mismatch.
+- **Legacy Compatibility:** When loading an index without an `origin` field (created before this specification version), implementations **should**:
+  1. Log a warning that the origin is unknown
+  2. If a PLC client is configured, automatically populate the `origin` field
+  3. Save the updated index to persist the origin for future use
+  4. On subsequent operations, enforce origin matching as normal
 
 ### 5.2. BundleMetadata Object
 
@@ -127,6 +141,6 @@ Three distinct hashes are calculated for each bundle. All use the [SHA-256](http
 
 1.  A new `BundleMetadata` object is created for the new bundle, populated with all the information described in [Section 5.2](#52-bundlemetadata-object).
 2.  This metadata object is appended to the `bundles` array in the main `Index` object.
-3.  The `Index` object's top-level fields (`last_bundle`, `updated_at`, `total_size_bytes`) are updated to reflect the new state.
-4.  The entire `Index` object is serialized to JSON and saved, atomically overwriting the existing `plc_bundles.json` file.
-
+3.  The `Index` object's top-level fields (`last_bundle`, `updated_at`, `total_size_bytes`, `total_uncompressed_size_bytes`) are updated to reflect the new state.
+4.  The `origin` field **must** be set if creating a new index, or preserved if updating an existing index.
+5.  The entire `Index` object is serialized to JSON and saved, atomically overwriting the existing `plc_bundles.json` file.

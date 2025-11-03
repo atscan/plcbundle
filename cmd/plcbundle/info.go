@@ -29,6 +29,9 @@ func showGeneralInfo(mgr *bundle.Manager, dir string, verbose bool, showBundles 
 	fmt.Printf("   Directory:  %s\n", dir)
 	fmt.Printf("   Index:      %s\n", filepath.Base(info["index_path"].(string)))
 	fmt.Printf("\n")
+	fmt.Printf("🌐 Origin\n")
+	fmt.Printf("   Source:     %s\n", index.Origin)
+	fmt.Printf("\n")
 
 	if bundleCount == 0 {
 		fmt.Printf("⚠️  No bundles found\n")
