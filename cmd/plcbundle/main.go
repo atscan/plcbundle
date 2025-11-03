@@ -1261,7 +1261,7 @@ func cmdServe() {
 	host := fs.String("host", "127.0.0.1", "HTTP server host")
 	sync := fs.Bool("sync", false, "enable sync mode (auto-sync from PLC)")
 	plcURL := fs.String("plc", "https://plc.directory", "PLC directory URL (for sync mode)")
-	syncIntervalFlag := fs.Duration("sync-interval", 5*time.Minute, "sync interval for sync mode")
+	syncIntervalFlag := fs.Duration("sync-interval", 1*time.Minute, "sync interval for sync mode")
 	enableWebSocket := fs.Bool("websocket", false, "enable WebSocket endpoint for streaming records")
 	workers := fs.Int("workers", 4, "number of workers for auto-rebuild (0 = CPU count)")
 	fs.Parse(os.Args[2:])
