@@ -907,11 +907,11 @@ func handleBundleJSONL(w http.ResponseWriter, r *http.Request, mgr *bundle.Manag
 }
 
 // runSync continuously fetches new bundles in the background
-func runSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration) {
+func runSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration, verbose bool) {
 	fmt.Printf("[Sync] Starting sync loop (interval: %s)\n", interval)
 
 	// Do initial sync immediately
-	syncBundles(ctx, mgr)
+	syncBundles(ctx, mgr, verbose)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -931,13 +931,15 @@ func runSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration) {
 			return
 
 		case <-ticker.C:
-			syncBundles(ctx, mgr)
+			syncBundles(ctx, mgr, verbose)
 
 		case <-saveTicker.C:
 			// Periodic save (every 5 min) - only if mempool has data
 			stats := mgr.GetMempoolStats()
 			if stats["count"].(int) > 0 {
-				fmt.Printf("[Sync] Saving mempool (%d ops)...\n", stats["count"])
+				if verbose {
+					fmt.Printf("[Sync] Saving mempool (%d ops)...\n", stats["count"])
+				}
 				if err := mgr.SaveMempool(); err != nil {
 					fmt.Printf("[Sync] Failed to save mempool: %v\n", err)
 				}
@@ -947,7 +949,9 @@ func runSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration) {
 }
 
 // syncBundles fetches all available bundles
-func syncBundles(ctx context.Context, mgr *bundle.Manager) {
+func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool) {
+	cycleStart := time.Now()
+
 	index := mgr.GetIndex()
 	lastBundle := index.GetLastBundle()
 	startBundle := 1
@@ -955,31 +959,44 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager) {
 		startBundle = lastBundle.BundleNumber + 1
 	}
 
-	fmt.Printf("[Sync] Checking for new bundles (current: %06d)...\n", startBundle-1)
+	mempoolBefore := mgr.GetMempoolStats()["count"].(int)
+
+	if verbose {
+		fmt.Printf("[Sync] Checking for new bundles (current: %06d)...\n", startBundle-1)
+	}
 
 	fetchedCount := 0
+	addedOps := 0
 	consecutiveErrors := 0
 	maxConsecutiveErrors := 3
 
 	for {
 		currentBundle := startBundle + fetchedCount
 
-		b, err := mgr.FetchNextBundle(ctx)
+		b, err := mgr.FetchNextBundle(ctx, !verbose)
 		if err != nil {
 			// Check if we've reached the end
 			if isEndOfDataError(err) {
+				// Success - output summary line
+				mempoolAfter := mgr.GetMempoolStats()["count"].(int)
+				addedOps = mempoolAfter - mempoolBefore
+				duration := time.Since(cycleStart)
+
 				if fetchedCount > 0 {
-					fmt.Printf("[Sync] ✓ Synced %d new bundles (now at %06d)\n",
-						fetchedCount, currentBundle-1)
+					fmt.Printf("[Sync] Bundle %06d | Synced %d bundles | Mempool: %d (+%d) | %dms\n",
+						currentBundle-1, fetchedCount, mempoolAfter, addedOps, duration.Milliseconds())
 				} else {
-					fmt.Printf("[Sync] ✓ Already up to date (bundle %06d)\n", startBundle-1)
+					fmt.Printf("[Sync] Bundle %06d | Up to date | Mempool: %d (+%d) | %dms\n",
+						startBundle-1, mempoolAfter, addedOps, duration.Milliseconds())
 				}
 				break
 			}
 
 			// Handle other errors
 			consecutiveErrors++
-			fmt.Fprintf(os.Stderr, "[Sync] Error fetching bundle %06d: %v\n", currentBundle, err)
+			if verbose {
+				fmt.Fprintf(os.Stderr, "[Sync] Error fetching bundle %06d: %v\n", currentBundle, err)
+			}
 
 			if consecutiveErrors >= maxConsecutiveErrors {
 				fmt.Fprintf(os.Stderr, "[Sync] Too many consecutive errors, stopping sync\n")
@@ -987,6 +1004,9 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager) {
 			}
 
 			// Wait before retry
+			if verbose {
+				fmt.Printf("[Sync] Waiting 5 seconds before retry...\n")
+			}
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -1000,10 +1020,12 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager) {
 		}
 
 		fetchedCount++
-		fmt.Printf("[Sync] ✓ Fetched bundle %06d (%d ops, %d DIDs)\n",
-			b.BundleNumber, len(b.Operations), b.DIDCount)
+		if verbose {
+			fmt.Printf("[Sync] ✓ Fetched bundle %06d (%d ops, %d DIDs)\n",
+				b.BundleNumber, len(b.Operations), b.DIDCount)
+		}
 
-		// Add a small delay between fetches to be nice to the PLC directory
+		// Small delay between fetches
 		time.Sleep(500 * time.Millisecond)
 	}
 }

@@ -161,6 +161,7 @@ func cmdFetch() {
 	fs := flag.NewFlagSet("fetch", flag.ExitOnError)
 	plcURL := fs.String("plc", "https://plc.directory", "PLC directory URL")
 	count := fs.Int("count", 0, "number of bundles to fetch (0 = fetch all available)")
+	verbose := fs.Bool("verbose", false, "verbose sync logging")
 	fs.Parse(os.Args[2:])
 
 	mgr, dir, err := getManager(*plcURL)
@@ -208,7 +209,7 @@ func cmdFetch() {
 			fmt.Printf("Fetching bundle %06d...\n", currentBundle)
 		}
 
-		b, err := mgr.FetchNextBundle(ctx)
+		b, err := mgr.FetchNextBundle(ctx, !*verbose)
 		if err != nil {
 			// Check if we've reached the end (insufficient operations)
 			if isEndOfDataError(err) {
@@ -977,6 +978,7 @@ func cmdBackfill() {
 	plcURL := fs.String("plc", "https://plc.directory", "PLC directory URL")
 	startFrom := fs.Int("start", 1, "bundle number to start from")
 	endAt := fs.Int("end", 0, "bundle number to end at (0 = until caught up)")
+	verbose := fs.Bool("verbose", false, "verbose sync logging")
 	fs.Parse(os.Args[2:])
 
 	mgr, dir, err := getManager(*plcURL)
@@ -1018,7 +1020,7 @@ func cmdBackfill() {
 			// Bundle doesn't exist, try to fetch it
 			fmt.Fprintf(os.Stderr, "fetching... ")
 
-			bundle, err = mgr.FetchNextBundle(ctx)
+			bundle, err = mgr.FetchNextBundle(ctx, !*verbose)
 			if err != nil {
 				if isEndOfDataError(err) {
 					fmt.Fprintf(os.Stderr, "\n✓ Caught up! No more complete bundles available.\n")
@@ -1264,6 +1266,7 @@ func cmdServe() {
 	syncIntervalFlag := fs.Duration("sync-interval", 1*time.Minute, "sync interval for sync mode")
 	enableWebSocket := fs.Bool("websocket", false, "enable WebSocket endpoint for streaming records")
 	workers := fs.Int("workers", 4, "number of workers for auto-rebuild (0 = CPU count)")
+	verbose := fs.Bool("verbose", false, "verbose sync logging")
 	fs.Parse(os.Args[2:])
 
 	serverStartTime = time.Now()
@@ -1362,7 +1365,7 @@ func cmdServe() {
 	defer cancel()
 
 	if *sync {
-		go runSync(ctx, mgr, syncInterval)
+		go runSync(ctx, mgr, syncInterval, *verbose)
 	}
 
 	server := &http.Server{

@@ -85,7 +85,7 @@ func (bm *BundleManager) Close() {
 
 // FetchNext fetches the next bundle from PLC
 func (bm *BundleManager) FetchNext(ctx context.Context) (*Bundle, error) {
-	b, err := bm.mgr.FetchNextBundle(ctx)
+	b, err := bm.mgr.FetchNextBundle(ctx, false)
 	if err != nil {
 		return nil, err
 	}

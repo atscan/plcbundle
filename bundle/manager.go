@@ -451,7 +451,7 @@ func formatHashPreview(hash string) string {
 }
 
 // FetchNextBundle fetches the next bundle from PLC directory
-func (m *Manager) FetchNextBundle(ctx context.Context) (*Bundle, error) {
+func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, error) {
 	if m.plcClient == nil {
 		return nil, fmt.Errorf("PLC client not configured")
 	}
@@ -475,13 +475,17 @@ func (m *Manager) FetchNextBundle(ctx context.Context) (*Bundle, error) {
 		}
 	}
 
-	m.logger.Printf("Preparing bundle %06d (mempool: %d ops)...", nextBundleNum, m.mempool.Count())
+	if !quiet {
+		m.logger.Printf("Preparing bundle %06d (mempool: %d ops)...", nextBundleNum, m.mempool.Count())
+	}
 
 	// Keep fetching until we have enough operations
 	for m.mempool.Count() < BUNDLE_SIZE {
-		m.logger.Printf("Fetching more operations (have %d/%d)...", m.mempool.Count(), BUNDLE_SIZE)
+		if !quiet {
+			m.logger.Printf("Fetching more operations (have %d/%d)...", m.mempool.Count(), BUNDLE_SIZE)
+		}
 
-		err := m.fetchToMempool(ctx, afterTime, prevBoundaryCIDs, BUNDLE_SIZE-m.mempool.Count())
+		err := m.fetchToMempool(ctx, afterTime, prevBoundaryCIDs, BUNDLE_SIZE-m.mempool.Count(), quiet)
 		if err != nil {
 			// If we can't fetch more, check if we have enough
 			if m.mempool.Count() >= BUNDLE_SIZE {
@@ -522,7 +526,7 @@ func (m *Manager) FetchNextBundle(ctx context.Context) (*Bundle, error) {
 }
 
 // fetchToMempool fetches operations and adds them to mempool (returns error if no progress)
-func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoundaryCIDs map[string]bool, target int) error {
+func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoundaryCIDs map[string]bool, target int, quiet bool) error {
 	seenCIDs := make(map[string]bool)
 
 	// Mark previous boundary CIDs as seen
@@ -533,7 +537,9 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 	// Use last mempool time if available
 	if m.mempool.Count() > 0 {
 		afterTime = m.mempool.GetLastTime()
-		m.logger.Printf("  Continuing from mempool cursor: %s", afterTime)
+		if !quiet {
+			m.logger.Printf("  Continuing from mempool cursor: %s", afterTime)
+		}
 	}
 
 	currentAfter := afterTime
@@ -553,8 +559,10 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 			batchSize = 200
 		}
 
-		m.logger.Printf("  Fetch #%d: requesting %d operations (mempool: %d)",
-			fetchNum+1, batchSize, m.mempool.Count())
+		if !quiet {
+			m.logger.Printf("  Fetch #%d: requesting %d operations (mempool: %d)",
+				fetchNum+1, batchSize, m.mempool.Count())
+		}
 
 		batch, err := m.plcClient.Export(ctx, plc.ExportOptions{
 			Count: batchSize,
@@ -566,7 +574,9 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 		}
 
 		if len(batch) == 0 {
-			m.logger.Printf("  No more operations available from PLC")
+			if !quiet {
+				m.logger.Printf("  No more operations available from PLC")
+			}
 			m.mempool.Save()
 			if totalAdded > 0 {
 				return nil
@@ -584,16 +594,16 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 		}
 
 		if len(uniqueOps) > 0 {
-			// CRITICAL: Add with validation
 			added, err := m.mempool.Add(uniqueOps)
 			if err != nil {
-				// Validation error - save current state and return
 				m.mempool.Save()
 				return fmt.Errorf("chronological validation failed: %w", err)
 			}
 
 			totalAdded += added
-			m.logger.Printf("  Added %d new operations (mempool now: %d)", added, m.mempool.Count())
+			if !quiet {
+				m.logger.Printf("  Added %d new operations (mempool now: %d)", added, m.mempool.Count())
+			}
 		}
 
 		// Update cursor
@@ -601,15 +611,19 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 			currentAfter = batch[len(batch)-1].CreatedAt.Format(time.RFC3339Nano)
 		}
 
-		// Stop if we got less than requested (caught up)
+		// Stop if we got less than requested
 		if len(batch) < batchSize {
-			m.logger.Printf("  Received incomplete batch (%d/%d), caught up to latest", len(batch), batchSize)
+			if !quiet {
+				m.logger.Printf("  Received incomplete batch (%d/%d), caught up to latest", len(batch), batchSize)
+			}
 			break
 		}
 	}
 
 	if totalAdded > 0 {
-		m.logger.Printf("✓ Fetch complete: added %d operations (mempool: %d)", totalAdded, m.mempool.Count())
+		if !quiet {
+			m.logger.Printf("✓ Fetch complete: added %d operations (mempool: %d)", totalAdded, m.mempool.Count())
+		}
 		return nil
 	}
 
