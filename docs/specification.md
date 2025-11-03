@@ -71,12 +71,6 @@ The index is a single JSON file that acts as the manifest for the entire bundle 
 
 - **New Repositories:** When creating a new bundle repository, implementations **must** set the `origin` field to the base URL of the PLC directory being archived.
 - **Origin Validation:** Before adding bundles to an existing repository, implementations **must** verify that the source PLC directory matches the index's `origin` field.
-- **Origin Mismatch:** If the configured PLC directory URL does not match the index's `origin`, the implementation **must** reject the operation with a clear error message indicating the mismatch.
-- **Legacy Compatibility:** When loading an index without an `origin` field (created before this specification version), implementations **should**:
-  1. Log a warning that the origin is unknown
-  2. If a PLC client is configured, automatically populate the `origin` field
-  3. Save the updated index to persist the origin for future use
-  4. On subsequent operations, enforce origin matching as normal
 
 ### 5.2. BundleMetadata Object
 
