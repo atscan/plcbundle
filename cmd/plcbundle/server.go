@@ -160,6 +160,16 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	}
 	fmt.Fprintf(w, "\n")
 
+	if didStats := mgr.GetDIDIndexStats(); didStats["exists"].(bool) {
+		fmt.Fprintf(w, "\nDID Index\n")
+		fmt.Fprintf(w, "━━━━━━━━━\n")
+		fmt.Fprintf(w, "  Status:        enabled\n")
+		fmt.Fprintf(w, "  Total DIDs:    %d\n", didStats["total_dids"])
+		fmt.Fprintf(w, "  Cached shards: %d / %d\n",
+			didStats["cached_shards"], didStats["cache_limit"])
+		fmt.Fprintf(w, "\n")
+	}
+
 	fmt.Fprintf(w, "Server Stats\n")
 	fmt.Fprintf(w, "━━━━━━━━━━━━\n")
 	fmt.Fprintf(w, "  Version:       %s\n", version)
@@ -180,6 +190,13 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	fmt.Fprintf(w, "  GET  /jsonl/:number       Decompressed JSONL stream\n")
 	fmt.Fprintf(w, "  GET  /status              Server status\n")
 	fmt.Fprintf(w, "  GET  /mempool             Mempool operations (JSONL)\n")
+
+	fmt.Fprintf(w, "\nDID Resolution\n")
+	fmt.Fprintf(w, "━━━━━━━━━━━━━━\n")
+	fmt.Fprintf(w, "  GET  /:did                    DID Document (W3C format)\n")
+	fmt.Fprintf(w, "  GET  /:did/data               PLC State (raw format)\n")
+	fmt.Fprintf(w, "  GET  /:did/log/audit          Operation history\n")
+	fmt.Fprintf(w, "\n")
 
 	if wsEnabled {
 		fmt.Fprintf(w, "\nWebSocket Endpoints\n")
@@ -284,11 +301,20 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.H
 
 	// Root - ASCII art + info
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
+		path := r.URL.Path
+
+		// DID Resolution - delegate to specific handler
+		if strings.HasPrefix(path, "/did:plc:") {
+			handleDIDEndpoint(w, r, mgr)
 			return
 		}
-		handleRoot(w, r, mgr, syncMode, wsEnabled)
+
+		if path == "/" {
+			handleRoot(w, r, mgr, syncMode, wsEnabled)
+			return
+		}
+
+		http.NotFound(w, r)
 	})
 
 	// Index JSON (reload from disk each time for fresh data during rebuild)
@@ -1022,4 +1048,135 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool) {
 
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+// handleDIDEndpoint routes DID-related requests
+func handleDIDEndpoint(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager) {
+	path := r.URL.Path
+
+	// Parse DID and sub-path
+	// Examples:
+	//   /did:plc:abc... -> DID document
+	//   /did:plc:abc.../data -> PLC state
+	//   /did:plc:abc.../log/audit -> Audit log
+
+	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)
+	did := parts[0]
+
+	// Validate DID format
+	if err := plc.ValidateDIDFormat(did); err != nil {
+		http.Error(w, "Invalid DID format: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Route based on sub-path
+	if len(parts) == 1 {
+		// /did:plc:xxx -> DID document
+		handleDIDDocument(w, r, mgr, did)
+	} else if parts[1] == "data" {
+		// /did:plc:xxx/data -> PLC state
+		handleDIDData(w, r, mgr, did)
+	} else if parts[1] == "log/audit" {
+		// /did:plc:xxx/log/audit -> Audit log
+		handleDIDAuditLog(w, r, mgr, did)
+	} else {
+		http.NotFound(w, r)
+	}
+}
+
+// handleDIDDocument resolves and returns DID document
+func handleDIDDocument(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, did string) {
+	ctx := r.Context()
+
+	// Bundle package: just get the operations
+	operations, err := mgr.GetDIDOperations(ctx, did, false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if len(operations) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	// PLC package: resolve to DID document
+	doc, err := plc.ResolveDIDDocument(did, operations)
+	if err != nil {
+		if strings.Contains(err.Error(), "deactivated") {
+			http.Error(w, "DID has been deactivated", http.StatusGone)
+		} else {
+			http.Error(w, fmt.Sprintf("Resolution failed: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/did+ld+json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		http.Error(w, "Failed to encode document", http.StatusInternalServerError)
+		return
+	}
+
+	w.Write(data)
+}
+
+// handleDIDData returns PLC-specific state data
+func handleDIDData(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, did string) {
+	ctx := r.Context()
+
+	// Bundle package: get operations
+	operations, err := mgr.GetDIDOperations(ctx, did, false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if len(operations) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	// PLC package: build state
+	state, err := plc.BuildDIDState(did, operations)
+	if err != nil {
+		if strings.Contains(err.Error(), "deactivated") {
+			http.Error(w, "DID has been deactivated", http.StatusGone)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	json.NewEncoder(w).Encode(state)
+}
+
+// handleDIDAuditLog returns the operation log for a DID
+func handleDIDAuditLog(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, did string) {
+	ctx := r.Context()
+
+	// Bundle package: just retrieve operations
+	operations, err := mgr.GetDIDOperations(ctx, did, false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if len(operations) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	// PLC package: format audit log
+	auditLog := plc.FormatAuditLog(operations)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	json.NewEncoder(w).Encode(auditLog)
 }

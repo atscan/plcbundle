@@ -121,6 +121,56 @@ func (op *Operations) SaveBundle(path string, operations []plc.PLCOperation) (st
 	return contentHash, compressedHash, contentSize, compressedSize, nil
 }
 
+// LoadOperationAtPosition loads a single operation from a bundle without loading the entire bundle
+// This is much more efficient for single-operation lookups
+func (op *Operations) LoadOperationAtPosition(path string, position int) (*plc.PLCOperation, error) {
+	if position < 0 {
+		return nil, fmt.Errorf("invalid position: %d", position)
+	}
+
+	// Open compressed file
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	// Create zstd decompression reader (streaming, no full decompress)
+	reader := gozstd.NewReader(file)
+	defer reader.Close()
+
+	// Use scanner to skip to target line
+	scanner := bufio.NewScanner(reader)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	lineNum := 0
+	for scanner.Scan() {
+		if lineNum == position {
+			// Found target line!
+			line := scanner.Bytes()
+
+			var operation plc.PLCOperation
+			if err := json.UnmarshalNoEscape(line, &operation); err != nil {
+				return nil, fmt.Errorf("failed to parse operation at position %d: %w", position, err)
+			}
+
+			// Store raw JSON
+			operation.RawJSON = make([]byte, len(line))
+			copy(operation.RawJSON, line)
+
+			return &operation, nil
+		}
+		lineNum++
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scanner error: %w", err)
+	}
+
+	return nil, fmt.Errorf("position %d not found (bundle has %d operations)", position, lineNum)
+}
+
 // ========================================
 // STREAMING
 // ========================================

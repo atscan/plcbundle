@@ -89,6 +89,8 @@ func main() {
 		cmdCompare()
 	case "detector":
 		cmdDetector()
+	case "index":
+		cmdDIDIndex()
 	case "version":
 		fmt.Printf("plcbundle version %s\n", version)
 		fmt.Printf("  commit: %s\n", gitCommit)
@@ -117,7 +119,8 @@ Commands:
   mempool    Show mempool status and operations
   serve      Start HTTP server to serve bundle data
   compare    Compare local index with target index
-  detector
+  detector   Run spam detectors
+  index      Manage DID position index
   version    Show version
 
 Security Model:

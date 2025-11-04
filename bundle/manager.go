@@ -37,6 +37,7 @@ type Manager struct {
 	plcClient  *plc.Client
 	logger     Logger
 	mempool    *Mempool
+	didIndex   *DIDIndexManager
 }
 
 // NewManager creates a new bundle manager
@@ -259,6 +260,9 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		return nil, fmt.Errorf("failed to initialize mempool: %w", err)
 	}
 
+	// Initialize DID index manager
+	didIndex := NewDIDIndexManager(config.BundleDir, config.Logger)
+
 	return &Manager{
 		config:     config,
 		operations: ops,
@@ -267,6 +271,7 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		plcClient:  plcClient,
 		logger:     config.Logger,
 		mempool:    mempool,
+		didIndex:   didIndex,
 	}, nil
 }
 
@@ -282,6 +287,9 @@ func (m *Manager) Close() {
 		if err := m.mempool.Save(); err != nil {
 			m.logger.Printf("Warning: failed to save mempool: %v", err)
 		}
+	}
+	if m.didIndex != nil { // ← ADD THIS
+		m.didIndex.Close()
 	}
 }
 
@@ -407,6 +415,13 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) er
 	}
 
 	m.mempool = newMempool
+
+	// Update DID index if enabled
+	if m.didIndex != nil && m.didIndex.Exists() {
+		if err := m.UpdateDIDIndexForBundle(ctx, bundle); err != nil {
+			m.logger.Printf("Warning: failed to update DID index: %v", err)
+		}
+	}
 
 	return nil
 }
@@ -1281,4 +1296,44 @@ func (m *Manager) GetCurrentCursor() int {
 	}
 
 	return cursor
+}
+
+// GetDIDIndex returns the DID index manager
+func (m *Manager) GetDIDIndex() *DIDIndexManager {
+	return m.didIndex
+}
+
+// LoadOperation loads a single operation from a bundle efficiently
+// This is much faster than LoadBundle() when you only need one operation
+func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position int) (*plc.PLCOperation, error) {
+	// Validate bundle exists in index
+	meta, err := m.index.GetBundle(bundleNumber)
+	if err != nil {
+		return nil, fmt.Errorf("bundle not in index: %w", err)
+	}
+
+	// Validate position
+	if position < 0 || position >= BUNDLE_SIZE {
+		return nil, fmt.Errorf("invalid position: %d (must be 0-%d)", position, BUNDLE_SIZE-1)
+	}
+
+	// Build file path
+	path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", bundleNumber))
+	if !m.operations.FileExists(path) {
+		return nil, fmt.Errorf("bundle file not found: %s", path)
+	}
+
+	// Verify hash if enabled (same as LoadBundle)
+	if m.config.VerifyOnLoad {
+		valid, actualHash, err := m.operations.VerifyHash(path, meta.CompressedHash)
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify hash: %w", err)
+		}
+		if !valid {
+			return nil, fmt.Errorf("hash mismatch: expected %s, got %s", meta.CompressedHash, actualHash)
+		}
+	}
+
+	// Load just the one operation (efficient!)
+	return m.operations.LoadOperationAtPosition(path, position)
 }
