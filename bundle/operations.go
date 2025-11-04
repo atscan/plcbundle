@@ -128,6 +128,14 @@ func (op *Operations) LoadOperationAtPosition(path string, position int) (*plc.P
 		return nil, fmt.Errorf("invalid position: %d", position)
 	}
 
+	// ✨ Add this debug log
+	startTime := time.Now()
+	defer func() {
+		elapsed := time.Since(startTime)
+		op.logger.Printf("DEBUG: LoadOperationAtPosition(pos=%d) took %v (scanned %d lines)",
+			position, elapsed, position+1)
+	}()
+
 	// Open compressed file
 	file, err := os.Open(path)
 	if err != nil {
@@ -135,7 +143,7 @@ func (op *Operations) LoadOperationAtPosition(path string, position int) (*plc.P
 	}
 	defer file.Close()
 
-	// Create zstd decompression reader (streaming, no full decompress)
+	// Create zstd decompression reader (streaming)
 	reader := gozstd.NewReader(file)
 	defer reader.Close()
 

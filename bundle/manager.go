@@ -38,6 +38,10 @@ type Manager struct {
 	logger     Logger
 	mempool    *Mempool
 	didIndex   *DIDIndexManager
+
+	bundleCache  map[int]*Bundle
+	cacheMu      sync.RWMutex
+	maxCacheSize int
 }
 
 // NewManager creates a new bundle manager
@@ -264,14 +268,16 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 	didIndex := NewDIDIndexManager(config.BundleDir, config.Logger)
 
 	return &Manager{
-		config:     config,
-		operations: ops,
-		index:      index,
-		indexPath:  indexPath,
-		plcClient:  plcClient,
-		logger:     config.Logger,
-		mempool:    mempool,
-		didIndex:   didIndex,
+		config:       config,
+		operations:   ops,
+		index:        index,
+		indexPath:    indexPath,
+		plcClient:    plcClient,
+		logger:       config.Logger,
+		mempool:      mempool,
+		didIndex:     didIndex,
+		bundleCache:  make(map[int]*Bundle),
+		maxCacheSize: 10, // Keep 10 recent bundles in memory (~50-100 MB)
 	}, nil
 }
 
@@ -303,8 +309,41 @@ func (m *Manager) SaveIndex() error {
 	return m.index.Save(m.indexPath)
 }
 
-// LoadBundle loads a bundle from disk
+// LoadBundle with caching
 func (m *Manager) LoadBundle(ctx context.Context, bundleNumber int) (*Bundle, error) {
+	// Check cache first
+	m.cacheMu.RLock()
+	if cached, ok := m.bundleCache[bundleNumber]; ok {
+		m.cacheMu.RUnlock()
+		return cached, nil
+	}
+	m.cacheMu.RUnlock()
+
+	// Load from disk (existing code)
+	bundle, err := m.loadBundleFromDisk(ctx, bundleNumber)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add to cache
+	m.cacheMu.Lock()
+	m.bundleCache[bundleNumber] = bundle
+
+	// Simple LRU: if cache too big, remove oldest
+	if len(m.bundleCache) > m.maxCacheSize {
+		// Remove a random one (or implement proper LRU)
+		for k := range m.bundleCache {
+			delete(m.bundleCache, k)
+			break
+		}
+	}
+	m.cacheMu.Unlock()
+
+	return bundle, nil
+}
+
+// LoadBundle loads a bundle from disk
+func (m *Manager) loadBundleFromDisk(ctx context.Context, bundleNumber int) (*Bundle, error) {
 	// Get metadata from index
 	meta, err := m.index.GetBundle(bundleNumber)
 	if err != nil {
@@ -1306,6 +1345,8 @@ func (m *Manager) GetDIDIndex() *DIDIndexManager {
 // LoadOperation loads a single operation from a bundle efficiently
 // This is much faster than LoadBundle() when you only need one operation
 func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position int) (*plc.PLCOperation, error) {
+	m.logger.Printf("DEBUG: Using LoadOperation (position=%d) - should be faster!", position)
+
 	// Validate bundle exists in index
 	meta, err := m.index.GetBundle(bundleNumber)
 	if err != nil {
