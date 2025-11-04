@@ -90,6 +90,8 @@ func main() {
 		cmdDetector()
 	case "index":
 		cmdDIDIndex()
+	case "get-op":
+		cmdGetOp()
 	case "version":
 		fmt.Printf("plcbundle version %s\n", version)
 		fmt.Printf("  commit: %s\n", gitCommit)

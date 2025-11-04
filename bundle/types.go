@@ -213,3 +213,10 @@ type CloneResult struct {
 	Interrupted   bool
 	FailedBundles []int
 }
+
+// PLCOperationWithLocation contains an operation with its bundle/position metadata
+type PLCOperationWithLocation struct {
+	Operation plc.PLCOperation
+	Bundle    int
+	Position  int
+}

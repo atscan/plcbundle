@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -176,10 +177,11 @@ func cmdDIDIndexLookup() {
 
 	fs := flag.NewFlagSet("index lookup", flag.ExitOnError)
 	verbose := fs.Bool("v", false, "verbose debug output")
+	showJSON := fs.Bool("json", false, "output as JSON")
 	fs.Parse(os.Args[3:])
 
 	if fs.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: plcbundle index lookup <did> [-v]\n")
+		fmt.Fprintf(os.Stderr, "Usage: plcbundle index lookup <did> [-v] [--json]\n")
 		os.Exit(1)
 	}
 
@@ -198,91 +200,271 @@ func cmdDIDIndexLookup() {
 		fmt.Fprintf(os.Stderr, "    Falling back to full scan (this will be slow)...\n\n")
 	}
 
-	fmt.Printf("Looking up: %s\n", did)
-	if *verbose {
-		fmt.Printf("Verbose mode: enabled\n")
+	if !*showJSON {
+		fmt.Printf("Looking up: %s\n", did)
+		if *verbose {
+			fmt.Printf("Verbose mode: enabled\n")
+		}
+		fmt.Printf("\n")
 	}
-	fmt.Printf("\n")
 
-	start := time.Now()
+	// === TIMING START ===
+	totalStart := time.Now()
 	ctx := context.Background()
 
-	// Get bundled operations only
-	bundledOps, err := mgr.GetDIDOperationsBundledOnly(ctx, did, *verbose)
+	// === STEP 1: Index/Scan Lookup ===
+	lookupStart := time.Now()
+	opsWithLoc, err := mgr.GetDIDOperationsWithLocations(ctx, did, *verbose)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+	lookupElapsed := time.Since(lookupStart)
 
-	// Get mempool operations separately
+	// === STEP 2: Mempool Lookup ===
+	mempoolStart := time.Now()
 	mempoolOps, err := mgr.GetDIDOperationsFromMempool(did)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error checking mempool: %v\n", err)
 		os.Exit(1)
 	}
+	mempoolElapsed := time.Since(mempoolStart)
 
-	elapsed := time.Since(start)
+	totalElapsed := time.Since(totalStart)
 
-	if len(bundledOps) == 0 && len(mempoolOps) == 0 {
-		fmt.Printf("DID not found (searched in %s)\n", elapsed)
+	// === NOT FOUND ===
+	if len(opsWithLoc) == 0 && len(mempoolOps) == 0 {
+		if *showJSON {
+			fmt.Println("{\"found\": false, \"operations\": []}")
+		} else {
+			fmt.Printf("DID not found (searched in %s)\n", totalElapsed)
+		}
 		return
 	}
 
-	// Count nullified operations
+	// === JSON OUTPUT MODE ===
+	if *showJSON {
+		output := map[string]interface{}{
+			"found": true,
+			"did":   did,
+			"timing": map[string]interface{}{
+				"total_ms":   totalElapsed.Milliseconds(),
+				"lookup_ms":  lookupElapsed.Milliseconds(),
+				"mempool_ms": mempoolElapsed.Milliseconds(),
+			},
+			"bundled": make([]map[string]interface{}, 0),
+			"mempool": make([]map[string]interface{}, 0),
+		}
+
+		for _, owl := range opsWithLoc {
+			output["bundled"] = append(output["bundled"].([]map[string]interface{}), map[string]interface{}{
+				"bundle":     owl.Bundle,
+				"position":   owl.Position,
+				"cid":        owl.Operation.CID,
+				"nullified":  owl.Operation.IsNullified(),
+				"created_at": owl.Operation.CreatedAt.Format(time.RFC3339Nano),
+			})
+		}
+
+		for _, op := range mempoolOps {
+			output["mempool"] = append(output["mempool"].([]map[string]interface{}), map[string]interface{}{
+				"cid":        op.CID,
+				"nullified":  op.IsNullified(),
+				"created_at": op.CreatedAt.Format(time.RFC3339Nano),
+			})
+		}
+
+		data, _ := json.MarshalIndent(output, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+
+	// === CALCULATE STATISTICS ===
 	nullifiedCount := 0
-	for _, op := range bundledOps {
-		if op.IsNullified() {
+	for _, owl := range opsWithLoc {
+		if owl.Operation.IsNullified() {
 			nullifiedCount++
 		}
 	}
 
-	// Display summary
-	totalOps := len(bundledOps) + len(mempoolOps)
-	fmt.Printf("Found %d total operations in %s\n", totalOps, elapsed)
-	if len(bundledOps) > 0 {
-		fmt.Printf("  Bundled: %d (%d active, %d nullified)\n", len(bundledOps), len(bundledOps)-nullifiedCount, nullifiedCount)
+	totalOps := len(opsWithLoc) + len(mempoolOps)
+	activeOps := len(opsWithLoc) - nullifiedCount + len(mempoolOps)
+
+	// === DISPLAY SUMMARY ===
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("                    DID Lookup Results\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
+
+	fmt.Printf("DID: %s\n\n", did)
+
+	fmt.Printf("Summary\n")
+	fmt.Printf("───────\n")
+	fmt.Printf("  Total operations:   %d\n", totalOps)
+	fmt.Printf("  Active operations:  %d\n", activeOps)
+	if nullifiedCount > 0 {
+		fmt.Printf("  Nullified:          %d\n", nullifiedCount)
+	}
+	if len(opsWithLoc) > 0 {
+		fmt.Printf("  Bundled:            %d\n", len(opsWithLoc))
 	}
 	if len(mempoolOps) > 0 {
-		fmt.Printf("  Mempool: %d (not yet bundled)\n", len(mempoolOps))
+		fmt.Printf("  Mempool:            %d\n", len(mempoolOps))
 	}
 	fmt.Printf("\n")
 
-	// Show bundled operations
-	if len(bundledOps) > 0 {
-		fmt.Printf("Bundled operations:\n")
-		for i, op := range bundledOps {
-			status := "✓"
+	// === TIMING BREAKDOWN ===
+	fmt.Printf("Performance\n")
+	fmt.Printf("───────────\n")
+	fmt.Printf("  Index lookup:       %s\n", lookupElapsed)
+	fmt.Printf("  Mempool check:      %s\n", mempoolElapsed)
+	fmt.Printf("  Total time:         %s\n", totalElapsed)
+
+	if len(opsWithLoc) > 0 {
+		avgPerOp := lookupElapsed / time.Duration(len(opsWithLoc))
+		fmt.Printf("  Avg per operation:  %s\n", avgPerOp)
+	}
+	fmt.Printf("\n")
+
+	// === BUNDLED OPERATIONS ===
+	if len(opsWithLoc) > 0 {
+		fmt.Printf("Bundled Operations (%d total)\n", len(opsWithLoc))
+		fmt.Printf("══════════════════════════════════════════════════════════════\n\n")
+
+		for i, owl := range opsWithLoc {
+			op := owl.Operation
+			status := "✓ Active"
+			statusSymbol := "✓"
 			if op.IsNullified() {
-				status = "✗"
+				status = "✗ Nullified"
+				statusSymbol = "✗"
 			}
 
-			fmt.Printf("  %s %d. CID: %s\n", status, i+1, op.CID)
-			fmt.Printf("       Time: %s\n", op.CreatedAt.Format("2006-01-02 15:04:05"))
+			fmt.Printf("%s Operation %d [Bundle %06d, Position %04d]\n",
+				statusSymbol, i+1, owl.Bundle, owl.Position)
+			fmt.Printf("   CID:        %s\n", op.CID)
+			fmt.Printf("   Created:    %s\n", op.CreatedAt.Format("2006-01-02 15:04:05.000 MST"))
+			fmt.Printf("   Status:     %s\n", status)
 
 			if op.IsNullified() {
 				if nullCID := op.GetNullifyingCID(); nullCID != "" {
-					fmt.Printf("       Nullified by: %s\n", nullCID)
-				} else {
-					fmt.Printf("       Nullified: true\n")
+					fmt.Printf("   Nullified:  %s\n", nullCID)
 				}
 			}
+
+			// Show operation type if verbose
+			if *verbose {
+				if opData, err := op.GetOperationData(); err == nil && opData != nil {
+					if opType, ok := opData["type"].(string); ok {
+						fmt.Printf("   Type:       %s\n", opType)
+					}
+
+					// Show handle if present
+					if handle, ok := opData["handle"].(string); ok {
+						fmt.Printf("   Handle:     %s\n", handle)
+					} else if aka, ok := opData["alsoKnownAs"].([]interface{}); ok && len(aka) > 0 {
+						if akaStr, ok := aka[0].(string); ok {
+							handle := strings.TrimPrefix(akaStr, "at://")
+							fmt.Printf("   Handle:     %s\n", handle)
+						}
+					}
+
+					// Show service if present
+					if services, ok := opData["services"].(map[string]interface{}); ok {
+						if pds, ok := services["atproto_pds"].(map[string]interface{}); ok {
+							if endpoint, ok := pds["endpoint"].(string); ok {
+								fmt.Printf("   PDS:        %s\n", endpoint)
+							}
+						}
+					}
+				}
+			}
+
+			fmt.Printf("\n")
+		}
+	}
+
+	// === MEMPOOL OPERATIONS ===
+	if len(mempoolOps) > 0 {
+		fmt.Printf("Mempool Operations (%d total, not yet bundled)\n", len(mempoolOps))
+		fmt.Printf("══════════════════════════════════════════════════════════════\n\n")
+
+		for i, op := range mempoolOps {
+			status := "✓ Active"
+			statusSymbol := "✓"
+			if op.IsNullified() {
+				status = "✗ Nullified"
+				statusSymbol = "✗"
+			}
+
+			fmt.Printf("%s Operation %d [Mempool]\n", statusSymbol, i+1)
+			fmt.Printf("   CID:        %s\n", op.CID)
+			fmt.Printf("   Created:    %s\n", op.CreatedAt.Format("2006-01-02 15:04:05.000 MST"))
+			fmt.Printf("   Status:     %s\n", status)
+
+			if op.IsNullified() {
+				if nullCID := op.GetNullifyingCID(); nullCID != "" {
+					fmt.Printf("   Nullified:  %s\n", nullCID)
+				}
+			}
+
+			// Show operation type if verbose
+			if *verbose {
+				if opData, err := op.GetOperationData(); err == nil && opData != nil {
+					if opType, ok := opData["type"].(string); ok {
+						fmt.Printf("   Type:       %s\n", opType)
+					}
+
+					// Show handle
+					if handle, ok := opData["handle"].(string); ok {
+						fmt.Printf("   Handle:     %s\n", handle)
+					} else if aka, ok := opData["alsoKnownAs"].([]interface{}); ok && len(aka) > 0 {
+						if akaStr, ok := aka[0].(string); ok {
+							handle := strings.TrimPrefix(akaStr, "at://")
+							fmt.Printf("   Handle:     %s\n", handle)
+						}
+					}
+				}
+			}
+
+			fmt.Printf("\n")
+		}
+	}
+
+	// === TIMELINE (if multiple operations) ===
+	if totalOps > 1 && !*verbose {
+		fmt.Printf("Timeline\n")
+		fmt.Printf("────────\n")
+
+		allTimes := make([]time.Time, 0, totalOps)
+		for _, owl := range opsWithLoc {
+			allTimes = append(allTimes, owl.Operation.CreatedAt)
+		}
+		for _, op := range mempoolOps {
+			allTimes = append(allTimes, op.CreatedAt)
+		}
+
+		if len(allTimes) > 0 {
+			firstTime := allTimes[0]
+			lastTime := allTimes[len(allTimes)-1]
+			timespan := lastTime.Sub(firstTime)
+
+			fmt.Printf("  First operation:    %s\n", firstTime.Format("2006-01-02 15:04:05"))
+			fmt.Printf("  Latest operation:   %s\n", lastTime.Format("2006-01-02 15:04:05"))
+			fmt.Printf("  Timespan:           %s\n", formatDuration(timespan))
+			fmt.Printf("  Activity age:       %s ago\n", formatDuration(time.Since(lastTime)))
 		}
 		fmt.Printf("\n")
 	}
 
-	// Show mempool operations
-	if len(mempoolOps) > 0 {
-		fmt.Printf("Mempool operations (not yet bundled):\n")
-		for i, op := range mempoolOps {
-			status := "✓"
-			if op.IsNullified() {
-				status = "✗"
-			}
-
-			fmt.Printf("  %s %d. CID: %s\n", status, i+1, op.CID)
-			fmt.Printf("       Time: %s\n", op.CreatedAt.Format("2006-01-02 15:04:05"))
-		}
+	// === FINAL SUMMARY ===
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("✓ Lookup complete in %s\n", totalElapsed)
+	if stats["exists"].(bool) {
+		fmt.Printf("  Method: DID index (fast)\n")
+	} else {
+		fmt.Printf("  Method: Full scan (slow)\n")
 	}
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 }
 
 func cmdDIDIndexResolve() {

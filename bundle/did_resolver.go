@@ -327,3 +327,126 @@ func (m *Manager) GetDIDIndexStats() map[string]interface{} {
 
 	return stats
 }
+
+// GetDIDOperationsWithLocations returns operations along with their bundle/position info
+func (m *Manager) GetDIDOperationsWithLocations(ctx context.Context, did string, verbose bool) ([]PLCOperationWithLocation, error) {
+	if err := plc.ValidateDIDFormat(did); err != nil {
+		return nil, err
+	}
+
+	// Set verbose mode
+	if m.didIndex != nil {
+		m.didIndex.SetVerbose(verbose)
+	}
+
+	// Use index if available
+	if m.didIndex != nil && m.didIndex.Exists() {
+		if verbose {
+			m.logger.Printf("DEBUG: Using DID index for lookup with locations")
+		}
+		return m.getDIDOperationsWithLocationsIndexed(ctx, did, verbose)
+	}
+
+	// Fallback to scan (slower, but still works)
+	if verbose {
+		m.logger.Printf("DEBUG: Using full scan with locations")
+	}
+	return m.getDIDOperationsWithLocationsScan(ctx, did)
+}
+
+// getDIDOperationsWithLocationsIndexed uses index for fast lookup with locations
+func (m *Manager) getDIDOperationsWithLocationsIndexed(ctx context.Context, did string, verbose bool) ([]PLCOperationWithLocation, error) {
+	locations, err := m.didIndex.GetDIDLocations(did)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(locations) == 0 {
+		return []PLCOperationWithLocation{}, nil
+	}
+
+	if verbose {
+		m.logger.Printf("DEBUG: Found %d locations in index", len(locations))
+	}
+
+	// Load operations with their locations preserved
+	var results []PLCOperationWithLocation
+
+	// Group by bundle for efficient loading
+	bundleMap := make(map[uint16][]OpLocation)
+	for _, loc := range locations {
+		bundleMap[loc.Bundle] = append(bundleMap[loc.Bundle], loc)
+	}
+
+	if verbose {
+		m.logger.Printf("DEBUG: Loading from %d bundle(s)", len(bundleMap))
+	}
+
+	for bundleNum, locs := range bundleMap {
+		bundle, err := m.LoadBundle(ctx, int(bundleNum))
+		if err != nil {
+			m.logger.Printf("Warning: failed to load bundle %d: %v", bundleNum, err)
+			continue
+		}
+
+		for _, loc := range locs {
+			if int(loc.Position) >= len(bundle.Operations) {
+				continue
+			}
+
+			op := bundle.Operations[loc.Position]
+			results = append(results, PLCOperationWithLocation{
+				Operation: op,
+				Bundle:    int(loc.Bundle),
+				Position:  int(loc.Position),
+			})
+		}
+	}
+
+	// Sort by time
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Operation.CreatedAt.Before(results[j].Operation.CreatedAt)
+	})
+
+	if verbose {
+		m.logger.Printf("DEBUG: Loaded %d total operations", len(results))
+	}
+
+	return results, nil
+}
+
+// getDIDOperationsWithLocationsScan falls back to full scan with locations
+func (m *Manager) getDIDOperationsWithLocationsScan(ctx context.Context, did string) ([]PLCOperationWithLocation, error) {
+	var results []PLCOperationWithLocation
+	bundles := m.index.GetBundles()
+
+	for _, meta := range bundles {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		bundle, err := m.LoadBundle(ctx, meta.BundleNumber)
+		if err != nil {
+			m.logger.Printf("Warning: failed to load bundle %d: %v", meta.BundleNumber, err)
+			continue
+		}
+
+		for pos, op := range bundle.Operations {
+			if op.DID == did {
+				results = append(results, PLCOperationWithLocation{
+					Operation: op,
+					Bundle:    meta.BundleNumber,
+					Position:  pos,
+				})
+			}
+		}
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Operation.CreatedAt.Before(results[j].Operation.CreatedAt)
+	})
+
+	return results, nil
+}
