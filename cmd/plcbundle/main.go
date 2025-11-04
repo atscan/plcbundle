@@ -452,7 +452,7 @@ func cmdRebuild() {
 	}
 
 	config := bundle.DefaultConfig(dir)
-	config.AutoRebuild = false // ← Disable auto-rebuild
+	config.AutoRebuild = false
 	config.RebuildWorkers = *workers
 
 	mgr, err := bundle.NewManager(config, nil)
@@ -1270,13 +1270,13 @@ func cmdServe() {
 	enableWebSocket := fs.Bool("websocket", false, "enable WebSocket endpoint for streaming records")
 	workers := fs.Int("workers", 4, "number of workers for auto-rebuild (0 = CPU count)")
 	verbose := fs.Bool("verbose", false, "verbose sync logging")
-	enableResolver := fs.Bool("resolver", false, "enable DID resolution endpoints (/<did>)") // ← NEW
+	enableResolver := fs.Bool("resolver", false, "enable DID resolution endpoints (/<did>)")
 	fs.Parse(os.Args[2:])
 
 	serverStartTime = time.Now()
 	syncInterval = *syncIntervalFlag
 	verboseMode = *verbose
-	resolverEnabled = *enableResolver // ← NEW global
+	resolverEnabled = *enableResolver
 
 	// Auto-detect CPU count
 	if *workers == 0 {
@@ -1329,9 +1329,6 @@ func cmdServe() {
 	}
 	defer mgr.Close()
 
-	// ═══════════════════════════════════════════════════════════
-	// DID INDEX AUTO-BUILD LOGIC
-	// ═══════════════════════════════════════════════════════════
 	if *enableResolver {
 		index := mgr.GetIndex()
 		bundleCount := index.Count()
@@ -1348,7 +1345,7 @@ func cmdServe() {
 				// Check version
 				didIndex := mgr.GetDIDIndex()
 				if didIndex != nil {
-					config := didIndex.GetConfig() // ← Need to expose this
+					config := didIndex.GetConfig()
 					if config.Version != bundle.DIDINDEX_VERSION {
 						needsBuild = true
 						reason = fmt.Sprintf("index version outdated (v%d, need v%d)",
@@ -1432,12 +1429,12 @@ func cmdServe() {
 	defer cancel()
 
 	if *sync {
-		go runSync(ctx, mgr, syncInterval, *verbose, *enableResolver) // ← Pass resolver flag
+		go runSync(ctx, mgr, syncInterval, *verbose, *enableResolver)
 	}
 
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      newServerHandler(mgr, *sync, *enableWebSocket, *enableResolver), // ← Pass resolver flag
+		Handler:      newServerHandler(mgr, *sync, *enableWebSocket, *enableResolver),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}

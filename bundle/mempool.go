@@ -399,7 +399,7 @@ func (m *Mempool) Stats() map[string]interface{} {
 			didSet[op.DID] = true
 		}
 		stats["size_bytes"] = totalSize
-		stats["did_count"] = len(didSet) // ← ADDED
+		stats["did_count"] = len(didSet)
 	}
 
 	return stats

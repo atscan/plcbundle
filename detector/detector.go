@@ -37,7 +37,7 @@ type Result struct {
 	BundleNumber int
 	Position     int
 	DID          string
-	CID          string // ← Add this field
+	CID          string
 	Match        *Match // nil if no match
 	Error        error
 	DetectorName string

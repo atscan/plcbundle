@@ -81,7 +81,7 @@ func (pb *ProgressBar) Finish() {
 	pb.current = pb.total
 	pb.currentBytes = pb.totalBytes
 	pb.print()
-	fmt.Fprintf(os.Stderr, "\n") // ← FIXED: Use stderr
+	fmt.Fprintf(os.Stderr, "\n")
 }
 
 // print renders the progress bar (must be called with lock held)

@@ -139,7 +139,7 @@ func (r *Runner) detectOne(ctx context.Context, detector Detector, bundleNum, po
 		BundleNumber: bundleNum,
 		Position:     pos,
 		DID:          op.DID,
-		CID:          op.CID, // ← Add this
+		CID:          op.CID,
 		DetectorName: detector.Name(),
 		DetectedAt:   time.Now(),
 	}

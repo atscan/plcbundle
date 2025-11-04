@@ -195,7 +195,7 @@ func cmdDetectorTest() {
 	bundleNum := fs.Int("bundle", 0, "bundle number to test")
 	confidence := fs.Float64("confidence", 0.90, "minimum confidence threshold")
 	verbose := fs.Bool("v", false, "verbose output")
-	fs.Parse(os.Args[4:]) // ← Changed from os.Args[3:]
+	fs.Parse(os.Args[4:])
 
 	if *bundleNum == 0 {
 		fmt.Fprintf(os.Stderr, "Error: --bundle required\n")
@@ -556,7 +556,7 @@ func detectOperation(ctx context.Context, detectors []detector.Detector, op plc.
 	var maxConfidence float64
 
 	for _, det := range detectors {
-		match, err := det.Detect(ctx, op) // ← op now has ParsedOperation set
+		match, err := det.Detect(ctx, op)
 		if err != nil || match == nil || match.Confidence < minConfidence {
 			continue
 		}

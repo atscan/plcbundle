@@ -206,7 +206,7 @@ func StateToDIDDocument(state *DIDState) *DIDDocument {
 	// Convert services
 	for id, svc := range state.Services {
 		doc.Service = append(doc.Service, Service{
-			ID:              "#" + id, // ← Just fragment (matching plc.directory)
+			ID:              "#" + id,
 			Type:            svc.Type,
 			ServiceEndpoint: svc.Endpoint,
 		})
@@ -215,7 +215,7 @@ func StateToDIDDocument(state *DIDState) *DIDDocument {
 	// Keep verification methods with full DID (they're correct):
 	for id, didKey := range state.VerificationMethods {
 		doc.VerificationMethod = append(doc.VerificationMethod, VerificationMethod{
-			ID:                 state.DID + "#" + id, // ← Keep this as-is
+			ID:                 state.DID + "#" + id,
 			Type:               "Multikey",
 			Controller:         state.DID,
 			PublicKeyMultibase: ExtractMultibaseFromDIDKey(didKey),
@@ -236,11 +236,11 @@ func detectKeyType(didKey string) string {
 	// The 'z' is the base58btc multibase prefix
 	// Actual key starts at position 1
 	switch {
-	case multibase[1] == 'Q' && multibase[2] == '3': // ← Fixed: was [0] and [1]
+	case multibase[1] == 'Q' && multibase[2] == '3':
 		return "secp256k1" // Starts with zQ3s
-	case multibase[1] == 'D' && multibase[2] == 'n': // ← Fixed
+	case multibase[1] == 'D' && multibase[2] == 'n':
 		return "p256" // Starts with zDn
-	case multibase[1] == '6' && multibase[2] == 'M': // ← Fixed
+	case multibase[1] == '6' && multibase[2] == 'M':
 		return "ed25519" // Starts with z6Mk
 	default:
 		return "unknown"

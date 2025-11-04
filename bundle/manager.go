@@ -294,7 +294,7 @@ func (m *Manager) Close() {
 			m.logger.Printf("Warning: failed to save mempool: %v", err)
 		}
 	}
-	if m.didIndex != nil { // ← ADD THIS
+	if m.didIndex != nil {
 		m.didIndex.Close()
 	}
 }

@@ -318,8 +318,8 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
-		// DID Resolution - delegate to specific handler
-		if strings.HasPrefix(path, "/did:plc:") {
+		// DID Resolution - only if resolver is enabled
+		if resolverEnabled && strings.HasPrefix(path, "/did:plc:") {
 			handleDIDEndpoint(w, r, mgr)
 			return
 		}
@@ -332,10 +332,9 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 		http.NotFound(w, r)
 	})
 
-	// Index JSON (reload from disk each time for fresh data during rebuild)
+	// Index JSON
 	mux.HandleFunc("/index.json", func(w http.ResponseWriter, r *http.Request) {
-		// Reload index to get latest data
-		mgr.GetIndex() // This will refresh if needed
+		mgr.GetIndex()
 		handleIndexJSON(w, mgr)
 	})
 
@@ -373,7 +372,6 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 		fmt.Fprintf(w, "\nDID Index:\n")
 		fmt.Fprintf(w, "  Cached shards: %d/%d\n", didStats["cached_shards"], didStats["cache_limit"])
 
-		// Force GC and show again
 		runtime.GC()
 		runtime.ReadMemStats(&m)
 		fmt.Fprintf(w, "\nAfter GC:\n")
@@ -394,7 +392,7 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 		})
 	}
 
-	return mux
+	return corsMiddleware(mux)
 }
 
 // handleWebSocket streams all records via WebSocket starting from cursor
@@ -1233,4 +1231,24 @@ func handleDIDAuditLog(w http.ResponseWriter, r *http.Request, mgr *bundle.Manag
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	json.NewEncoder(w).Encode(auditLog)
+}
+
+// corsMiddleware adds CORS headers to all responses
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+
+		// Handle preflight OPTIONS request
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// Call the next handler
+		next.ServeHTTP(w, r)
+	})
 }
