@@ -455,7 +455,7 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) er
 
 	m.mempool = newMempool
 
-	// Update DID index if enabled
+	// Update DID index if enabled (ONLY when bundle is created)
 	if m.didIndex != nil && m.didIndex.Exists() {
 		if err := m.UpdateDIDIndexForBundle(ctx, bundle); err != nil {
 			m.logger.Printf("Warning: failed to update DID index: %v", err)
@@ -604,7 +604,7 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 		}
 
 		if len(uniqueOps) > 0 {
-			added, err := m.AddToMempoolAndIndex(ctx, uniqueOps)
+			added, err := m.mempool.Add(uniqueOps)
 			if err != nil {
 				m.mempool.Save()
 				return fmt.Errorf("chronological validation failed: %w", err)
@@ -1366,38 +1366,4 @@ func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position 
 
 	// Load just the one operation (efficient!)
 	return m.operations.LoadOperationAtPosition(path, position)
-}
-
-// AddToMempoolAndIndex adds operations to mempool and updates DID index
-func (m *Manager) AddToMempoolAndIndex(ctx context.Context, ops []plc.PLCOperation) (int, error) {
-	// Add to mempool first
-	added, err := m.mempool.Add(ops)
-	if err != nil {
-		return 0, err
-	}
-
-	// If resolver is enabled and index exists, index the new operations incrementally
-	if m.didIndex != nil && m.didIndex.Exists() && added > 0 {
-		// Index the newly added operations
-		// We need a new method: UpdateIndexForOperations
-		if err := m.UpdateDIDIndexForOperations(ctx, ops); err != nil {
-			m.logger.Printf("Warning: failed to index mempool operations: %v", err)
-			// Non-fatal - mempool still works
-		}
-	}
-
-	return added, nil
-}
-
-// UpdateDIDIndexForOperations updates index for incoming mempool operations
-func (m *Manager) UpdateDIDIndexForOperations(ctx context.Context, ops []plc.PLCOperation) error {
-	if m.didIndex == nil {
-		return nil
-	}
-
-	// Use bundle number 0xFFFF as temporary marker for mempool operations
-	// These will be updated with correct bundle number when bundle is created
-	tempBundleNum := 0xFFFF
-
-	return m.didIndex.UpdateIndexForOperations(ctx, ops, tempBundleNum)
 }

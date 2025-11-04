@@ -45,12 +45,16 @@ func (m *Manager) GetDIDOperationsFromMempool(did string) ([]plc.PLCOperation, e
 		return []plc.PLCOperation{}, nil
 	}
 
+	// Get all mempool operations (max 10K)
 	allMempoolOps, err := m.GetMempoolOperations()
 	if err != nil {
 		return nil, err
 	}
 
-	var matchingOps []plc.PLCOperation
+	// Pre-allocate with reasonable capacity
+	matchingOps := make([]plc.PLCOperation, 0, 16)
+
+	// Linear scan (fast for 10K operations)
 	for _, op := range allMempoolOps {
 		if op.DID == did {
 			matchingOps = append(matchingOps, op)

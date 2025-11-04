@@ -711,7 +711,6 @@ type MempoolStatus struct {
 // handleStatus returns repository status and statistics
 func handleStatus(w http.ResponseWriter, mgr *bundle.Manager, syncMode bool, wsEnabled bool) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	index := mgr.GetIndex()
 	indexStats := index.GetStats()
@@ -838,7 +837,6 @@ func handleMempool(w http.ResponseWriter, mgr *bundle.Manager) {
 	}
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	if len(ops) == 0 {
 		// Return empty response
@@ -862,7 +860,6 @@ func handleIndexJSON(w http.ResponseWriter, mgr *bundle.Manager) {
 	index := mgr.GetIndex()
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	data, err := json.MarshalIndent(index, "", "  ")
 	if err != nil {
@@ -890,7 +887,6 @@ func handleBundle(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
@@ -926,7 +922,6 @@ func handleBundleData(w http.ResponseWriter, r *http.Request, mgr *bundle.Manage
 	// Set headers
 	w.Header().Set("Content-Type", "application/zstd")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%06d.jsonl.zst", bundleNum))
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	// Stream the data
 	if _, err := io.Copy(w, reader); err != nil {
@@ -960,7 +955,6 @@ func handleBundleJSONL(w http.ResponseWriter, r *http.Request, mgr *bundle.Manag
 	// Set headers
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%06d.jsonl", bundleNum))
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	// Stream the data
 	if _, err := io.Copy(w, reader); err != nil {
@@ -1068,17 +1062,6 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool, resolve
 			break
 		}
 
-		if resolverEnabled {
-			didStats := mgr.GetDIDIndexStats()
-			if didStats["exists"].(bool) {
-				if err := mgr.UpdateDIDIndexForBundle(ctx, b); err != nil {
-					log.Printf("[Sync] ⚠️  Failed to update DID index: %v", err)
-				} else if verbose {
-					log.Printf("[Sync] ✓ DID index updated for bundle %06d", b.BundleNumber)
-				}
-			}
-		}
-
 		fetchedCount++
 
 		if !verbose {
@@ -1164,7 +1147,6 @@ func handleDIDDocument(w http.ResponseWriter, r *http.Request, mgr *bundle.Manag
 	operations = nil
 
 	w.Header().Set("Content-Type", "application/did+ld+json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -1203,7 +1185,6 @@ func handleDIDData(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	json.NewEncoder(w).Encode(state)
 }
@@ -1228,7 +1209,6 @@ func handleDIDAuditLog(w http.ResponseWriter, r *http.Request, mgr *bundle.Manag
 	auditLog := plc.FormatAuditLog(operations)
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	json.NewEncoder(w).Encode(auditLog)
 }
@@ -1236,19 +1216,18 @@ func handleDIDAuditLog(w http.ResponseWriter, r *http.Request, mgr *bundle.Manag
 // corsMiddleware adds CORS headers to all responses
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Set CORS headers
+		// Permissive CORS for public API
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 
-		// Handle preflight OPTIONS request
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusNoContent)
-			return
+		if requestedHeaders := r.Header.Get("Access-Control-Request-Headers"); requestedHeaders != "" {
+			w.Header().Set("Access-Control-Allow-Headers", requestedHeaders)
+		} else {
+			// Fallback to common headers
+			w.Header().Set("Access-Control-Allow-Headers", "*")
 		}
 
-		// Call the next handler
+		w.Header().Set("Access-Control-Max-Age", "86400")
 		next.ServeHTTP(w, r)
 	})
 }

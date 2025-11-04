@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
-
-	"tangled.org/atscan.net/plcbundle/plc"
 )
 
 const (
@@ -424,40 +422,4 @@ func (dim *DIDIndexManager) invalidateShard(shardNum uint8) {
 		dim.unmapShard(cached)
 		delete(dim.shardCache, shardNum)
 	}
-}
-
-// UpdateIndexForOperations adds operations from mempool (incremental, no bundle number yet)
-// These operations will be re-indexed with proper bundle number when the bundle is created
-func (dim *DIDIndexManager) UpdateIndexForOperations(ctx context.Context, ops []plc.PLCOperation, tempBundleNum int) error {
-	// Group operations by shard
-	shardOps := make(map[uint8]map[string][]OpLocation)
-
-	for pos, op := range ops {
-		identifier, err := extractDIDIdentifier(op.DID)
-		if err != nil {
-			continue
-		}
-
-		shardNum := dim.calculateShard(identifier)
-
-		if shardOps[shardNum] == nil {
-			shardOps[shardNum] = make(map[string][]OpLocation)
-		}
-
-		// Use tempBundleNum (0xFFFF = mempool marker) and actual position
-		shardOps[shardNum][identifier] = append(shardOps[shardNum][identifier], OpLocation{
-			Bundle:    uint16(tempBundleNum),
-			Position:  uint16(pos),
-			Nullified: op.IsNullified(),
-		})
-	}
-
-	// Update affected shards
-	for shardNum, newOps := range shardOps {
-		if err := dim.updateShard(shardNum, newOps); err != nil {
-			return fmt.Errorf("failed to update shard %02x: %w", shardNum, err)
-		}
-	}
-
-	return nil
 }
