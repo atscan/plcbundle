@@ -166,6 +166,14 @@ func (dim *DIDIndexManager) GetDIDLocations(did string) ([]OpLocation, error) {
 		}
 	}
 
+	dim.cacheMu.RLock()
+	cacheSize := len(dim.shardCache)
+	dim.cacheMu.RUnlock()
+
+	if dim.verbose || cacheSize > dim.maxCache {
+		dim.logger.Printf("DEBUG: Shard cache size: %d/%d shards (after lookup)", cacheSize, dim.maxCache)
+	}
+
 	return locations, nil
 }
 
@@ -546,4 +554,26 @@ func (dim *DIDIndexManager) DebugShard(shardNum uint8) error {
 	}
 
 	return nil
+}
+
+// Add new method to DIDIndexManager
+func (dim *DIDIndexManager) TrimCache() {
+	dim.cacheMu.Lock()
+	defer dim.cacheMu.Unlock()
+
+	// Keep only most recent shard
+	if len(dim.shardCache) > 1 {
+		toEvict := len(dim.shardCache) - 1
+		for i := 0; i < toEvict; i++ {
+			if len(dim.cacheOrder) > 0 {
+				victimNum := dim.cacheOrder[0]
+				dim.cacheOrder = dim.cacheOrder[1:]
+
+				if victim, exists := dim.shardCache[victimNum]; exists {
+					dim.unmapShard(victim)
+					delete(dim.shardCache, victimNum)
+				}
+			}
+		}
+	}
 }

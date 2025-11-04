@@ -385,27 +385,20 @@ func cmdDIDIndexResolve() {
 
 	fmt.Fprintf(os.Stderr, "Index lookup: %s (shard access)\n", indexTime)
 
-	// STEP 2: Bundle loading timing
-	bundleStart := time.Now()
-	bndl, err := mgr.LoadBundle(ctx, int(latestLoc.Bundle))
+	// STEP 2: Operation loading timing (single op, not full bundle!)
+	opStart := time.Now()
+	op, err := mgr.LoadOperation(ctx, int(latestLoc.Bundle), int(latestLoc.Position))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading bundle: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error loading operation: %v\n", err)
 		os.Exit(1)
 	}
-	bundleTime := time.Since(bundleStart)
+	opTime := time.Since(opStart)
 
-	if int(latestLoc.Position) >= len(bndl.Operations) {
-		fmt.Fprintf(os.Stderr, "Invalid position\n")
-		os.Exit(1)
-	}
-
-	op := bndl.Operations[latestLoc.Position]
-
-	fmt.Fprintf(os.Stderr, "Bundle load: %s (bundle %d, pos %d)\n",
-		bundleTime, latestLoc.Bundle, latestLoc.Position)
+	fmt.Fprintf(os.Stderr, "Operation load: %s (bundle %d, pos %d)\n",
+		opTime, latestLoc.Bundle, latestLoc.Position)
 
 	// STEP 3: Build DID document
-	ops := []plc.PLCOperation{op}
+	ops := []plc.PLCOperation{*op}
 	doc, err := plc.ResolveDIDDocument(did, ops)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Build document failed: %v\n", err)
@@ -418,4 +411,5 @@ func cmdDIDIndexResolve() {
 	// Output to stdout
 	data, _ := json.MarshalIndent(doc, "", "  ")
 	fmt.Println(string(data))
+
 }

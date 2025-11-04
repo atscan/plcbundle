@@ -277,7 +277,7 @@ func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
 		mempool:      mempool,
 		didIndex:     didIndex,
 		bundleCache:  make(map[int]*Bundle),
-		maxCacheSize: 10, // Keep 10 recent bundles in memory (~50-100 MB)
+		maxCacheSize: 2, // Keep 10 recent bundles in memory (~50-100 MB)
 	}, nil
 }
 
@@ -1345,10 +1345,10 @@ func (m *Manager) GetDIDIndex() *DIDIndexManager {
 // LoadOperation loads a single operation from a bundle efficiently
 // This is much faster than LoadBundle() when you only need one operation
 func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position int) (*plc.PLCOperation, error) {
-	m.logger.Printf("DEBUG: Using LoadOperation (position=%d) - should be faster!", position)
+	m.logger.Printf("🔍 DEBUG: LoadOperation called (bundle=%d, position=%d)", bundleNumber, position)
 
 	// Validate bundle exists in index
-	meta, err := m.index.GetBundle(bundleNumber)
+	_, err := m.index.GetBundle(bundleNumber)
 	if err != nil {
 		return nil, fmt.Errorf("bundle not in index: %w", err)
 	}
@@ -1362,17 +1362,6 @@ func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position 
 	path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", bundleNumber))
 	if !m.operations.FileExists(path) {
 		return nil, fmt.Errorf("bundle file not found: %s", path)
-	}
-
-	// Verify hash if enabled (same as LoadBundle)
-	if m.config.VerifyOnLoad {
-		valid, actualHash, err := m.operations.VerifyHash(path, meta.CompressedHash)
-		if err != nil {
-			return nil, fmt.Errorf("failed to verify hash: %w", err)
-		}
-		if !valid {
-			return nil, fmt.Errorf("hash mismatch: expected %s, got %s", meta.CompressedHash, actualHash)
-		}
 	}
 
 	// Load just the one operation (efficient!)

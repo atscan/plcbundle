@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -342,6 +343,27 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.H
 	// Status endpoint
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		handleStatus(w, mgr, syncMode, wsEnabled)
+	})
+
+	mux.HandleFunc("/debug/memory", func(w http.ResponseWriter, r *http.Request) {
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+
+		didStats := mgr.GetDIDIndexStats()
+
+		fmt.Fprintf(w, "Memory Stats:\n")
+		fmt.Fprintf(w, "  Alloc:      %d MB\n", m.Alloc/1024/1024)
+		fmt.Fprintf(w, "  TotalAlloc: %d MB\n", m.TotalAlloc/1024/1024)
+		fmt.Fprintf(w, "  Sys:        %d MB\n", m.Sys/1024/1024)
+		fmt.Fprintf(w, "  NumGC:      %d\n", m.NumGC)
+		fmt.Fprintf(w, "\nDID Index:\n")
+		fmt.Fprintf(w, "  Cached shards: %d/%d\n", didStats["cached_shards"], didStats["cache_limit"])
+
+		// Force GC and show again
+		runtime.GC()
+		runtime.ReadMemStats(&m)
+		fmt.Fprintf(w, "\nAfter GC:\n")
+		fmt.Fprintf(w, "  Alloc:      %d MB\n", m.Alloc/1024/1024)
 	})
 
 	// WebSocket endpoint (if enabled)
@@ -1088,6 +1110,11 @@ func handleDIDEndpoint(w http.ResponseWriter, r *http.Request, mgr *bundle.Manag
 func handleDIDDocument(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, did string) {
 	ctx := r.Context()
 
+	// ✨ Trim shard cache BEFORE resolution
+	if didIdx := mgr.GetDIDIndex(); didIdx != nil {
+		didIdx.TrimCache()
+	}
+
 	// Bundle package: just get the operations
 	operations, err := mgr.GetDIDOperations(ctx, did, false)
 	if err != nil {
@@ -1110,6 +1137,9 @@ func handleDIDDocument(w http.ResponseWriter, r *http.Request, mgr *bundle.Manag
 		}
 		return
 	}
+
+	// ✨ Clear operation data to help GC
+	operations = nil
 
 	w.Header().Set("Content-Type", "application/did+ld+json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")

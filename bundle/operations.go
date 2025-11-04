@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	gozstd "github.com/DataDog/zstd"
@@ -121,6 +122,14 @@ func (op *Operations) SaveBundle(path string, operations []plc.PLCOperation) (st
 	return contentHash, compressedHash, contentSize, compressedSize, nil
 }
 
+// Pool for scanner buffers (reuse across requests)
+var scannerBufPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 64*1024)
+		return &buf
+	},
+}
+
 // LoadOperationAtPosition loads a single operation from a bundle without loading the entire bundle
 // This is much more efficient for single-operation lookups
 func (op *Operations) LoadOperationAtPosition(path string, position int) (*plc.PLCOperation, error) {
@@ -128,34 +137,25 @@ func (op *Operations) LoadOperationAtPosition(path string, position int) (*plc.P
 		return nil, fmt.Errorf("invalid position: %d", position)
 	}
 
-	// ✨ Add this debug log
-	startTime := time.Now()
-	defer func() {
-		elapsed := time.Since(startTime)
-		op.logger.Printf("DEBUG: LoadOperationAtPosition(pos=%d) took %v (scanned %d lines)",
-			position, elapsed, position+1)
-	}()
-
-	// Open compressed file
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 
-	// Create zstd decompression reader (streaming)
 	reader := gozstd.NewReader(file)
 	defer reader.Close()
 
-	// Use scanner to skip to target line
+	// ✨ Get buffer from pool
+	bufPtr := scannerBufPool.Get().(*[]byte)
+	defer scannerBufPool.Put(bufPtr) // Return to pool when done
+
 	scanner := bufio.NewScanner(reader)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	scanner.Buffer(*bufPtr, 512*1024)
 
 	lineNum := 0
 	for scanner.Scan() {
 		if lineNum == position {
-			// Found target line!
 			line := scanner.Bytes()
 
 			var operation plc.PLCOperation
@@ -163,7 +163,7 @@ func (op *Operations) LoadOperationAtPosition(path string, position int) (*plc.P
 				return nil, fmt.Errorf("failed to parse operation at position %d: %w", position, err)
 			}
 
-			// Store raw JSON
+			// Copy raw JSON
 			operation.RawJSON = make([]byte, len(line))
 			copy(operation.RawJSON, line)
 
@@ -176,7 +176,7 @@ func (op *Operations) LoadOperationAtPosition(path string, position int) (*plc.P
 		return nil, fmt.Errorf("scanner error: %w", err)
 	}
 
-	return nil, fmt.Errorf("position %d not found (bundle has %d operations)", position, lineNum)
+	return nil, fmt.Errorf("position %d not found", position)
 }
 
 // ========================================
