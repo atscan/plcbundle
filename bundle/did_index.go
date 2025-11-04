@@ -25,7 +25,7 @@ const (
 
 	// Binary format constants (renamed to avoid conflict)
 	DIDINDEX_MAGIC   = "PLCD"
-	DIDINDEX_VERSION = 1
+	DIDINDEX_VERSION = 2
 )
 
 // DIDIndexManager manages sharded DID position indexes with mmap
@@ -36,10 +36,10 @@ type DIDIndexManager struct {
 	configPath string
 
 	// LRU cache for hot shards
-	shardCache map[uint8]*mmapShard
-	cacheOrder []uint8 // For LRU
-	maxCache   int
-	cacheMu    sync.RWMutex
+	shardCache        map[uint8]*mmapShard
+	maxCache          int
+	cacheMu           sync.RWMutex
+	evictionThreshold int
 
 	config  *DIDIndexConfig
 	logger  Logger
@@ -92,15 +92,15 @@ func NewDIDIndexManager(baseDir string, logger Logger) *DIDIndexManager {
 	}
 
 	return &DIDIndexManager{
-		baseDir:    baseDir,
-		indexDir:   indexDir,
-		shardDir:   shardDir,
-		configPath: configPath,
-		shardCache: make(map[uint8]*mmapShard),
-		cacheOrder: make([]uint8, 0),
-		maxCache:   20, // Keep 20 hot shards in memory (~120 MB)
-		config:     config,
-		logger:     logger,
+		baseDir:           baseDir,
+		indexDir:          indexDir,
+		shardDir:          shardDir,
+		configPath:        configPath,
+		shardCache:        make(map[uint8]*mmapShard),
+		maxCache:          10, // Keep 20 hot shards in memory (~120 MB)
+		evictionThreshold: 25,
+		config:            config,
+		logger:            logger,
 	}
 }
 
@@ -114,7 +114,6 @@ func (dim *DIDIndexManager) Close() error {
 	}
 
 	dim.shardCache = make(map[uint8]*mmapShard)
-	dim.cacheOrder = make([]uint8, 0)
 
 	return nil
 }
@@ -193,7 +192,6 @@ func (dim *DIDIndexManager) loadShard(shardNum uint8) (*mmapShard, error) {
 	// Check cache
 	if shard, exists := dim.shardCache[shardNum]; exists {
 		shard.lastUsed = time.Now()
-		dim.updateLRU(shardNum)
 		return shard, nil
 	}
 
@@ -249,14 +247,44 @@ func (dim *DIDIndexManager) loadShard(shardNum uint8) (*mmapShard, error) {
 
 	// Add to cache
 	dim.shardCache[shardNum] = shard
-	dim.cacheOrder = append(dim.cacheOrder, shardNum)
 
-	// Evict if cache is full
-	if len(dim.shardCache) > dim.maxCache {
-		dim.evictLRU()
+	// Lazy eviction: only evict when significantly over limit
+	if len(dim.shardCache) > dim.evictionThreshold {
+		dim.evictMultiple(len(dim.shardCache) - dim.maxCache)
 	}
 
 	return shard, nil
+}
+
+// Evict multiple shards at once to reduce eviction frequency
+func (dim *DIDIndexManager) evictMultiple(count int) {
+	if count <= 0 {
+		return
+	}
+
+	// Build list of (shardNum, lastUsed) and sort
+	type entry struct {
+		num      uint8
+		lastUsed time.Time
+	}
+
+	entries := make([]entry, 0, len(dim.shardCache))
+	for num, shard := range dim.shardCache {
+		entries = append(entries, entry{num, shard.lastUsed})
+	}
+
+	// Sort by lastUsed (oldest first)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].lastUsed.Before(entries[j].lastUsed)
+	})
+
+	// Evict oldest 'count' entries
+	for i := 0; i < count && i < len(entries); i++ {
+		if victim, exists := dim.shardCache[entries[i].num]; exists {
+			dim.unmapShard(victim)
+			delete(dim.shardCache, entries[i].num)
+		}
+	}
 }
 
 // searchShard performs binary search in a memory-mapped shard
@@ -282,18 +310,16 @@ func (dim *DIDIndexManager) searchShard(shard *mmapShard, identifier string) []O
 		dim.logger.Printf("DEBUG: Searching %d entries for '%s'", entryCount, identifier)
 	}
 
-	// Binary search in entries
+	// Binary search
 	left, right := 0, int(entryCount)
-
-	// Track for debugging
 	attempts := 0
 
 	for left < right {
 		attempts++
 		mid := (left + right) / 2
 
-		// Calculate offset for this entry
-		entryOffset := dim.getEntryOffset(data, 32, mid)
+		// ✨ O(1) offset lookup
+		entryOffset := dim.getEntryOffset(data, mid)
 		if entryOffset < 0 {
 			if dim.verbose {
 				dim.logger.Printf("DEBUG: Invalid entry offset at mid=%d", mid)
@@ -326,7 +352,6 @@ func (dim *DIDIndexManager) searchShard(shard *mmapShard, identifier string) []O
 		}
 
 		if cmp == 0 {
-			// Found!
 			if dim.verbose {
 				dim.logger.Printf("DEBUG: FOUND at mid=%d after %d attempts", mid, attempts)
 			}
@@ -343,28 +368,31 @@ func (dim *DIDIndexManager) searchShard(shard *mmapShard, identifier string) []O
 			attempts, left, right)
 	}
 
-	return nil // Not found
+	return nil
 }
 
-// getEntryOffset calculates byte offset for nth entry
-func (dim *DIDIndexManager) getEntryOffset(data []byte, baseOffset int, entryIndex int) int {
-	offset := baseOffset
+// getEntryOffset reads entry offset from offset table - O(1) lookup
+func (dim *DIDIndexManager) getEntryOffset(data []byte, entryIndex int) int {
+	if len(data) < 32 {
+		return -1
+	}
 
-	// Skip to the nth entry
-	for i := 0; i < entryIndex; i++ {
-		if offset+DID_IDENTIFIER_LEN+2 > len(data) {
-			return -1
-		}
+	entryCount := binary.LittleEndian.Uint32(data[9:13])
+	if entryIndex < 0 || entryIndex >= int(entryCount) {
+		return -1
+	}
 
-		// Skip identifier (24 bytes)
-		offset += DID_IDENTIFIER_LEN
+	// Offset table: 4 bytes per entry, starts at byte 32
+	offsetPos := 32 + (entryIndex * 4)
 
-		// Read location count
-		count := binary.LittleEndian.Uint16(data[offset : offset+2])
-		offset += 2
+	if offsetPos+4 > len(data) {
+		return -1
+	}
 
-		// Skip locations (5 bytes each)
-		offset += int(count) * 5
+	offset := int(binary.LittleEndian.Uint32(data[offsetPos : offsetPos+4]))
+
+	if offset < 0 || offset >= len(data) {
+		return -1
 	}
 
 	return offset
@@ -405,36 +433,6 @@ func (dim *DIDIndexManager) readLocations(data []byte, offset int) []OpLocation 
 	return locations
 }
 
-// updateLRU updates LRU order
-func (dim *DIDIndexManager) updateLRU(shardNum uint8) {
-	// Remove from current position
-	for i, s := range dim.cacheOrder {
-		if s == shardNum {
-			dim.cacheOrder = append(dim.cacheOrder[:i], dim.cacheOrder[i+1:]...)
-			break
-		}
-	}
-
-	// Add to end (most recent)
-	dim.cacheOrder = append(dim.cacheOrder, shardNum)
-}
-
-// evictLRU removes least recently used shard
-func (dim *DIDIndexManager) evictLRU() {
-	if len(dim.cacheOrder) == 0 {
-		return
-	}
-
-	// Remove oldest
-	victimNum := dim.cacheOrder[0]
-	dim.cacheOrder = dim.cacheOrder[1:]
-
-	if victim, exists := dim.shardCache[victimNum]; exists {
-		dim.unmapShard(victim)
-		delete(dim.shardCache, victimNum)
-	}
-}
-
 // unmapShard unmaps and closes a shard
 func (dim *DIDIndexManager) unmapShard(shard *mmapShard) {
 	if shard.data != nil {
@@ -450,7 +448,7 @@ func (dim *DIDIndexManager) GetStats() map[string]interface{} {
 	dim.cacheMu.RLock()
 	defer dim.cacheMu.RUnlock()
 
-	cachedShards := make([]int, 0)
+	cachedShards := make([]int, 0, len(dim.shardCache))
 	for num := range dim.shardCache {
 		cachedShards = append(cachedShards, int(num))
 	}
@@ -462,7 +460,7 @@ func (dim *DIDIndexManager) GetStats() map[string]interface{} {
 		"shard_count":   dim.config.ShardCount,
 		"cached_shards": len(dim.shardCache),
 		"cache_limit":   dim.maxCache,
-		"cache_order":   cachedShards,
+		"cache_order":   cachedShards, // Still works, just sorted differently
 		"updated_at":    dim.config.UpdatedAt,
 	}
 }
@@ -530,50 +528,62 @@ func (dim *DIDIndexManager) DebugShard(shardNum uint8) error {
 	fmt.Printf("  Magic: %s\n", string(data[0:4]))
 	fmt.Printf("  Version: %d\n", binary.LittleEndian.Uint32(data[4:8]))
 	fmt.Printf("  Shard num: %d\n", data[8])
-	fmt.Printf("  Entry count: %d\n", binary.LittleEndian.Uint32(data[9:13]))
 
-	// Show first few entries
 	entryCount := binary.LittleEndian.Uint32(data[9:13])
+	fmt.Printf("  Entry count: %d\n", entryCount)
+
+	// Show offset table info
+	offsetTableSize := int(entryCount) * 4
+	dataStartOffset := 32 + offsetTableSize
+	fmt.Printf("  Offset table size: %d bytes\n", offsetTableSize)
+	fmt.Printf("  Data starts at: %d\n", dataStartOffset)
+
+	// Show first few entries using offset table
 	fmt.Printf("\n  First 5 entries:\n")
 
-	offset := 32
 	for i := 0; i < 5 && i < int(entryCount); i++ {
-		if offset+DID_IDENTIFIER_LEN+2 > len(data) {
+		offset := dim.getEntryOffset(data, i)
+		if offset < 0 || offset+DID_IDENTIFIER_LEN+2 > len(data) {
 			break
 		}
 
 		identifier := string(data[offset : offset+DID_IDENTIFIER_LEN])
-		offset += DID_IDENTIFIER_LEN
+		locCount := binary.LittleEndian.Uint16(data[offset+DID_IDENTIFIER_LEN : offset+DID_IDENTIFIER_LEN+2])
 
-		locCount := binary.LittleEndian.Uint16(data[offset : offset+2])
-		offset += 2
-
-		fmt.Printf("    %d. '%s' (%d locations)\n", i+1, identifier, locCount)
-
-		offset += int(locCount) * 4 // Skip locations
+		fmt.Printf("    %d. '%s' (%d locations) @ offset %d\n", i+1, identifier, locCount, offset)
 	}
 
 	return nil
 }
 
-// Add new method to DIDIndexManager
 func (dim *DIDIndexManager) TrimCache() {
 	dim.cacheMu.Lock()
 	defer dim.cacheMu.Unlock()
 
-	// Keep only most recent shard
-	if len(dim.shardCache) > 1 {
-		toEvict := len(dim.shardCache) - 1
-		for i := 0; i < toEvict; i++ {
-			if len(dim.cacheOrder) > 0 {
-				victimNum := dim.cacheOrder[0]
-				dim.cacheOrder = dim.cacheOrder[1:]
+	if len(dim.shardCache) <= 1 {
+		return
+	}
 
-				if victim, exists := dim.shardCache[victimNum]; exists {
-					dim.unmapShard(victim)
-					delete(dim.shardCache, victimNum)
-				}
-			}
+	// Find most recent shard to keep
+	var newestTime time.Time
+	var keepNum uint8
+	for num, shard := range dim.shardCache {
+		if shard.lastUsed.After(newestTime) {
+			newestTime = shard.lastUsed
+			keepNum = num
 		}
 	}
+
+	// Evict all except the newest
+	for num, shard := range dim.shardCache {
+		if num != keepNum {
+			dim.unmapShard(shard)
+			delete(dim.shardCache, num)
+		}
+	}
+}
+
+// GetConfig returns the index configuration (for version checking)
+func (dim *DIDIndexManager) GetConfig() *DIDIndexConfig {
+	return dim.config
 }

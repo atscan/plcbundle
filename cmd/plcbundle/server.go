@@ -31,8 +31,9 @@ var upgrader = websocket.Upgrader{
 var serverStartTime time.Time
 var syncInterval time.Duration
 var verboseMode bool
+var resolverEnabled bool
 
-func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syncMode bool, wsEnabled bool) {
+func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolverEnabled bool) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	index := mgr.GetIndex()
@@ -179,6 +180,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	}
 	fmt.Fprintf(w, "  Sync mode:     %v\n", syncMode)
 	fmt.Fprintf(w, "  WebSocket:     %v\n", wsEnabled)
+	fmt.Fprintf(w, "  Resolver:      %v\n", resolverEnabled)
 	fmt.Fprintf(w, "  Uptime:        %s\n", time.Since(serverStartTime).Round(time.Second))
 	fmt.Fprintf(w, "\n")
 
@@ -192,12 +194,24 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 	fmt.Fprintf(w, "  GET  /status              Server status\n")
 	fmt.Fprintf(w, "  GET  /mempool             Mempool operations (JSONL)\n")
 
-	fmt.Fprintf(w, "\nDID Resolution\n")
-	fmt.Fprintf(w, "━━━━━━━━━━━━━━\n")
-	fmt.Fprintf(w, "  GET  /:did                    DID Document (W3C format)\n")
-	fmt.Fprintf(w, "  GET  /:did/data               PLC State (raw format)\n")
-	fmt.Fprintf(w, "  GET  /:did/log/audit          Operation history\n")
-	fmt.Fprintf(w, "\n")
+	// Show DID resolution endpoints if enabled
+	if resolverEnabled {
+		fmt.Fprintf(w, "\nDID Resolution\n")
+		fmt.Fprintf(w, "━━━━━━━━━━━━━━\n")
+		fmt.Fprintf(w, "  GET  /:did                    DID Document (W3C format)\n")
+		fmt.Fprintf(w, "  GET  /:did/data               PLC State (raw format)\n")
+		fmt.Fprintf(w, "  GET  /:did/log/audit          Operation history\n")
+
+		// Show index stats
+		didStats := mgr.GetDIDIndexStats()
+		if didStats["exists"].(bool) {
+			fmt.Fprintf(w, "\n  Index: %s DIDs indexed\n",
+				formatNumber(int(didStats["total_dids"].(int64))))
+		} else {
+			fmt.Fprintf(w, "\n  ⚠️  Index: not built (will use slow scan)\n")
+		}
+		fmt.Fprintf(w, "\n")
+	}
 
 	if wsEnabled {
 		fmt.Fprintf(w, "\nWebSocket Endpoints\n")
@@ -297,7 +311,7 @@ func getWSURL(r *http.Request) string {
 	return fmt.Sprintf("%s://%s", scheme, r.Host)
 }
 
-func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.Handler {
+func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolverEnabled bool) http.Handler {
 	mux := http.NewServeMux()
 
 	// Root - ASCII art + info
@@ -311,7 +325,7 @@ func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.H
 		}
 
 		if path == "/" {
-			handleRoot(w, r, mgr, syncMode, wsEnabled)
+			handleRoot(w, r, mgr, syncMode, wsEnabled, resolverEnabled)
 			return
 		}
 
@@ -958,11 +972,10 @@ func handleBundleJSONL(w http.ResponseWriter, r *http.Request, mgr *bundle.Manag
 }
 
 // runSync continuously fetches new bundles in the background
-func runSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration, verbose bool) {
-	// Do initial sync immediately (could take hours if starting from scratch)
-	syncBundles(ctx, mgr, verbose)
+func runSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration, verbose bool, resolverEnabled bool) {
+	// Do initial sync
+	syncBundles(ctx, mgr, verbose, resolverEnabled)
 
-	// NOW start the periodic sync loop
 	log.Printf("[Sync] Starting sync loop (interval: %s)", interval)
 
 	ticker := time.NewTicker(interval)
@@ -981,7 +994,7 @@ func runSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration, v
 			return
 
 		case <-ticker.C:
-			syncBundles(ctx, mgr, verbose)
+			syncBundles(ctx, mgr, verbose, resolverEnabled)
 
 		case <-saveTicker.C:
 			stats := mgr.GetMempoolStats()
@@ -994,7 +1007,7 @@ func runSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration, v
 }
 
 // syncBundles fetches all available bundles
-func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool) {
+func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool, resolverEnabled bool) {
 	cycleStart := time.Now()
 
 	index := mgr.GetIndex()
@@ -1055,6 +1068,17 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool) {
 		if err := mgr.SaveBundle(ctx, b, !verbose); err != nil {
 			log.Printf("[Sync] Error saving bundle %06d: %v", b.BundleNumber, err)
 			break
+		}
+
+		if resolverEnabled {
+			didStats := mgr.GetDIDIndexStats()
+			if didStats["exists"].(bool) {
+				if err := mgr.UpdateDIDIndexForBundle(ctx, b); err != nil {
+					log.Printf("[Sync] ⚠️  Failed to update DID index: %v", err)
+				} else if verbose {
+					log.Printf("[Sync] ✓ DID index updated for bundle %06d", b.BundleNumber)
+				}
+			}
 		}
 
 		fetchedCount++

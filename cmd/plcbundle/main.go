@@ -1270,11 +1270,13 @@ func cmdServe() {
 	enableWebSocket := fs.Bool("websocket", false, "enable WebSocket endpoint for streaming records")
 	workers := fs.Int("workers", 4, "number of workers for auto-rebuild (0 = CPU count)")
 	verbose := fs.Bool("verbose", false, "verbose sync logging")
+	enableResolver := fs.Bool("resolver", false, "enable DID resolution endpoints (/<did>)") // ← NEW
 	fs.Parse(os.Args[2:])
 
 	serverStartTime = time.Now()
 	syncInterval = *syncIntervalFlag
 	verboseMode = *verbose
+	resolverEnabled = *enableResolver // ← NEW global
 
 	// Auto-detect CPU count
 	if *workers == 0 {
@@ -1293,19 +1295,15 @@ func cmdServe() {
 		os.Exit(1)
 	}
 
-	// Ensure directory exists
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Create manager with progress tracking
+	// Create manager config with progress tracking
 	config := bundle.DefaultConfig(dir)
 	config.RebuildWorkers = *workers
-
-	// Create a progress wrapper that tracks bytes
 	config.RebuildProgress = func(current, total int) {
-		// Simple progress logging every 100 bundles
 		if current%100 == 0 || current == total {
 			fmt.Printf("  Rebuild progress: %d/%d bundles (%.1f%%)    \r",
 				current, total, float64(current)/float64(total)*100)
@@ -1323,13 +1321,78 @@ func cmdServe() {
 	fmt.Printf("Starting plcbundle HTTP server...\n")
 	fmt.Printf("  Directory: %s\n", dir)
 
-	// NewManager now handles auto-rebuild automatically with progress
+	// NewManager handles auto-rebuild of bundle index
 	mgr, err := bundle.NewManager(config, client)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 	defer mgr.Close()
+
+	// ═══════════════════════════════════════════════════════════
+	// DID INDEX AUTO-BUILD LOGIC
+	// ═══════════════════════════════════════════════════════════
+	if *enableResolver {
+		index := mgr.GetIndex()
+		bundleCount := index.Count()
+		didStats := mgr.GetDIDIndexStats()
+
+		if bundleCount > 0 {
+			needsBuild := false
+			reason := ""
+
+			if !didStats["exists"].(bool) {
+				needsBuild = true
+				reason = "index does not exist"
+			} else {
+				// Check version
+				didIndex := mgr.GetDIDIndex()
+				if didIndex != nil {
+					config := didIndex.GetConfig() // ← Need to expose this
+					if config.Version != bundle.DIDINDEX_VERSION {
+						needsBuild = true
+						reason = fmt.Sprintf("index version outdated (v%d, need v%d)",
+							config.Version, bundle.DIDINDEX_VERSION)
+					} else {
+						// Check if index is behind bundles
+						lastBundle := index.GetLastBundle()
+						if lastBundle != nil && config.LastBundle < lastBundle.BundleNumber {
+							needsBuild = true
+							reason = fmt.Sprintf("index is behind (bundle %d, need %d)",
+								config.LastBundle, lastBundle.BundleNumber)
+						}
+					}
+				}
+			}
+
+			if needsBuild {
+				fmt.Printf("  DID Index: BUILDING (%s)\n", reason)
+				fmt.Printf("             This may take several minutes...\n\n")
+
+				buildStart := time.Now()
+				ctx := context.Background()
+
+				progress := NewProgressBar(bundleCount)
+				err := mgr.BuildDIDIndex(ctx, func(current, total int) {
+					progress.Set(current)
+				})
+				progress.Finish()
+
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "\n⚠️  Warning: Failed to build DID index: %v\n", err)
+					fmt.Fprintf(os.Stderr, "    Resolver will use slower fallback mode\n\n")
+				} else {
+					buildTime := time.Since(buildStart)
+					updatedStats := mgr.GetDIDIndexStats()
+					fmt.Printf("\n✓ DID index built in %s\n", buildTime.Round(time.Millisecond))
+					fmt.Printf("  Total DIDs: %s\n\n", formatNumber(int(updatedStats["total_dids"].(int64))))
+				}
+			} else {
+				fmt.Printf("  DID Index: ready (%s DIDs)\n",
+					formatNumber(int(didStats["total_dids"].(int64))))
+			}
+		}
+	}
 
 	addr := fmt.Sprintf("%s:%s", *host, *port)
 
@@ -1345,17 +1408,18 @@ func cmdServe() {
 
 	if *enableWebSocket {
 		wsScheme := "ws"
-		if strings.Contains(addr, "0.0.0.0") || strings.Contains(addr, "127.0.0.1") {
-			wsScheme = "ws"
-		}
 		fmt.Printf("  WebSocket: ENABLED (%s://%s/ws)\n", wsScheme, addr)
 	} else {
 		fmt.Printf("  WebSocket: disabled (use --websocket to enable)\n")
 	}
 
-	// Show current status
-	index := mgr.GetIndex()
-	bundleCount := index.Count()
+	if *enableResolver {
+		fmt.Printf("  Resolver: ENABLED (/<did> endpoints)\n")
+	} else {
+		fmt.Printf("  Resolver: disabled (use --resolver to enable)\n")
+	}
+
+	bundleCount := mgr.GetIndex().Count()
 	if bundleCount > 0 {
 		fmt.Printf("  Bundles available: %d\n", bundleCount)
 	} else {
@@ -1364,17 +1428,16 @@ func cmdServe() {
 
 	fmt.Printf("\nPress Ctrl+C to stop\n\n")
 
-	// Start sync if enabled
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	if *sync {
-		go runSync(ctx, mgr, syncInterval, *verbose)
+		go runSync(ctx, mgr, syncInterval, *verbose, *enableResolver) // ← Pass resolver flag
 	}
 
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      newServerHandler(mgr, *sync, *enableWebSocket),
+		Handler:      newServerHandler(mgr, *sync, *enableWebSocket, *enableResolver), // ← Pass resolver flag
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+
+	"tangled.org/atscan.net/plcbundle/plc"
 )
 
 const (
@@ -281,14 +283,16 @@ func (dim *DIDIndexManager) updateShard(shardNum uint8, newOps map[string][]OpLo
 	return dim.writeShard(shardNum, existingBuilder)
 }
 
-// parseShardData parses binary shard data into builder
+// parseShardData parses binary shard data into builder (v2 format only)
 func (dim *DIDIndexManager) parseShardData(data []byte, builder *ShardBuilder) error {
 	if len(data) < 32 {
 		return nil
 	}
 
-	entryCount := binary.LittleEndian.Uint32(data[9:13]) // Fixed offset
-	offset := 32
+	entryCount := binary.LittleEndian.Uint32(data[9:13])
+
+	// Skip offset table, start at first entry
+	offset := 32 + (int(entryCount) * 4)
 
 	for i := 0; i < int(entryCount); i++ {
 		if offset+DID_IDENTIFIER_LEN+2 > len(data) {
@@ -324,7 +328,7 @@ func (dim *DIDIndexManager) parseShardData(data []byte, builder *ShardBuilder) e
 	return nil
 }
 
-// writeShard writes a shard to disk in binary format
+// writeShard writes a shard to disk in binary format with offset table
 func (dim *DIDIndexManager) writeShard(shardNum uint8, builder *ShardBuilder) error {
 	// Sort identifiers for binary search
 	identifiers := make([]string, 0, len(builder.entries))
@@ -333,42 +337,55 @@ func (dim *DIDIndexManager) writeShard(shardNum uint8, builder *ShardBuilder) er
 	}
 	sort.Strings(identifiers)
 
-	// Calculate size
-	totalSize := 32 // Header
-	for _, id := range identifiers {
+	// Calculate entry offsets
+	offsetTable := make([]uint32, len(identifiers))
+	dataStartOffset := 32 + (len(identifiers) * 4) // Header + offset table
+
+	currentOffset := dataStartOffset
+	for i, id := range identifiers {
+		offsetTable[i] = uint32(currentOffset)
 		locations := builder.entries[id]
-		totalSize += DID_IDENTIFIER_LEN + 2 + (len(locations) * 5)
+		entrySize := DID_IDENTIFIER_LEN + 2 + (len(locations) * 5)
+		currentOffset += entrySize
 	}
+
+	totalSize := currentOffset
 
 	// Allocate buffer
 	buf := make([]byte, totalSize)
 
-	// Write header
+	// Write header (32 bytes)
 	copy(buf[0:4], DIDINDEX_MAGIC)
 	binary.LittleEndian.PutUint32(buf[4:8], DIDINDEX_VERSION)
 	buf[8] = shardNum
 	binary.LittleEndian.PutUint32(buf[9:13], uint32(len(identifiers)))
 	// Reserved bytes 13-32 stay zero
 
+	// Write offset table
+	offsetTableStart := 32
+	for i, offset := range offsetTable {
+		pos := offsetTableStart + (i * 4)
+		binary.LittleEndian.PutUint32(buf[pos:pos+4], offset)
+	}
+
 	// Write entries
-	offset := 32
-	for _, identifier := range identifiers {
+	for i, identifier := range identifiers {
+		offset := int(offsetTable[i])
 		locations := builder.entries[identifier]
 
 		// Write identifier (24 bytes)
 		copy(buf[offset:offset+DID_IDENTIFIER_LEN], identifier)
 		offset += DID_IDENTIFIER_LEN
 
-		// Write location count
+		// Write location count (2 bytes)
 		binary.LittleEndian.PutUint16(buf[offset:offset+2], uint16(len(locations)))
 		offset += 2
 
-		// Write locations
+		// Write locations (5 bytes each)
 		for _, loc := range locations {
 			binary.LittleEndian.PutUint16(buf[offset:offset+2], loc.Bundle)
 			binary.LittleEndian.PutUint16(buf[offset+2:offset+4], loc.Position)
 
-			// Write nullified flag
 			if loc.Nullified {
 				buf[offset+4] = 1
 			} else {
@@ -406,13 +423,41 @@ func (dim *DIDIndexManager) invalidateShard(shardNum uint8) {
 	if cached, exists := dim.shardCache[shardNum]; exists {
 		dim.unmapShard(cached)
 		delete(dim.shardCache, shardNum)
+	}
+}
 
-		// Remove from LRU order
-		for i, s := range dim.cacheOrder {
-			if s == shardNum {
-				dim.cacheOrder = append(dim.cacheOrder[:i], dim.cacheOrder[i+1:]...)
-				break
-			}
+// UpdateIndexForOperations adds operations from mempool (incremental, no bundle number yet)
+// These operations will be re-indexed with proper bundle number when the bundle is created
+func (dim *DIDIndexManager) UpdateIndexForOperations(ctx context.Context, ops []plc.PLCOperation, tempBundleNum int) error {
+	// Group operations by shard
+	shardOps := make(map[uint8]map[string][]OpLocation)
+
+	for pos, op := range ops {
+		identifier, err := extractDIDIdentifier(op.DID)
+		if err != nil {
+			continue
+		}
+
+		shardNum := dim.calculateShard(identifier)
+
+		if shardOps[shardNum] == nil {
+			shardOps[shardNum] = make(map[string][]OpLocation)
+		}
+
+		// Use tempBundleNum (0xFFFF = mempool marker) and actual position
+		shardOps[shardNum][identifier] = append(shardOps[shardNum][identifier], OpLocation{
+			Bundle:    uint16(tempBundleNum),
+			Position:  uint16(pos),
+			Nullified: op.IsNullified(),
+		})
+	}
+
+	// Update affected shards
+	for shardNum, newOps := range shardOps {
+		if err := dim.updateShard(shardNum, newOps); err != nil {
+			return fmt.Errorf("failed to update shard %02x: %w", shardNum, err)
 		}
 	}
+
+	return nil
 }
