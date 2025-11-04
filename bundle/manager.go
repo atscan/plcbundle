@@ -1345,7 +1345,6 @@ func (m *Manager) GetDIDIndex() *DIDIndexManager {
 // LoadOperation loads a single operation from a bundle efficiently
 // This is much faster than LoadBundle() when you only need one operation
 func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position int) (*plc.PLCOperation, error) {
-	m.logger.Printf("🔍 DEBUG: LoadOperation called (bundle=%d, position=%d)", bundleNumber, position)
 
 	// Validate bundle exists in index
 	_, err := m.index.GetBundle(bundleNumber)

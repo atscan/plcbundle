@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -398,32 +397,6 @@ func cmdClone() {
 	}
 
 	fmt.Printf("\n✓ Clone complete!\n")
-}
-
-// isEndOfDataError checks if the error indicates we've reached the end of available data
-func isEndOfDataError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	errMsg := err.Error()
-
-	// Check for insufficient operations error
-	if strings.Contains(errMsg, "insufficient operations") {
-		return true
-	}
-
-	// Check for "no more operations available"
-	if strings.Contains(errMsg, "no more operations available") {
-		return true
-	}
-
-	// Check for "reached latest data"
-	if strings.Contains(errMsg, "reached latest data") {
-		return true
-	}
-
-	return false
 }
 
 func cmdRebuild() {
@@ -1432,14 +1405,11 @@ func cmdServe() {
 		go runSync(ctx, mgr, syncInterval, *verbose, *enableResolver)
 	}
 
-	server := &http.Server{
-		Addr:         addr,
-		Handler:      newServerHandler(mgr, *sync, *enableWebSocket, *enableResolver),
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-	}
+	// Create web server
+	server := newServerHandler(mgr, *sync, *enableWebSocket, *enableResolver)
 
-	if err := server.ListenAndServe(); err != nil {
+	// Run server
+	if err := server.Run(addr); err != nil {
 		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 		os.Exit(1)
 	}
