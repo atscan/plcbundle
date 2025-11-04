@@ -297,7 +297,7 @@ func (m *Manager) UpdateDIDIndexForBundle(ctx context.Context, bundle *Bundle) e
 	return m.didIndex.UpdateIndexForBundle(ctx, bundle)
 }
 
-// GetDIDIndexStats returns DID index statistics
+// GetDIDIndexStats returns DID index statistics (including mempool)
 func (m *Manager) GetDIDIndexStats() map[string]interface{} {
 	if m.didIndex == nil {
 		return map[string]interface{}{
@@ -308,6 +308,22 @@ func (m *Manager) GetDIDIndexStats() map[string]interface{} {
 	stats := m.didIndex.GetStats()
 	stats["enabled"] = true
 	stats["exists"] = m.didIndex.Exists()
+
+	indexedDIDs := stats["total_dids"].(int64)
+
+	// Get unique DIDs from mempool
+	mempoolDIDCount := int64(0)
+	if m.mempool != nil {
+		mempoolStats := m.GetMempoolStats()
+		if didCount, ok := mempoolStats["did_count"].(int); ok {
+			mempoolDIDCount = int64(didCount)
+		}
+	}
+
+	// Add separate fields for clarity
+	stats["indexed_dids"] = indexedDIDs                 // DIDs in bundles
+	stats["mempool_dids"] = mempoolDIDCount             // DIDs in mempool
+	stats["total_dids"] = indexedDIDs + mempoolDIDCount // ← Combined total
 
 	return stats
 }

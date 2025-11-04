@@ -166,7 +166,20 @@ func handleRoot(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager, syn
 		fmt.Fprintf(w, "\nDID Index\n")
 		fmt.Fprintf(w, "━━━━━━━━━\n")
 		fmt.Fprintf(w, "  Status:        enabled\n")
-		fmt.Fprintf(w, "  Total DIDs:    %d\n", didStats["total_dids"])
+
+		indexedDIDs := didStats["indexed_dids"].(int64)
+		mempoolDIDs := didStats["mempool_dids"].(int64)
+		totalDIDs := didStats["total_dids"].(int64)
+
+		if mempoolDIDs > 0 {
+			fmt.Fprintf(w, "  Total DIDs:    %s (%s indexed + %s mempool)\n",
+				formatNumber(int(totalDIDs)),
+				formatNumber(int(indexedDIDs)),
+				formatNumber(int(mempoolDIDs)))
+		} else {
+			fmt.Fprintf(w, "  Total DIDs:    %s\n", formatNumber(int(totalDIDs)))
+		}
+
 		fmt.Fprintf(w, "  Cached shards: %d / %d\n",
 			didStats["cached_shards"], didStats["cache_limit"])
 		fmt.Fprintf(w, "\n")

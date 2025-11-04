@@ -128,10 +128,22 @@ func cmdDIDIndexStats() {
 		return
 	}
 
+	indexedDIDs := stats["indexed_dids"].(int64)
+	mempoolDIDs := stats["mempool_dids"].(int64)
+	totalDIDs := stats["total_dids"].(int64)
+
 	fmt.Printf("\nDID Index Statistics\n")
 	fmt.Printf("════════════════════\n\n")
 	fmt.Printf("  Location:      %s/.plcbundle/\n", dir)
-	fmt.Printf("  Total DIDs:    %s\n", formatNumber(int(stats["total_dids"].(int64))))
+
+	if mempoolDIDs > 0 {
+		fmt.Printf("  Indexed DIDs:  %s (in bundles)\n", formatNumber(int(indexedDIDs)))
+		fmt.Printf("  Mempool DIDs:  %s (not yet bundled)\n", formatNumber(int(mempoolDIDs)))
+		fmt.Printf("  Total DIDs:    %s\n", formatNumber(int(totalDIDs)))
+	} else {
+		fmt.Printf("  Total DIDs:    %s\n", formatNumber(int(totalDIDs)))
+	}
+
 	fmt.Printf("  Shard count:   %d\n", stats["shard_count"])
 	fmt.Printf("  Last bundle:   %06d\n", stats["last_bundle"])
 	fmt.Printf("  Updated:       %s\n", stats["updated_at"].(time.Time).Format("2006-01-02 15:04:05"))
