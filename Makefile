@@ -41,7 +41,7 @@ build:
 
 # Install the CLI tool globally
 install:
-	@echo "Installing $(BINARY_NAME) $(VERSION)..."
+	@echo "Installing $(BINARY_NAME) ..."
 	$(GOINSTALL) $(LDFLAGS) ./cmd/plcbundle
 
 # Run tests
