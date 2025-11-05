@@ -76,7 +76,13 @@ func BuildDIDState(did string, operations []PLCOperation) (*DIDState, error) {
 
 		// Initialize state on first operation
 		if state == nil {
-			state = &DIDState{DID: did}
+			state = &DIDState{
+				DID:                 did,
+				RotationKeys:        []string{},
+				VerificationMethods: make(map[string]string),
+				AlsoKnownAs:         []string{},
+				Services:            make(map[string]ServiceDefinition),
+			}
 		}
 
 		// Apply operation to state
@@ -132,6 +138,7 @@ func applyOperationToState(state *DIDState, opData map[string]interface{}) {
 
 	// Handle legacy handle format
 	if handle, ok := opData["handle"].(string); ok {
+		// Only set if alsoKnownAs is empty
 		if len(state.AlsoKnownAs) == 0 {
 			state.AlsoKnownAs = []string{"at://" + handle}
 		}
@@ -166,14 +173,16 @@ func applyOperationToState(state *DIDState, opData map[string]interface{}) {
 
 // StateToDIDDocument converts internal PLC state to W3C DID document format
 func StateToDIDDocument(state *DIDState) *DIDDocument {
-	// Detect key types to determine correct @context
-	contexts := []string{"https://www.w3.org/ns/did/v1"}
+	// Base contexts - ALWAYS include multikey (matches PLC directory behavior)
+	contexts := []string{
+		"https://www.w3.org/ns/did/v1",
+		"https://w3id.org/security/multikey/v1", // ← Always include this
+	}
 
-	hasMultikey := false
 	hasSecp256k1 := false
 	hasP256 := false
 
-	// Check verification method key types
+	// Check verification method key types for additional contexts
 	for _, didKey := range state.VerificationMethods {
 		keyType := detectKeyType(didKey)
 		switch keyType {
@@ -181,15 +190,10 @@ func StateToDIDDocument(state *DIDState) *DIDDocument {
 			hasSecp256k1 = true
 		case "p256":
 			hasP256 = true
-		default:
-			hasMultikey = true
 		}
 	}
 
-	// Add appropriate context URLs
-	if hasMultikey || hasSecp256k1 || hasP256 {
-		contexts = append(contexts, "https://w3id.org/security/multikey/v1")
-	}
+	// Add suite-specific contexts only if those key types are present
 	if hasSecp256k1 {
 		contexts = append(contexts, "https://w3id.org/security/suites/secp256k1-2019/v1")
 	}
@@ -198,9 +202,16 @@ func StateToDIDDocument(state *DIDState) *DIDDocument {
 	}
 
 	doc := &DIDDocument{
-		Context:     contexts,
-		ID:          state.DID,
-		AlsoKnownAs: state.AlsoKnownAs,
+		Context:            contexts,
+		ID:                 state.DID,
+		AlsoKnownAs:        []string{},             // ← Empty slice
+		VerificationMethod: []VerificationMethod{}, // ← Empty slice
+		Service:            []Service{},            // ← Empty slice
+	}
+
+	// Copy alsoKnownAs if present
+	if len(state.AlsoKnownAs) > 0 {
+		doc.AlsoKnownAs = state.AlsoKnownAs
 	}
 
 	// Convert services
@@ -212,7 +223,7 @@ func StateToDIDDocument(state *DIDState) *DIDDocument {
 		})
 	}
 
-	// Keep verification methods with full DID (they're correct):
+	// Keep verification methods with full DID
 	for id, didKey := range state.VerificationMethods {
 		doc.VerificationMethod = append(doc.VerificationMethod, VerificationMethod{
 			ID:                 state.DID + "#" + id,

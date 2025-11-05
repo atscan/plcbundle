@@ -97,7 +97,7 @@ func NewDIDIndexManager(baseDir string, logger Logger) *DIDIndexManager {
 		shardDir:          shardDir,
 		configPath:        configPath,
 		shardCache:        make(map[uint8]*mmapShard),
-		maxCache:          10, // Keep 20 hot shards in memory (~120 MB)
+		maxCache:          25, // Keep 20 hot shards in memory (~120 MB)
 		evictionThreshold: 25,
 		config:            config,
 		logger:            logger,
