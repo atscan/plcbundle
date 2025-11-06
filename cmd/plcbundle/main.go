@@ -1302,7 +1302,6 @@ func cmdServe() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	defer mgr.Close()
 
 	if *enableResolver {
 		index := mgr.GetIndex()
@@ -1364,6 +1363,19 @@ func cmdServe() {
 					formatNumber(int(didStats["total_dids"].(int64))))
 			}
 		}
+
+		// ✨ NEW: Verify index consistency on startup
+		if didStats["exists"].(bool) {
+			fmt.Printf("  Verifying index consistency...\n")
+
+			ctx := context.Background()
+			if err := mgr.GetDIDIndex().VerifyAndRepairIndex(ctx, mgr); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  Warning: Index verification/repair failed: %v\n", err)
+				fmt.Fprintf(os.Stderr, "    Recommend running: plcbundle index build --force\n\n")
+			} else {
+				fmt.Printf("  ✓ Index verified\n")
+			}
+		}
 	}
 
 	addr := fmt.Sprintf("%s:%s", *host, *port)
@@ -1401,18 +1413,49 @@ func cmdServe() {
 	fmt.Printf("\nPress Ctrl+C to stop\n\n")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+
+	// ✨ NEW: Graceful shutdown handler
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Fprintf(os.Stderr, "\n\n⚠️  Shutdown signal received...\n")
+		fmt.Fprintf(os.Stderr, "  Saving mempool...\n")
+
+		if err := mgr.SaveMempool(); err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ Failed to save mempool: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "  ✓ Mempool saved\n")
+		}
+
+		fmt.Fprintf(os.Stderr, "  Closing DID index...\n")
+		if err := mgr.GetDIDIndex().Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ Failed to close index: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "  ✓ Index closed\n")
+		}
+
+		fmt.Fprintf(os.Stderr, "  ✓ Shutdown complete\n")
+
+		cancel()
+		os.Exit(0)
+	}()
 
 	if *sync {
 		go runSync(ctx, mgr, syncInterval, *verbose, *enableResolver)
 	}
 
-	// Create web server
+	// Create and run server
 	server := newServerHandler(mgr, *sync, *enableWebSocket, *enableResolver)
 
-	// Run server
+	// Run server (blocks until error or shutdown)
 	if err := server.Run(addr); err != nil {
 		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
+
+		// Ensure cleanup on error
+		mgr.SaveMempool()
+		mgr.Close()
 		os.Exit(1)
 	}
 }

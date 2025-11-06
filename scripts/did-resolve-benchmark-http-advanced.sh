@@ -221,12 +221,17 @@ benchmark_one() {
     local size=$(echo "$output" | tail -1 | cut -d'|' -f2)
     local ms=$(( (end - start) / 1000000 ))
     
+    # Print URL if 500 error
+    if [[ "$status" == "500" ]]; then
+        echo -e "${RED}✗ 500 Error - URL: $url${NC}" >&2
+    fi
+    
     echo "$did,$status,$ms,$size"
 }
 
 export -f benchmark_one
 export -f get_url
-export ENDPOINT ROUTE
+export ENDPOINT ROUTE RED NC
 
 # Execute
 echo "  Running $NUM_REQUESTS requests (concurrency: $CONCURRENCY)..."

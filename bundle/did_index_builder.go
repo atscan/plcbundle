@@ -222,7 +222,7 @@ func (dim *DIDIndexManager) consolidateShard(shardNum uint8) (int64, error) {
 	return int64(len(builder.entries)), nil
 }
 
-// UpdateIndexForBundle adds operations from a new bundle (incremental)
+// UpdateIndexForBundle adds operations from a new bundle (incremental + ATOMIC)
 func (dim *DIDIndexManager) UpdateIndexForBundle(ctx context.Context, bundle *Bundle) error {
 	// Group operations by shard
 	shardOps := make(map[uint8]map[string][]OpLocation)
@@ -246,39 +246,45 @@ func (dim *DIDIndexManager) UpdateIndexForBundle(ctx context.Context, bundle *Bu
 		})
 	}
 
-	// Update affected shards (one at a time to save memory)
+	// ✨ PHASE 1: Write ALL shards to .tmp files FIRST (no commits yet)
+	tmpShards := make(map[uint8]string)
+	var deltaCount int64 // Track new DIDs added
+
 	for shardNum, newOps := range shardOps {
-		if err := dim.updateShard(shardNum, newOps); err != nil {
-			return fmt.Errorf("failed to update shard %02x: %w", shardNum, err)
+		tmpPath := filepath.Join(dim.shardDir, fmt.Sprintf("%02x.idx.tmp", shardNum))
+
+		// Update shard to temp file
+		addedCount, err := dim.updateShardToTemp(shardNum, newOps, tmpPath)
+		if err != nil {
+			// ❌ Cleanup all temp files on ANY error
+			dim.cleanupTempShards(tmpShards)
+			return fmt.Errorf("failed to prepare shard %02x: %w", shardNum, err)
 		}
+
+		tmpShards[shardNum] = tmpPath
+		deltaCount += addedCount
 	}
 
-	// Update config
+	// ✨ PHASE 2: ALL temp files ready - atomically commit ALL shards
+	for shardNum, tmpPath := range tmpShards {
+		finalPath := filepath.Join(dim.shardDir, fmt.Sprintf("%02x.idx", shardNum))
+
+		if err := os.Rename(tmpPath, finalPath); err != nil {
+			// This is bad - some shards committed, some didn't
+			// Log error but don't rollback (rename is usually atomic)
+			dim.logger.Printf("ERROR: Failed to commit shard %02x: %v", shardNum, err)
+			return fmt.Errorf("failed to commit shard %02x: %w", shardNum, err)
+		}
+
+		// Invalidate cache for updated shard
+		dim.invalidateShard(shardNum)
+	}
+
+	// ✨ PHASE 3: Update config ONLY after all shards committed
+	dim.config.TotalDIDs += deltaCount
 	dim.config.LastBundle = bundle.BundleNumber
+
 	return dim.saveIndexConfig()
-}
-
-// updateShard updates a single shard with new operations
-func (dim *DIDIndexManager) updateShard(shardNum uint8, newOps map[string][]OpLocation) error {
-	// Load existing shard data
-	shardPath := filepath.Join(dim.shardDir, fmt.Sprintf("%02x.idx", shardNum))
-
-	existingBuilder := newShardBuilder()
-
-	// Read existing shard if it exists
-	if data, err := os.ReadFile(shardPath); err == nil && len(data) > 32 {
-		if err := dim.parseShardData(data, existingBuilder); err != nil {
-			return err
-		}
-	}
-
-	// Merge new operations
-	for identifier, locations := range newOps {
-		existingBuilder.entries[identifier] = append(existingBuilder.entries[identifier], locations...)
-	}
-
-	// Write updated shard
-	return dim.writeShard(shardNum, existingBuilder)
 }
 
 // parseShardData parses binary shard data into builder (v2 format only)
@@ -328,80 +334,15 @@ func (dim *DIDIndexManager) parseShardData(data []byte, builder *ShardBuilder) e
 
 // writeShard writes a shard to disk in binary format with offset table
 func (dim *DIDIndexManager) writeShard(shardNum uint8, builder *ShardBuilder) error {
-	// Sort identifiers for binary search
-	identifiers := make([]string, 0, len(builder.entries))
-	for id := range builder.entries {
-		identifiers = append(identifiers, id)
-	}
-	sort.Strings(identifiers)
-
-	// Calculate entry offsets
-	offsetTable := make([]uint32, len(identifiers))
-	dataStartOffset := 32 + (len(identifiers) * 4) // Header + offset table
-
-	currentOffset := dataStartOffset
-	for i, id := range identifiers {
-		offsetTable[i] = uint32(currentOffset)
-		locations := builder.entries[id]
-		entrySize := DID_IDENTIFIER_LEN + 2 + (len(locations) * 5)
-		currentOffset += entrySize
-	}
-
-	totalSize := currentOffset
-
-	// Allocate buffer
-	buf := make([]byte, totalSize)
-
-	// Write header (32 bytes)
-	copy(buf[0:4], DIDINDEX_MAGIC)
-	binary.LittleEndian.PutUint32(buf[4:8], DIDINDEX_VERSION)
-	buf[8] = shardNum
-	binary.LittleEndian.PutUint32(buf[9:13], uint32(len(identifiers)))
-	// Reserved bytes 13-32 stay zero
-
-	// Write offset table
-	offsetTableStart := 32
-	for i, offset := range offsetTable {
-		pos := offsetTableStart + (i * 4)
-		binary.LittleEndian.PutUint32(buf[pos:pos+4], offset)
-	}
-
-	// Write entries
-	for i, identifier := range identifiers {
-		offset := int(offsetTable[i])
-		locations := builder.entries[identifier]
-
-		// Write identifier (24 bytes)
-		copy(buf[offset:offset+DID_IDENTIFIER_LEN], identifier)
-		offset += DID_IDENTIFIER_LEN
-
-		// Write location count (2 bytes)
-		binary.LittleEndian.PutUint16(buf[offset:offset+2], uint16(len(locations)))
-		offset += 2
-
-		// Write locations (5 bytes each)
-		for _, loc := range locations {
-			binary.LittleEndian.PutUint16(buf[offset:offset+2], loc.Bundle)
-			binary.LittleEndian.PutUint16(buf[offset+2:offset+4], loc.Position)
-
-			if loc.Nullified {
-				buf[offset+4] = 1
-			} else {
-				buf[offset+4] = 0
-			}
-
-			offset += 5
-		}
-	}
-
-	// Write atomically (tmp → rename)
+	// Write to temp file first
 	shardPath := filepath.Join(dim.shardDir, fmt.Sprintf("%02x.idx", shardNum))
 	tempPath := shardPath + ".tmp"
 
-	if err := os.WriteFile(tempPath, buf, 0644); err != nil {
+	if err := dim.writeShardToPath(tempPath, shardNum, builder); err != nil {
 		return err
 	}
 
+	// Atomic rename
 	if err := os.Rename(tempPath, shardPath); err != nil {
 		os.Remove(tempPath)
 		return err
@@ -422,4 +363,160 @@ func (dim *DIDIndexManager) invalidateShard(shardNum uint8) {
 		dim.unmapShard(cached)
 		delete(dim.shardCache, shardNum)
 	}
+}
+
+// updateShardToTemp updates a shard and writes to temp file
+// Returns: number of NEW DIDs added (delta count)
+func (dim *DIDIndexManager) updateShardToTemp(shardNum uint8, newOps map[string][]OpLocation, tmpPath string) (int64, error) {
+	shardPath := filepath.Join(dim.shardDir, fmt.Sprintf("%02x.idx", shardNum))
+
+	existingBuilder := newShardBuilder()
+
+	// Read existing shard if it exists
+	if data, err := os.ReadFile(shardPath); err == nil && len(data) > 32 {
+		if err := dim.parseShardData(data, existingBuilder); err != nil {
+			return 0, fmt.Errorf("failed to parse existing shard: %w", err)
+		}
+	}
+
+	beforeCount := len(existingBuilder.entries)
+
+	// Merge new operations
+	for identifier, locations := range newOps {
+		existingBuilder.entries[identifier] = append(existingBuilder.entries[identifier], locations...)
+	}
+
+	afterCount := len(existingBuilder.entries)
+	deltaCount := int64(afterCount - beforeCount)
+
+	// Write to TEMP file (not final location yet)
+	if err := dim.writeShardToPath(tmpPath, shardNum, existingBuilder); err != nil {
+		return 0, err
+	}
+
+	return deltaCount, nil
+}
+
+// writeShardToPath writes shard to a specific path (refactored from writeShard)
+func (dim *DIDIndexManager) writeShardToPath(path string, shardNum uint8, builder *ShardBuilder) error {
+	// Sort identifiers for binary search
+	identifiers := make([]string, 0, len(builder.entries))
+	for id := range builder.entries {
+		identifiers = append(identifiers, id)
+	}
+	sort.Strings(identifiers)
+
+	// Calculate entry offsets
+	offsetTable := make([]uint32, len(identifiers))
+	dataStartOffset := 32 + (len(identifiers) * 4)
+
+	currentOffset := dataStartOffset
+	for i, id := range identifiers {
+		offsetTable[i] = uint32(currentOffset)
+		locations := builder.entries[id]
+		entrySize := DID_IDENTIFIER_LEN + 2 + (len(locations) * 5)
+		currentOffset += entrySize
+	}
+
+	totalSize := currentOffset
+
+	// Allocate buffer
+	buf := make([]byte, totalSize)
+
+	// Write header (32 bytes)
+	copy(buf[0:4], DIDINDEX_MAGIC)
+	binary.LittleEndian.PutUint32(buf[4:8], DIDINDEX_VERSION)
+	buf[8] = shardNum
+	binary.LittleEndian.PutUint32(buf[9:13], uint32(len(identifiers)))
+
+	// Write offset table
+	offsetTableStart := 32
+	for i, offset := range offsetTable {
+		pos := offsetTableStart + (i * 4)
+		binary.LittleEndian.PutUint32(buf[pos:pos+4], offset)
+	}
+
+	// Write entries
+	for i, identifier := range identifiers {
+		offset := int(offsetTable[i])
+		locations := builder.entries[identifier]
+
+		copy(buf[offset:offset+DID_IDENTIFIER_LEN], identifier)
+		offset += DID_IDENTIFIER_LEN
+
+		binary.LittleEndian.PutUint16(buf[offset:offset+2], uint16(len(locations)))
+		offset += 2
+
+		for _, loc := range locations {
+			binary.LittleEndian.PutUint16(buf[offset:offset+2], loc.Bundle)
+			binary.LittleEndian.PutUint16(buf[offset+2:offset+4], loc.Position)
+
+			if loc.Nullified {
+				buf[offset+4] = 1
+			} else {
+				buf[offset+4] = 0
+			}
+
+			offset += 5
+		}
+	}
+
+	// ✨ Write directly to specified path (no rename needed)
+	return os.WriteFile(path, buf, 0644)
+}
+
+// cleanupTempShards removes all temporary shard files
+func (dim *DIDIndexManager) cleanupTempShards(tmpShards map[uint8]string) {
+	for shardNum, tmpPath := range tmpShards {
+		if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
+			dim.logger.Printf("Warning: failed to cleanup temp shard %02x: %v", shardNum, err)
+		}
+	}
+}
+
+// VerifyAndRepairIndex checks if index is consistent with bundles and repairs if needed
+func (dim *DIDIndexManager) VerifyAndRepairIndex(ctx context.Context, mgr *Manager) error {
+	bundles := mgr.index.GetBundles()
+	if len(bundles) == 0 {
+		return nil
+	}
+
+	lastBundleInRepo := bundles[len(bundles)-1].BundleNumber
+	lastBundleInIndex := dim.config.LastBundle
+
+	if lastBundleInIndex == lastBundleInRepo {
+		// Index claims to be up to date
+		return nil
+	}
+
+	if lastBundleInIndex > lastBundleInRepo {
+		dim.logger.Printf("⚠️  Warning: Index claims bundle %d but only %d bundles exist",
+			lastBundleInIndex, lastBundleInRepo)
+		dim.logger.Printf("    Rebuilding index...")
+		return dim.BuildIndexFromScratch(ctx, mgr, nil)
+	}
+
+	// Index is behind - update incrementally
+	dim.logger.Printf("Index is behind: has bundle %d, need %d",
+		lastBundleInIndex, lastBundleInRepo)
+	dim.logger.Printf("Updating index for %d missing bundles...",
+		lastBundleInRepo-lastBundleInIndex)
+
+	for bundleNum := lastBundleInIndex + 1; bundleNum <= lastBundleInRepo; bundleNum++ {
+		bundle, err := mgr.LoadBundle(ctx, bundleNum)
+		if err != nil {
+			return fmt.Errorf("failed to load bundle %d: %w", bundleNum, err)
+		}
+
+		if err := dim.UpdateIndexForBundle(ctx, bundle); err != nil {
+			return fmt.Errorf("failed to update index for bundle %d: %w", bundleNum, err)
+		}
+
+		if bundleNum%100 == 0 {
+			dim.logger.Printf("  Updated through bundle %d...", bundleNum)
+		}
+	}
+
+	dim.logger.Printf("✓ Index repaired: now at bundle %d", lastBundleInRepo)
+	return nil
 }
