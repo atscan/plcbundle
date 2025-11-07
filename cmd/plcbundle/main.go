@@ -19,7 +19,9 @@ import (
 	"github.com/goccy/go-json"
 
 	"tangled.org/atscan.net/plcbundle/internal/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/internal/didindex"
+	internalsync "tangled.org/atscan.net/plcbundle/internal/sync"
 	"tangled.org/atscan.net/plcbundle/internal/types"
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
@@ -276,7 +278,6 @@ func cmdClone() {
 		fs.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  plcbundle clone https://plc.example.com\n")
-		fmt.Fprintf(os.Stderr, "  plcbundle clone https://plc.example.com --workers 8\n")
 		os.Exit(1)
 	}
 
@@ -302,18 +303,17 @@ func cmdClone() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	// Set up progress bar with interrupt tracking
+	// Set up progress bar
 	var progress *ProgressBar
 	var progressMu sync.Mutex
-	progressActive := true // Track if progress should be updated
+	progressActive := true
 
 	go func() {
 		<-sigChan
-		// Stop progress updates immediately
 		progressMu.Lock()
 		progressActive = false
 		if progress != nil {
-			fmt.Println() // Move to new line after progress bar
+			fmt.Println()
 		}
 		progressMu.Unlock()
 
@@ -322,7 +322,7 @@ func cmdClone() {
 	}()
 
 	// Clone with library
-	result, err := mgr.CloneFromRemote(ctx, bundle.CloneOptions{
+	result, err := mgr.CloneFromRemote(ctx, internalsync.CloneOptions{
 		RemoteURL:    remoteURL,
 		Workers:      *workers,
 		SkipExisting: *skipExisting,
@@ -348,6 +348,9 @@ func cmdClone() {
 	// Ensure progress is stopped
 	progressMu.Lock()
 	progressActive = false
+	if progress != nil {
+		progress.Finish()
+	}
 	progressMu.Unlock()
 
 	if err != nil {
@@ -391,8 +394,7 @@ func cmdClone() {
 			}
 			fmt.Printf("%06d", num)
 		}
-		fmt.Printf("\n")
-		fmt.Printf("Re-run the clone command to retry failed bundles.\n")
+		fmt.Printf("\nRe-run the clone command to retry failed bundles.\n")
 		os.Exit(1)
 	}
 
@@ -513,7 +515,7 @@ func cmdRebuild() {
 		fmt.Printf("  Throughput (uncompressed): %.1f MB/s\n", uncompressedThroughput)
 	}
 
-	fmt.Printf("  Index file:         %s\n", filepath.Join(dir, bundle.INDEX_FILE))
+	fmt.Printf("  Index file:         %s\n", filepath.Join(dir, bundleindex.INDEX_FILE))
 
 	if len(result.MissingGaps) > 0 {
 		fmt.Printf("  ⚠️  Missing gaps:     %d bundles\n", len(result.MissingGaps))

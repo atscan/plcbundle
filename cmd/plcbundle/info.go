@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tangled.org/atscan.net/plcbundle/internal/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/internal/types"
 )
 
@@ -252,7 +253,7 @@ func showGeneralInfo(mgr *bundle.Manager, dir string, verbose bool, showBundles 
 	}
 }
 
-func visualizeTimeline(index *bundle.Index, verbose bool) {
+func visualizeTimeline(index *bundleindex.Index, verbose bool) {
 	bundles := index.GetBundles()
 	if len(bundles) == 0 {
 		return

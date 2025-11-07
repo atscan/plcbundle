@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/internal/types"
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
@@ -82,49 +83,6 @@ func (b *Bundle) Validate() error {
 		return fmt.Errorf("missing compressed hash")
 	}
 	return nil
-}
-
-// BundleMetadata represents metadata about a bundle
-type BundleMetadata struct {
-	BundleNumber   int       `json:"bundle_number"`
-	StartTime      time.Time `json:"start_time"`
-	EndTime        time.Time `json:"end_time"`
-	OperationCount int       `json:"operation_count"`
-	DIDCount       int       `json:"did_count"`
-
-	// Primary hash - cumulative chain hash (includes all history)
-	Hash string `json:"hash"`
-
-	// Content hash - SHA256 of bundle operations only
-	ContentHash string `json:"content_hash"`
-
-	// Parent chain hash - links to previous bundle
-	Parent string `json:"parent,omitempty"`
-
-	// File hashes and sizes
-	CompressedHash   string    `json:"compressed_hash"`
-	CompressedSize   int64     `json:"compressed_size"`
-	UncompressedSize int64     `json:"uncompressed_size"`
-	Cursor           string    `json:"cursor"`
-	CreatedAt        time.Time `json:"created_at"`
-}
-
-func (b *Bundle) ToMetadata() *BundleMetadata {
-	return &BundleMetadata{
-		BundleNumber:     b.BundleNumber,
-		StartTime:        b.StartTime,
-		EndTime:          b.EndTime,
-		OperationCount:   b.OperationCount(),
-		DIDCount:         b.DIDCount,
-		Hash:             b.Hash,        // Chain hash
-		ContentHash:      b.ContentHash, // Content hash
-		Parent:           b.Parent,
-		CompressedHash:   b.CompressedHash,
-		CompressedSize:   b.CompressedSize,
-		UncompressedSize: b.UncompressedSize,
-		Cursor:           b.Cursor,
-		CreatedAt:        b.CreatedAt,
-	}
 }
 
 // VerificationResult contains the result of bundle verification
@@ -209,4 +167,22 @@ type PLCOperationWithLocation struct {
 	Operation plcclient.PLCOperation
 	Bundle    int
 	Position  int
+}
+
+func (b *Bundle) ToMetadata() *bundleindex.BundleMetadata {
+	return &bundleindex.BundleMetadata{
+		BundleNumber:     b.BundleNumber,
+		StartTime:        b.StartTime,
+		EndTime:          b.EndTime,
+		OperationCount:   b.OperationCount(),
+		DIDCount:         b.DIDCount,
+		Hash:             b.Hash,        // Chain hash
+		ContentHash:      b.ContentHash, // Content hash
+		Parent:           b.Parent,
+		CompressedHash:   b.CompressedHash,
+		CompressedSize:   b.CompressedSize,
+		UncompressedSize: b.UncompressedSize,
+		Cursor:           b.Cursor,
+		CreatedAt:        b.CreatedAt,
+	}
 }

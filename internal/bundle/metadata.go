@@ -5,11 +5,12 @@ import (
 	"os"
 	"time"
 
+	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // CalculateBundleMetadata calculates complete metadata for a bundle
-func (m *Manager) CalculateBundleMetadata(bundleNumber int, path string, operations []plcclient.PLCOperation, parent string, cursor string) (*BundleMetadata, error) {
+func (m *Manager) CalculateBundleMetadata(bundleNumber int, path string, operations []plcclient.PLCOperation, parent string, cursor string) (*bundleindex.BundleMetadata, error) {
 	if len(operations) == 0 {
 		return nil, fmt.Errorf("bundle is empty")
 	}
@@ -39,7 +40,7 @@ func (m *Manager) CalculateBundleMetadata(bundleNumber int, path string, operati
 	// Calculate chain hash
 	chainHash := m.operations.CalculateChainHash(parent, contentHash)
 
-	return &BundleMetadata{
+	return &bundleindex.BundleMetadata{
 		BundleNumber:     bundleNumber,
 		StartTime:        operations[0].CreatedAt,
 		EndTime:          operations[len(operations)-1].CreatedAt,
@@ -57,7 +58,7 @@ func (m *Manager) CalculateBundleMetadata(bundleNumber int, path string, operati
 }
 
 // CalculateBundleMetadataFast calculates metadata quickly without chain hash
-func (m *Manager) CalculateBundleMetadataFast(bundleNumber int, path string, operations []plcclient.PLCOperation, cursor string) (*BundleMetadata, error) {
+func (m *Manager) CalculateBundleMetadataFast(bundleNumber int, path string, operations []plcclient.PLCOperation, cursor string) (*bundleindex.BundleMetadata, error) {
 	if len(operations) == 0 {
 		return nil, fmt.Errorf("bundle is empty")
 	}
@@ -71,7 +72,7 @@ func (m *Manager) CalculateBundleMetadataFast(bundleNumber int, path string, ope
 	// Extract unique DIDs
 	dids := m.operations.ExtractUniqueDIDs(operations)
 
-	return &BundleMetadata{
+	return &bundleindex.BundleMetadata{
 		BundleNumber:     bundleNumber,
 		StartTime:        operations[0].CreatedAt,
 		EndTime:          operations[len(operations)-1].CreatedAt,

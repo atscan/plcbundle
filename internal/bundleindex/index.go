@@ -1,4 +1,4 @@
-package bundle
+package bundleindex
 
 import (
 	"fmt"
@@ -169,33 +169,6 @@ func (idx *Index) Count() int {
 	return len(idx.Bundles)
 }
 
-// FindGaps finds missing bundle numbers in the sequence
-func (idx *Index) FindGaps() []int {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-
-	if len(idx.Bundles) == 0 {
-		return nil
-	}
-
-	var gaps []int
-	first := idx.Bundles[0].BundleNumber
-	last := idx.Bundles[len(idx.Bundles)-1].BundleNumber
-
-	bundleMap := make(map[int]bool)
-	for _, meta := range idx.Bundles {
-		bundleMap[meta.BundleNumber] = true
-	}
-
-	for i := first; i <= last; i++ {
-		if !bundleMap[i] {
-			gaps = append(gaps, i)
-		}
-	}
-
-	return gaps
-}
-
 // GetStats returns statistics about the index
 func (idx *Index) GetStats() map[string]interface{} {
 	idx.mu.RLock()
@@ -279,4 +252,31 @@ func (idx *Index) Clear() {
 	idx.LastBundle = 0
 	idx.TotalSize = 0
 	idx.UpdatedAt = time.Now().UTC()
+}
+
+// FindGaps finds missing bundle numbers in the sequence
+func (idx *Index) FindGaps() []int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	if len(idx.Bundles) == 0 {
+		return nil
+	}
+
+	var gaps []int
+	first := idx.Bundles[0].BundleNumber
+	last := idx.Bundles[len(idx.Bundles)-1].BundleNumber
+
+	bundleMap := make(map[int]bool)
+	for _, meta := range idx.Bundles {
+		bundleMap[meta.BundleNumber] = true
+	}
+
+	for i := first; i <= last; i++ {
+		if !bundleMap[i] {
+			gaps = append(gaps, i)
+		}
+	}
+
+	return gaps
 }

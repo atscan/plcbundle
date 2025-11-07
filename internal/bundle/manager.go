@@ -9,14 +9,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
+	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/internal/didindex"
 	"tangled.org/atscan.net/plcbundle/internal/mempool"
 	"tangled.org/atscan.net/plcbundle/internal/storage"
+	internalsync "tangled.org/atscan.net/plcbundle/internal/sync"
 	"tangled.org/atscan.net/plcbundle/internal/types"
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
@@ -36,12 +36,15 @@ func (d defaultLogger) Println(v ...interface{}) {
 type Manager struct {
 	config     *Config
 	operations *storage.Operations
-	index      *Index
+	index      *bundleindex.Index
 	indexPath  string
 	plcClient  *plcclient.Client
 	logger     types.Logger
 	mempool    *mempool.Mempool
-	didIndex   *didindex.Manager // Updated type
+	didIndex   *didindex.Manager
+
+	syncer *internalsync.Fetcher
+	cloner *internalsync.Cloner
 
 	bundleCache  map[int]*Bundle
 	cacheMu      sync.RWMutex
@@ -76,8 +79,8 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 	}
 
 	// Load or create index
-	indexPath := filepath.Join(config.BundleDir, INDEX_FILE)
-	index, err := LoadIndex(indexPath)
+	indexPath := filepath.Join(config.BundleDir, bundleindex.INDEX_FILE)
+	index, err := bundleindex.LoadIndex(indexPath)
 
 	// Check for bundle files in directory
 	bundleFiles, _ := filepath.Glob(filepath.Join(config.BundleDir, "*.jsonl.zst"))
@@ -102,7 +105,7 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 		} else {
 			// No index and no bundles - create fresh index
 			config.Logger.Printf("Creating new index at %s", indexPath)
-			index = NewIndex(origin)
+			index = bundleindex.NewIndex(origin)
 			if err := index.Save(indexPath); err != nil {
 				return nil, fmt.Errorf("failed to save new index: %w", err)
 			}
@@ -174,7 +177,7 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 		tempMgr := &Manager{
 			config:     config,
 			operations: ops,
-			index:      NewIndex("test-origin"),
+			index:      bundleindex.NewIndex("test-origin"),
 			indexPath:  indexPath,
 			logger:     config.Logger,
 		}
@@ -220,7 +223,7 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 		elapsed := time.Since(start)
 
 		// Reload the rebuilt index
-		index, err = LoadIndex(indexPath)
+		index, err = bundleindex.LoadIndex(indexPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load rebuilt index: %w", err)
 		}
@@ -250,7 +253,7 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 	}
 
 	if index == nil {
-		index = NewIndex("test-origin")
+		index = bundleindex.NewIndex("test-origin")
 	}
 
 	// Initialize mempool for next bundle
@@ -271,6 +274,10 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 	// Initialize DID index manager
 	didIndex := didindex.NewManager(config.BundleDir, config.Logger)
 
+	// Initialize sync components
+	fetcher := internalsync.NewFetcher(plcClient, ops, config.Logger)
+	cloner := internalsync.NewCloner(ops, config.BundleDir, config.Logger)
+
 	return &Manager{
 		config:       config,
 		operations:   ops,
@@ -282,6 +289,8 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 		didIndex:     didIndex, // Updated type
 		bundleCache:  make(map[int]*Bundle),
 		maxCacheSize: 2,
+		syncer:       fetcher,
+		cloner:       cloner,
 	}, nil
 }
 
@@ -304,7 +313,7 @@ func (m *Manager) Close() {
 }
 
 // GetIndex returns the current index
-func (m *Manager) GetIndex() *Index {
+func (m *Manager) GetIndex() *bundleindex.Index {
 	return m.index
 }
 
@@ -469,181 +478,6 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) er
 	return nil
 }
 
-// FetchNextBundle fetches the next bundle from PLC directory
-func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, error) {
-	if m.plcClient == nil {
-		return nil, fmt.Errorf("PLC client not configured")
-	}
-
-	lastBundle := m.index.GetLastBundle()
-	nextBundleNum := 1
-	var afterTime string
-	var prevBoundaryCIDs map[string]bool
-	var prevBundleHash string
-
-	if lastBundle != nil {
-		nextBundleNum = lastBundle.BundleNumber + 1
-		afterTime = lastBundle.EndTime.Format(time.RFC3339Nano)
-		prevBundleHash = lastBundle.Hash
-
-		prevBundle, err := m.LoadBundle(ctx, lastBundle.BundleNumber)
-		if err == nil {
-			_, prevBoundaryCIDs = m.operations.GetBoundaryCIDs(prevBundle.Operations)
-		}
-	}
-
-	if !quiet {
-		m.logger.Printf("Preparing bundle %06d (mempool: %d ops)...", nextBundleNum, m.mempool.Count())
-	}
-
-	for m.mempool.Count() < types.BUNDLE_SIZE {
-		if !quiet {
-			m.logger.Printf("Fetching more operations (have %d/%d)...", m.mempool.Count(), types.BUNDLE_SIZE)
-		}
-
-		err := m.fetchToMempool(ctx, afterTime, prevBoundaryCIDs, types.BUNDLE_SIZE-m.mempool.Count(), quiet)
-		if err != nil {
-			if m.mempool.Count() >= types.BUNDLE_SIZE {
-				break
-			}
-			m.mempool.Save()
-			return nil, fmt.Errorf("insufficient operations: have %d, need %d", m.mempool.Count(), types.BUNDLE_SIZE)
-		}
-
-		if m.mempool.Count() < types.BUNDLE_SIZE {
-			m.mempool.Save()
-			return nil, fmt.Errorf("insufficient operations: have %d, need %d (no more available)", m.mempool.Count(), types.BUNDLE_SIZE)
-		}
-	}
-
-	if !quiet {
-		m.logger.Printf("Creating bundle %06d from mempool", nextBundleNum)
-	}
-	operations, err := m.mempool.Take(types.BUNDLE_SIZE)
-	if err != nil {
-		m.mempool.Save()
-		return nil, fmt.Errorf("failed to take operations from mempool: %w", err)
-	}
-
-	bundle := m.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash)
-
-	if err := m.mempool.Save(); err != nil {
-		m.logger.Printf("Warning: failed to save mempool: %v", err)
-	}
-
-	if !quiet {
-		m.logger.Printf("✓ Bundle %06d ready (%d ops, mempool: %d remaining)",
-			nextBundleNum, len(operations), m.mempool.Count())
-	}
-
-	return bundle, nil
-}
-
-// fetchToMempool fetches operations and adds them to mempool
-func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoundaryCIDs map[string]bool, target int, quiet bool) error {
-	seenCIDs := make(map[string]bool)
-
-	// Mark previous boundary CIDs as seen
-	for cid := range prevBoundaryCIDs {
-		seenCIDs[cid] = true
-	}
-
-	// Use last mempool time if available
-	if m.mempool.Count() > 0 {
-		afterTime = m.mempool.GetLastTime()
-		if !quiet {
-			m.logger.Printf("  Continuing from mempool cursor: %s", afterTime)
-		}
-	}
-
-	currentAfter := afterTime
-	maxFetches := 20
-	totalAdded := 0
-	startingCount := m.mempool.Count()
-
-	for fetchNum := 0; fetchNum < maxFetches; fetchNum++ {
-		// Calculate batch size
-		remaining := target - (m.mempool.Count() - startingCount)
-		if remaining <= 0 {
-			break
-		}
-
-		batchSize := 1000
-		if remaining < 500 {
-			batchSize = 200
-		}
-
-		if !quiet {
-			m.logger.Printf("  Fetch #%d: requesting %d operations (mempool: %d)",
-				fetchNum+1, batchSize, m.mempool.Count())
-		}
-
-		batch, err := m.plcClient.Export(ctx, plcclient.ExportOptions{
-			Count: batchSize,
-			After: currentAfter,
-		})
-		if err != nil {
-			m.mempool.Save()
-			return fmt.Errorf("export failed: %w", err)
-		}
-
-		if len(batch) == 0 {
-			if !quiet {
-				m.logger.Printf("  No more operations available from PLC")
-			}
-			m.mempool.Save()
-			if totalAdded > 0 {
-				return nil
-			}
-			return fmt.Errorf("no operations available")
-		}
-
-		// Deduplicate
-		uniqueOps := make([]plcclient.PLCOperation, 0)
-		for _, op := range batch {
-			if !seenCIDs[op.CID] {
-				seenCIDs[op.CID] = true
-				uniqueOps = append(uniqueOps, op)
-			}
-		}
-
-		if len(uniqueOps) > 0 {
-			added, err := m.mempool.Add(uniqueOps)
-			if err != nil {
-				m.mempool.Save()
-				return fmt.Errorf("chronological validation failed: %w", err)
-			}
-
-			totalAdded += added
-			if !quiet {
-				m.logger.Printf("  Added %d new operations (mempool now: %d)", added, m.mempool.Count())
-			}
-		}
-
-		// Update cursor
-		if len(batch) > 0 {
-			currentAfter = batch[len(batch)-1].CreatedAt.Format(time.RFC3339Nano)
-		}
-
-		// Stop if we got less than requested
-		if len(batch) < batchSize {
-			if !quiet {
-				m.logger.Printf("  Received incomplete batch (%d/%d), caught up to latest", len(batch), batchSize)
-			}
-			break
-		}
-	}
-
-	if totalAdded > 0 {
-		if !quiet {
-			m.logger.Printf("✓ Fetch complete: added %d operations (mempool: %d)", totalAdded, m.mempool.Count())
-		}
-		return nil
-	}
-
-	return fmt.Errorf("no new operations added")
-}
-
 // GetMempoolStats returns mempool statistics
 func (m *Manager) GetMempoolStats() map[string]interface{} {
 	return m.mempool.Stats()
@@ -730,347 +564,6 @@ func (m *Manager) VerifyBundle(ctx context.Context, bundleNumber int) (*Verifica
 	return result, nil
 }
 
-// VerifyChain verifies the entire bundle chain
-func (m *Manager) VerifyChain(ctx context.Context) (*ChainVerificationResult, error) {
-	result := &ChainVerificationResult{
-		VerifiedBundles: make([]int, 0),
-	}
-
-	bundles := m.index.GetBundles()
-	if len(bundles) == 0 {
-		result.Valid = true
-		return result, nil
-	}
-
-	result.ChainLength = len(bundles)
-
-	for i, meta := range bundles {
-		// Verify file hash
-		vr, err := m.VerifyBundle(ctx, meta.BundleNumber)
-		if err != nil || !vr.Valid {
-			result.Error = fmt.Sprintf("Bundle %d hash verification failed", meta.BundleNumber)
-			result.BrokenAt = meta.BundleNumber
-			return result, nil
-		}
-
-		// Verify chain link
-		if i > 0 {
-			prevMeta := bundles[i-1]
-
-			// Check parent reference
-			if meta.Parent != prevMeta.Hash {
-				result.Error = fmt.Sprintf("Chain broken at bundle %d: parent mismatch", meta.BundleNumber)
-				result.BrokenAt = meta.BundleNumber
-				return result, nil
-			}
-
-			// Verify chain hash calculation
-			expectedHash := m.operations.CalculateChainHash(prevMeta.Hash, meta.ContentHash)
-			if meta.Hash != expectedHash {
-				result.Error = fmt.Sprintf("Chain broken at bundle %d: hash mismatch", meta.BundleNumber)
-				result.BrokenAt = meta.BundleNumber
-				return result, nil
-			}
-		}
-
-		result.VerifiedBundles = append(result.VerifiedBundles, meta.BundleNumber)
-	}
-
-	result.Valid = true
-	return result, nil
-}
-
-// ScanDirectory scans the bundle directory and rebuilds the index
-func (m *Manager) ScanDirectory() (*DirectoryScanResult, error) {
-	result := &DirectoryScanResult{
-		BundleDir: m.config.BundleDir,
-	}
-
-	m.logger.Printf("Scanning directory: %s", m.config.BundleDir)
-
-	// Find all bundle files
-	files, err := filepath.Glob(filepath.Join(m.config.BundleDir, "*.jsonl.zst"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan directory: %w", err)
-	}
-	files = filterBundleFiles(files)
-
-	if len(files) == 0 {
-		m.logger.Printf("No bundle files found")
-		return result, nil
-	}
-
-	// Parse bundle numbers
-	var bundleNumbers []int
-	for _, file := range files {
-		base := filepath.Base(file)
-		numStr := strings.TrimSuffix(base, ".jsonl.zst")
-		num, err := strconv.Atoi(numStr)
-		if err != nil {
-			m.logger.Printf("Warning: skipping invalid filename: %s", base)
-			continue
-		}
-		bundleNumbers = append(bundleNumbers, num)
-	}
-
-	sort.Ints(bundleNumbers)
-
-	result.BundleCount = len(bundleNumbers)
-	if len(bundleNumbers) > 0 {
-		result.FirstBundle = bundleNumbers[0]
-		result.LastBundle = bundleNumbers[len(bundleNumbers)-1]
-	}
-
-	// Find gaps
-	if len(bundleNumbers) > 1 {
-		for i := result.FirstBundle; i <= result.LastBundle; i++ {
-			found := false
-			for _, num := range bundleNumbers {
-				if num == i {
-					found = true
-					break
-				}
-			}
-			if !found {
-				result.MissingGaps = append(result.MissingGaps, i)
-			}
-		}
-	}
-
-	m.logger.Printf("Found %d bundles (gaps: %d)", result.BundleCount, len(result.MissingGaps))
-
-	// Load each bundle and rebuild index
-	var newMetadata []*BundleMetadata
-	var totalSize int64
-
-	for _, num := range bundleNumbers {
-		path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", num))
-
-		// Load bundle
-		ops, err := m.operations.LoadBundle(path)
-		if err != nil {
-			m.logger.Printf("Warning: failed to load bundle %d: %v", num, err)
-			continue
-		}
-
-		// Get file size
-		size, _ := m.operations.GetFileSize(path)
-		totalSize += size
-
-		// Calculate parent and cursor from previous bundle
-		var parent string
-		var cursor string
-		if num > 1 && len(newMetadata) > 0 {
-			prevMeta := newMetadata[len(newMetadata)-1]
-			parent = prevMeta.Hash
-			cursor = prevMeta.EndTime.Format(time.RFC3339Nano)
-		}
-
-		// Use the ONE method for metadata calculation
-		meta, err := m.CalculateBundleMetadata(num, path, ops, parent, cursor)
-		if err != nil {
-			m.logger.Printf("Warning: failed to calculate metadata for bundle %d: %v", num, err)
-			continue
-		}
-
-		newMetadata = append(newMetadata, meta)
-
-		m.logger.Printf("  Scanned bundle %06d: %d ops, %d DIDs", num, len(ops), meta.DIDCount)
-	}
-
-	result.TotalSize = totalSize
-
-	// Rebuild index
-	m.index.Rebuild(newMetadata)
-
-	// Save index
-	if err := m.SaveIndex(); err != nil {
-		return nil, fmt.Errorf("failed to save index: %w", err)
-	}
-
-	result.IndexUpdated = true
-
-	m.logger.Printf("Index rebuilt with %d bundles", len(newMetadata))
-
-	return result, nil
-}
-
-// ScanDirectoryParallel scans the bundle directory in parallel and rebuilds the index
-func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(current, total int, bytesProcessed int64)) (*DirectoryScanResult, error) {
-	result := &DirectoryScanResult{
-		BundleDir: m.config.BundleDir,
-	}
-
-	m.logger.Printf("Scanning directory (parallel, %d workers): %s", workers, m.config.BundleDir)
-
-	// Find all bundle files
-	files, err := filepath.Glob(filepath.Join(m.config.BundleDir, "*.jsonl.zst"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan directory: %w", err)
-	}
-	files = filterBundleFiles(files)
-
-	if len(files) == 0 {
-		m.logger.Printf("No bundle files found")
-		return result, nil
-	}
-
-	// Parse bundle numbers
-	var bundleNumbers []int
-	for _, file := range files {
-		base := filepath.Base(file)
-		numStr := strings.TrimSuffix(base, ".jsonl.zst")
-		num, err := strconv.Atoi(numStr)
-		if err != nil {
-			m.logger.Printf("Warning: skipping invalid filename: %s", base)
-			continue
-		}
-		bundleNumbers = append(bundleNumbers, num)
-	}
-
-	sort.Ints(bundleNumbers)
-
-	result.BundleCount = len(bundleNumbers)
-	if len(bundleNumbers) > 0 {
-		result.FirstBundle = bundleNumbers[0]
-		result.LastBundle = bundleNumbers[len(bundleNumbers)-1]
-	}
-
-	// Find gaps
-	if len(bundleNumbers) > 1 {
-		for i := result.FirstBundle; i <= result.LastBundle; i++ {
-			found := false
-			for _, num := range bundleNumbers {
-				if num == i {
-					found = true
-					break
-				}
-			}
-			if !found {
-				result.MissingGaps = append(result.MissingGaps, i)
-			}
-		}
-	}
-
-	m.logger.Printf("Found %d bundles (gaps: %d)", result.BundleCount, len(result.MissingGaps))
-
-	// Process bundles in parallel
-	type bundleResult struct {
-		index int
-		meta  *BundleMetadata
-		err   error
-	}
-
-	jobs := make(chan int, len(bundleNumbers))
-	results := make(chan bundleResult, len(bundleNumbers))
-
-	// Start workers
-	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for num := range jobs {
-				path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", num))
-
-				// Load and process bundle
-				ops, err := m.operations.LoadBundle(path)
-				if err != nil {
-					results <- bundleResult{index: num, err: err}
-					continue
-				}
-
-				// Use the FAST method (cursor will be set later in sequential phase)
-				meta, err := m.CalculateBundleMetadataFast(num, path, ops, "")
-				if err != nil {
-					results <- bundleResult{index: num, err: err}
-					continue
-				}
-
-				results <- bundleResult{index: num, meta: meta}
-			}
-		}()
-	}
-
-	// Send jobs
-	for _, num := range bundleNumbers {
-		jobs <- num
-	}
-	close(jobs)
-
-	// Wait for all workers to finish
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// Collect results
-	metadataMap := make(map[int]*BundleMetadata)
-	var totalSize int64
-	var totalUncompressed int64
-	processed := 0
-
-	for result := range results {
-		processed++
-
-		// Update progress WITH bytes
-		if progressCallback != nil {
-			if result.meta != nil {
-				totalUncompressed += result.meta.UncompressedSize
-			}
-			progressCallback(processed, len(bundleNumbers), totalUncompressed)
-		}
-
-		if result.err != nil {
-			m.logger.Printf("Warning: failed to process bundle %d: %v", result.index, result.err)
-			continue
-		}
-		metadataMap[result.index] = result.meta
-		totalSize += result.meta.CompressedSize
-	}
-
-	// Build ordered metadata slice and calculate chain hashes
-	var newMetadata []*BundleMetadata
-	var parent string
-
-	for i, num := range bundleNumbers {
-		meta, ok := metadataMap[num]
-		if !ok {
-			continue
-		}
-
-		// Set cursor from previous bundle's EndTime
-		if i > 0 && len(newMetadata) > 0 {
-			prevMeta := newMetadata[len(newMetadata)-1]
-			meta.Cursor = prevMeta.EndTime.Format(time.RFC3339Nano)
-		}
-
-		// Calculate chain hash (must be done sequentially)
-		meta.Hash = m.operations.CalculateChainHash(parent, meta.ContentHash)
-		meta.Parent = parent
-
-		newMetadata = append(newMetadata, meta)
-		parent = meta.Hash
-	}
-
-	result.TotalSize = totalSize
-	result.TotalUncompressed = totalUncompressed
-
-	// Rebuild index
-	m.index.Rebuild(newMetadata)
-
-	// Save index
-	if err := m.SaveIndex(); err != nil {
-		return nil, fmt.Errorf("failed to save index: %w", err)
-	}
-
-	result.IndexUpdated = true
-
-	m.logger.Printf("Index rebuilt with %d bundles", len(newMetadata))
-
-	return result, nil
-}
-
 // GetInfo returns information about the bundle manager
 func (m *Manager) GetInfo() map[string]interface{} {
 	stats := m.index.GetStats()
@@ -1128,50 +621,6 @@ func (m *Manager) ExportOperations(ctx context.Context, afterTime time.Time, cou
 	}
 
 	return result, nil
-}
-
-// ScanBundle scans a single bundle file and returns its metadata
-func (m *Manager) ScanBundle(path string, bundleNumber int) (*BundleMetadata, error) {
-	// Load bundle file
-	operations, err := m.operations.LoadBundle(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load bundle: %w", err)
-	}
-
-	if len(operations) == 0 {
-		return nil, fmt.Errorf("bundle is empty")
-	}
-
-	// Get parent chain hash and cursor from previous bundle
-	var parent string
-	var cursor string
-	if bundleNumber > 1 {
-		if prevMeta, err := m.index.GetBundle(bundleNumber - 1); err == nil {
-			parent = prevMeta.Hash
-			cursor = prevMeta.EndTime.Format(time.RFC3339Nano)
-		}
-	}
-
-	// Use the ONE method
-	return m.CalculateBundleMetadata(bundleNumber, path, operations, parent, cursor)
-}
-
-// ScanAndIndexBundle scans a bundle file and adds it to the index
-func (m *Manager) ScanAndIndexBundle(path string, bundleNumber int) (*BundleMetadata, error) {
-	meta, err := m.ScanBundle(path, bundleNumber)
-	if err != nil {
-		return nil, err
-	}
-
-	// Add to index
-	m.index.AddBundle(meta)
-
-	// Save index
-	if err := m.SaveIndex(); err != nil {
-		return nil, fmt.Errorf("failed to save index: %w", err)
-	}
-
-	return meta, nil
 }
 
 // IsBundleIndexed checks if a bundle is already in the index
@@ -1274,7 +723,7 @@ func (m *Manager) RefreshIndex() error {
 	if info.ModTime().After(m.index.UpdatedAt) {
 		m.logger.Printf("Index file modified, reloading...")
 
-		newIndex, err := LoadIndex(m.indexPath)
+		newIndex, err := bundleindex.LoadIndex(m.indexPath)
 		if err != nil {
 			return fmt.Errorf("failed to reload index: %w", err)
 		}
@@ -1381,7 +830,7 @@ func (m *Manager) GetBundleIndex() didindex.BundleIndexProvider {
 
 // bundleIndexAdapter adapts Index to BundleIndexProvider interface
 type bundleIndexAdapter struct {
-	index *Index
+	index *bundleindex.Index
 }
 
 func (a *bundleIndexAdapter) GetBundles() []*didindex.BundleMetadata {
@@ -1843,4 +1292,186 @@ func (m *Manager) getDIDOperationsWithLocationsScan(ctx context.Context, did str
 	})
 
 	return results, nil
+}
+
+// VerifyChain verifies the entire bundle chain
+func (m *Manager) VerifyChain(ctx context.Context) (*ChainVerificationResult, error) {
+	result := &ChainVerificationResult{
+		VerifiedBundles: make([]int, 0),
+	}
+
+	bundles := m.index.GetBundles()
+	if len(bundles) == 0 {
+		result.Valid = true
+		return result, nil
+	}
+
+	result.ChainLength = len(bundles)
+
+	for i, meta := range bundles {
+		// Verify file hash
+		vr, err := m.VerifyBundle(ctx, meta.BundleNumber)
+		if err != nil || !vr.Valid {
+			result.Error = fmt.Sprintf("Bundle %d hash verification failed", meta.BundleNumber)
+			result.BrokenAt = meta.BundleNumber
+			return result, nil
+		}
+
+		// Verify chain link
+		if i > 0 {
+			prevMeta := bundles[i-1]
+
+			// Check parent reference
+			if meta.Parent != prevMeta.Hash {
+				result.Error = fmt.Sprintf("Chain broken at bundle %d: parent mismatch", meta.BundleNumber)
+				result.BrokenAt = meta.BundleNumber
+				return result, nil
+			}
+
+			// Verify chain hash calculation
+			expectedHash := m.operations.CalculateChainHash(prevMeta.Hash, meta.ContentHash)
+			if meta.Hash != expectedHash {
+				result.Error = fmt.Sprintf("Chain broken at bundle %d: hash mismatch", meta.BundleNumber)
+				result.BrokenAt = meta.BundleNumber
+				return result, nil
+			}
+		}
+
+		result.VerifiedBundles = append(result.VerifiedBundles, meta.BundleNumber)
+	}
+
+	result.Valid = true
+	return result, nil
+}
+
+// FetchNextBundle delegates to sync.Fetcher
+func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, error) {
+	if m.plcClient == nil {
+		return nil, fmt.Errorf("PLC client not configured")
+	}
+
+	lastBundle := m.index.GetLastBundle()
+	nextBundleNum := 1
+	var afterTime string
+	var prevBoundaryCIDs map[string]bool
+	var prevBundleHash string
+
+	if lastBundle != nil {
+		nextBundleNum = lastBundle.BundleNumber + 1
+		afterTime = lastBundle.EndTime.Format(time.RFC3339Nano)
+		prevBundleHash = lastBundle.Hash
+
+		prevBundle, err := m.LoadBundle(ctx, lastBundle.BundleNumber)
+		if err == nil {
+			_, prevBoundaryCIDs = m.operations.GetBoundaryCIDs(prevBundle.Operations)
+		}
+	}
+
+	if !quiet {
+		m.logger.Printf("Preparing bundle %06d (mempool: %d ops)...", nextBundleNum, m.mempool.Count())
+	}
+
+	// Fetch operations using syncer
+	for m.mempool.Count() < types.BUNDLE_SIZE {
+		newOps, err := m.syncer.FetchToMempool(
+			ctx,
+			afterTime,
+			prevBoundaryCIDs,
+			types.BUNDLE_SIZE-m.mempool.Count(),
+			quiet,
+			m.mempool.Count(),
+		)
+
+		if err != nil {
+			m.mempool.Save()
+			return nil, err
+		}
+
+		// Add to mempool
+		added, err := m.mempool.Add(newOps)
+		if err != nil {
+			m.mempool.Save()
+			return nil, fmt.Errorf("chronological validation failed: %w", err)
+		}
+
+		if !quiet {
+			m.logger.Printf("Added %d new operations (mempool now: %d)", added, m.mempool.Count())
+		}
+
+		if len(newOps) == 0 {
+			break
+		}
+	}
+
+	if m.mempool.Count() < types.BUNDLE_SIZE {
+		m.mempool.Save()
+		return nil, fmt.Errorf("insufficient operations: have %d, need %d", m.mempool.Count(), types.BUNDLE_SIZE)
+	}
+
+	// Create bundle
+	operations, err := m.mempool.Take(types.BUNDLE_SIZE)
+	if err != nil {
+		m.mempool.Save()
+		return nil, err
+	}
+
+	bundle := m.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash)
+	m.mempool.Save()
+
+	return bundle, nil
+}
+
+// CloneFromRemote delegates to sync.Cloner
+func (m *Manager) CloneFromRemote(ctx context.Context, opts internalsync.CloneOptions) (*internalsync.CloneResult, error) {
+	// Delegate to cloner with index update callback
+	return m.cloner.Clone(ctx, opts, m.index, m.updateIndexFromRemote)
+}
+
+// updateIndexFromRemote updates local index with metadata from remote index
+func (m *Manager) updateIndexFromRemote(bundleNumbers []int, remoteMeta map[int]*bundleindex.BundleMetadata, verbose bool) error {
+	if len(bundleNumbers) == 0 {
+		return nil
+	}
+
+	// Add/update bundles in local index using remote metadata
+	// Hash verification was already done during download
+	for _, num := range bundleNumbers {
+		if meta, exists := remoteMeta[num]; exists {
+			// Verify the file exists locally
+			path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", num))
+			if !m.operations.FileExists(path) {
+				m.logger.Printf("Warning: bundle %06d not found locally, skipping", num)
+				continue
+			}
+
+			// Add to index (no need to re-verify hash - already verified during download)
+			m.index.AddBundle(meta)
+
+			if verbose {
+				m.logger.Printf("Added bundle %06d to index", num)
+			}
+		}
+	}
+
+	// Save index
+	return m.SaveIndex()
+}
+
+func (m *Manager) CreateBundle(bundleNumber int, operations []plcclient.PLCOperation, cursor string, parent string) *Bundle {
+	// Delegate to sync package
+	syncBundle := internalsync.CreateBundle(bundleNumber, operations, cursor, parent, m.operations)
+
+	// Convert if needed (or just return directly if types match)
+	return &Bundle{
+		BundleNumber: syncBundle.BundleNumber,
+		StartTime:    syncBundle.StartTime,
+		EndTime:      syncBundle.EndTime,
+		Operations:   syncBundle.Operations,
+		DIDCount:     syncBundle.DIDCount,
+		Cursor:       syncBundle.Cursor,
+		Parent:       syncBundle.Parent,
+		BoundaryCIDs: syncBundle.BoundaryCIDs,
+		Compressed:   syncBundle.Compressed,
+		CreatedAt:    syncBundle.CreatedAt,
+	}
 }

@@ -1,4 +1,4 @@
-package bundle
+package sync
 
 import (
 	"context"
@@ -12,10 +12,58 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
+	"tangled.org/atscan.net/plcbundle/internal/storage"
+	"tangled.org/atscan.net/plcbundle/internal/types"
 )
 
-// CloneFromRemote clones bundles from a remote HTTP endpoint
-func (m *Manager) CloneFromRemote(ctx context.Context, opts CloneOptions) (*CloneResult, error) {
+// Cloner handles cloning bundles from remote endpoints
+type Cloner struct {
+	operations *storage.Operations
+	bundleDir  string
+	logger     types.Logger
+}
+
+// NewCloner creates a new cloner
+func NewCloner(operations *storage.Operations, bundleDir string, logger types.Logger) *Cloner {
+	return &Cloner{
+		operations: operations,
+		bundleDir:  bundleDir,
+		logger:     logger,
+	}
+}
+
+// CloneOptions configures cloning behavior
+type CloneOptions struct {
+	RemoteURL    string
+	Workers      int
+	SkipExisting bool
+	ProgressFunc func(downloaded, total int, bytesDownloaded, bytesTotal int64)
+	SaveInterval time.Duration
+	Verbose      bool
+	Logger       types.Logger
+}
+
+// CloneResult contains cloning results
+type CloneResult struct {
+	RemoteBundles int
+	Downloaded    int
+	Failed        int
+	Skipped       int
+	TotalBytes    int64
+	Duration      time.Duration
+	Interrupted   bool
+	FailedBundles []int
+}
+
+// Clone performs the cloning operation
+func (c *Cloner) Clone(
+	ctx context.Context,
+	opts CloneOptions,
+	localIndex *bundleindex.Index,
+	updateIndex func([]int, map[int]*bundleindex.BundleMetadata, bool) error,
+) (*CloneResult, error) {
+
 	if opts.Workers <= 0 {
 		opts.Workers = 4
 	}
@@ -23,7 +71,7 @@ func (m *Manager) CloneFromRemote(ctx context.Context, opts CloneOptions) (*Clon
 		opts.SaveInterval = 5 * time.Second
 	}
 	if opts.Logger == nil {
-		opts.Logger = m.logger
+		opts.Logger = c.logger
 	}
 
 	result := &CloneResult{}
@@ -31,7 +79,7 @@ func (m *Manager) CloneFromRemote(ctx context.Context, opts CloneOptions) (*Clon
 
 	// Step 1: Fetch remote index
 	opts.Logger.Printf("Fetching remote index from %s", opts.RemoteURL)
-	remoteIndex, err := m.loadRemoteIndex(opts.RemoteURL)
+	remoteIndex, err := c.loadRemoteIndex(opts.RemoteURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load remote index: %w", err)
 	}
@@ -45,20 +93,20 @@ func (m *Manager) CloneFromRemote(ctx context.Context, opts CloneOptions) (*Clon
 	result.RemoteBundles = len(remoteBundles)
 	opts.Logger.Printf("Remote has %d bundles", len(remoteBundles))
 
-	// Step 2: Determine which bundles to download
-	localBundleMap := make(map[int]*BundleMetadata)
-	for _, meta := range m.index.GetBundles() {
+	// Step 2: Determine bundles to download
+	localBundleMap := make(map[int]*bundleindex.BundleMetadata)
+	for _, meta := range localIndex.GetBundles() {
 		localBundleMap[meta.BundleNumber] = meta
 	}
 
-	// Create map of remote metadata for easy lookup
-	remoteBundleMap := make(map[int]*BundleMetadata)
+	remoteBundleMap := make(map[int]*bundleindex.BundleMetadata)
 	for _, meta := range remoteBundles {
 		remoteBundleMap[meta.BundleNumber] = meta
 	}
 
 	var bundlesToDownload []int
 	var totalBytes int64
+
 	for _, meta := range remoteBundles {
 		if opts.SkipExisting && localBundleMap[meta.BundleNumber] != nil {
 			result.Skipped++
@@ -78,7 +126,7 @@ func (m *Manager) CloneFromRemote(ctx context.Context, opts CloneOptions) (*Clon
 
 	opts.Logger.Printf("Downloading %d bundles (%d bytes)", len(bundlesToDownload), totalBytes)
 
-	// Step 3: Set up periodic index saving (using remote metadata)
+	// Step 3: Set up periodic index saving
 	saveCtx, saveCancel := context.WithCancel(ctx)
 	defer saveCancel()
 
@@ -96,7 +144,6 @@ func (m *Manager) CloneFromRemote(ctx context.Context, opts CloneOptions) (*Clon
 			case <-saveCtx.Done():
 				return
 			case <-ticker.C:
-				// Save index using remote metadata for downloaded bundles
 				downloadedMu.Lock()
 				bundles := make([]int, len(downloadedBundles))
 				copy(bundles, downloadedBundles)
@@ -105,17 +152,17 @@ func (m *Manager) CloneFromRemote(ctx context.Context, opts CloneOptions) (*Clon
 				if opts.Verbose {
 					opts.Logger.Printf("Periodic save: updating index with %d bundles", len(bundles))
 				}
-				m.updateIndexFromRemote(bundles, remoteBundleMap, false) // silent during periodic save
+				updateIndex(bundles, remoteBundleMap, false)
 			}
 		}
 	}()
 
-	// Step 4: Download bundles concurrently
-	successList, failedList, bytes := m.downloadBundlesConcurrent(
+	// Step 4: Download bundles
+	successList, failedList, bytes := c.downloadBundlesConcurrent(
 		ctx,
 		opts.RemoteURL,
 		bundlesToDownload,
-		remoteBundleMap, // Pass the metadata map for hash verification
+		remoteBundleMap,
 		totalBytes,
 		opts.Workers,
 		opts.ProgressFunc,
@@ -134,9 +181,9 @@ func (m *Manager) CloneFromRemote(ctx context.Context, opts CloneOptions) (*Clon
 	saveCancel()
 	<-saveDone
 
-	// Step 5: Final index update using remote metadata
+	// Step 5: Final index update
 	opts.Logger.Printf("Updating local index...")
-	if err := m.updateIndexFromRemote(successList, remoteBundleMap, opts.Verbose); err != nil {
+	if err := updateIndex(successList, remoteBundleMap, opts.Verbose); err != nil {
 		return result, fmt.Errorf("failed to update index: %w", err)
 	}
 
@@ -144,12 +191,41 @@ func (m *Manager) CloneFromRemote(ctx context.Context, opts CloneOptions) (*Clon
 	return result, nil
 }
 
-// downloadBundlesConcurrent downloads bundles using a worker pool
-func (m *Manager) downloadBundlesConcurrent(
+// loadRemoteIndex loads index from remote URL
+func (c *Cloner) loadRemoteIndex(baseURL string) (*bundleindex.Index, error) {
+	indexURL := strings.TrimSuffix(baseURL, "/") + "/index.json"
+
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	resp, err := client.Get(indexURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var idx bundleindex.Index
+	if err := json.Unmarshal(data, &idx); err != nil {
+		return nil, fmt.Errorf("failed to parse index: %w", err)
+	}
+
+	return &idx, nil
+}
+
+// downloadBundlesConcurrent downloads bundles using worker pool
+func (c *Cloner) downloadBundlesConcurrent(
 	ctx context.Context,
 	baseURL string,
 	bundleNumbers []int,
-	remoteBundleMap map[int]*BundleMetadata,
+	remoteBundleMap map[int]*bundleindex.BundleMetadata,
 	totalBytes int64,
 	workers int,
 	progressFunc func(downloaded, total int, bytesDownloaded, bytesTotal int64),
@@ -184,9 +260,7 @@ func (m *Manager) downloadBundlesConcurrent(
 
 	// Start workers
 	var wg sync.WaitGroup
-	client := &http.Client{
-		Timeout: 120 * time.Second,
-	}
+	client := &http.Client{Timeout: 120 * time.Second}
 
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
@@ -205,8 +279,8 @@ func (m *Manager) downloadBundlesConcurrent(
 				default:
 				}
 
-				// Download bundle with hash verification
-				bytes, err := m.downloadBundle(client, baseURL, j.bundleNum, j.expectedHash)
+				// Download bundle
+				bytes, err := c.downloadBundle(client, baseURL, j.bundleNum, j.expectedHash)
 
 				// Update progress
 				mu.Lock()
@@ -238,7 +312,7 @@ func (m *Manager) downloadBundlesConcurrent(
 		}()
 	}
 
-	// Send jobs with expected hashes
+	// Send jobs
 	for _, num := range bundleNumbers {
 		expectedHash := ""
 		if meta, exists := remoteBundleMap[num]; exists {
@@ -260,9 +334,9 @@ func (m *Manager) downloadBundlesConcurrent(
 	// Collect results
 	for res := range results {
 		if res.err != nil && res.err != context.Canceled {
-			m.logger.Printf("Failed to download bundle %06d: %v", res.bundleNum, res.err)
+			c.logger.Printf("Failed to download bundle %06d: %v", res.bundleNum, res.err)
 		} else if res.success && verbose {
-			m.logger.Printf("✓ Downloaded and verified bundle %06d (%d bytes)", res.bundleNum, res.bytes)
+			c.logger.Printf("✓ Downloaded and verified bundle %06d (%d bytes)", res.bundleNum, res.bytes)
 		}
 	}
 
@@ -275,72 +349,11 @@ func (m *Manager) downloadBundlesConcurrent(
 	return
 }
 
-// updateIndexFromRemote updates local index with metadata from remote index
-func (m *Manager) updateIndexFromRemote(bundleNumbers []int, remoteMeta map[int]*BundleMetadata, verbose bool) error {
-	if len(bundleNumbers) == 0 {
-		return nil
-	}
-
-	// Add/update bundles in local index using remote metadata
-	// Hash verification was already done during download
-	for _, num := range bundleNumbers {
-		if meta, exists := remoteMeta[num]; exists {
-			// Verify the file exists locally
-			path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", num))
-			if !m.operations.FileExists(path) {
-				m.logger.Printf("Warning: bundle %06d not found locally, skipping", num)
-				continue
-			}
-
-			// Add to index (no need to re-verify hash - already verified during download)
-			m.index.AddBundle(meta)
-
-			if verbose {
-				m.logger.Printf("Added bundle %06d to index", num)
-			}
-		}
-	}
-
-	// Save index
-	return m.SaveIndex()
-}
-
-// loadRemoteIndex loads an index from a remote URL
-func (m *Manager) loadRemoteIndex(baseURL string) (*Index, error) {
-	indexURL := strings.TrimSuffix(baseURL, "/") + "/index.json"
-
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	resp, err := client.Get(indexURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to download: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	var idx Index
-	if err := json.Unmarshal(data, &idx); err != nil {
-		return nil, fmt.Errorf("failed to parse index: %w", err)
-	}
-
-	return &idx, nil
-}
-
-// downloadBundle downloads a single bundle file and verifies its hash
-func (m *Manager) downloadBundle(client *http.Client, baseURL string, bundleNum int, expectedHash string) (int64, error) {
+// downloadBundle downloads a single bundle and verifies hash
+func (c *Cloner) downloadBundle(client *http.Client, baseURL string, bundleNum int, expectedHash string) (int64, error) {
 	url := fmt.Sprintf("%s/data/%d", strings.TrimSuffix(baseURL, "/"), bundleNum)
 	filename := fmt.Sprintf("%06d.jsonl.zst", bundleNum)
-	filepath := filepath.Join(m.config.BundleDir, filename)
+	filepath := filepath.Join(c.bundleDir, filename)
 
 	// Create request
 	req, err := http.NewRequest("GET", url, nil)
@@ -360,7 +373,7 @@ func (m *Manager) downloadBundle(client *http.Client, baseURL string, bundleNum 
 		return 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Write to temp file (atomic write)
+	// Write to temp file
 	tempPath := filepath + ".tmp"
 	outFile, err := os.Create(tempPath)
 	if err != nil {
@@ -375,9 +388,9 @@ func (m *Manager) downloadBundle(client *http.Client, baseURL string, bundleNum 
 		return 0, err
 	}
 
-	// Verify hash before committing
+	// Verify hash
 	if expectedHash != "" {
-		valid, actualHash, err := m.operations.VerifyHash(tempPath, expectedHash)
+		valid, actualHash, err := c.operations.VerifyHash(tempPath, expectedHash)
 		if err != nil {
 			os.Remove(tempPath)
 			return 0, fmt.Errorf("hash verification failed: %w", err)

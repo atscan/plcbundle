@@ -12,6 +12,7 @@ import (
 
 	"github.com/goccy/go-json"
 	"tangled.org/atscan.net/plcbundle/internal/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 )
 
 // IndexComparison holds comparison results
@@ -45,18 +46,18 @@ func (ic *IndexComparison) HasDifferences() bool {
 }
 
 // loadTargetIndex loads an index from a file or URL
-func loadTargetIndex(target string) (*bundle.Index, error) {
+func loadTargetIndex(target string) (*bundleindex.Index, error) {
 	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
 		// Load from URL
 		return loadIndexFromURL(target)
 	}
 
 	// Load from file
-	return bundle.LoadIndex(target)
+	return bundleindex.LoadIndex(target)
 }
 
 // loadIndexFromURL downloads and parses an index from a URL
-func loadIndexFromURL(url string) (*bundle.Index, error) {
+func loadIndexFromURL(url string) (*bundleindex.Index, error) {
 	// Smart URL handling - if it doesn't end with .json, append /index.json
 	if !strings.HasSuffix(url, ".json") {
 		url = strings.TrimSuffix(url, "/") + "/index.json"
@@ -81,7 +82,7 @@ func loadIndexFromURL(url string) (*bundle.Index, error) {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	var idx bundle.Index
+	var idx bundleindex.Index
 	if err := json.Unmarshal(data, &idx); err != nil {
 		return nil, fmt.Errorf("failed to parse index: %w", err)
 	}
@@ -90,13 +91,13 @@ func loadIndexFromURL(url string) (*bundle.Index, error) {
 }
 
 // compareIndexes compares two indexes
-func compareIndexes(local, target *bundle.Index) *IndexComparison {
+func compareIndexes(local, target *bundleindex.Index) *IndexComparison {
 	localBundles := local.GetBundles()
 	targetBundles := target.GetBundles()
 
 	// Create maps for quick lookup
-	localMap := make(map[int]*bundle.BundleMetadata)
-	targetMap := make(map[int]*bundle.BundleMetadata)
+	localMap := make(map[int]*bundleindex.BundleMetadata)
+	targetMap := make(map[int]*bundleindex.BundleMetadata)
 
 	for _, b := range localBundles {
 		localMap[b.BundleNumber] = b

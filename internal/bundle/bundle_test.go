@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"tangled.org/atscan.net/plcbundle/internal/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/internal/mempool"
 	"tangled.org/atscan.net/plcbundle/internal/storage"
 	"tangled.org/atscan.net/plcbundle/internal/types"
@@ -15,7 +16,7 @@ import (
 // TestIndex tests index operations
 func TestIndex(t *testing.T) {
 	t.Run("CreateNewIndex", func(t *testing.T) {
-		idx := bundle.NewIndex("test-origin")
+		idx := bundleindex.NewIndex("test-origin")
 		if idx == nil {
 			t.Fatal("NewIndex returned nil")
 		}
@@ -28,8 +29,8 @@ func TestIndex(t *testing.T) {
 	})
 
 	t.Run("AddBundle", func(t *testing.T) {
-		idx := bundle.NewIndex("test-origin")
-		meta := &bundle.BundleMetadata{
+		idx := bundleindex.NewIndex("test-origin")
+		meta := &bundleindex.BundleMetadata{
 			BundleNumber:   1,
 			StartTime:      time.Now(),
 			EndTime:        time.Now().Add(time.Hour),
@@ -59,8 +60,8 @@ func TestIndex(t *testing.T) {
 		indexPath := filepath.Join(tmpDir, "test_index.json")
 
 		// Create and save
-		idx := bundle.NewIndex("test-origin")
-		idx.AddBundle(&bundle.BundleMetadata{
+		idx := bundleindex.NewIndex("test-origin")
+		idx.AddBundle(&bundleindex.BundleMetadata{
 			BundleNumber:   1,
 			StartTime:      time.Now(),
 			EndTime:        time.Now().Add(time.Hour),
@@ -73,7 +74,7 @@ func TestIndex(t *testing.T) {
 		}
 
 		// Load
-		loaded, err := bundle.LoadIndex(indexPath)
+		loaded, err := bundleindex.LoadIndex(indexPath)
 		if err != nil {
 			t.Fatalf("LoadIndex failed: %v", err)
 		}
@@ -84,9 +85,9 @@ func TestIndex(t *testing.T) {
 	})
 
 	t.Run("GetBundleRange", func(t *testing.T) {
-		idx := bundle.NewIndex("test-origin")
+		idx := bundleindex.NewIndex("test-origin")
 		for i := 1; i <= 5; i++ {
-			idx.AddBundle(&bundle.BundleMetadata{
+			idx.AddBundle(&bundleindex.BundleMetadata{
 				BundleNumber:   i,
 				StartTime:      time.Now(),
 				EndTime:        time.Now().Add(time.Hour),
@@ -104,10 +105,10 @@ func TestIndex(t *testing.T) {
 	})
 
 	t.Run("FindGaps", func(t *testing.T) {
-		idx := bundle.NewIndex("test-origin")
+		idx := bundleindex.NewIndex("test-origin")
 		// Add bundles 1, 2, 4, 5 (missing 3)
 		for _, num := range []int{1, 2, 4, 5} {
-			idx.AddBundle(&bundle.BundleMetadata{
+			idx.AddBundle(&bundleindex.BundleMetadata{
 				BundleNumber:   num,
 				StartTime:      time.Now(),
 				EndTime:        time.Now().Add(time.Hour),
