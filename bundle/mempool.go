@@ -10,8 +10,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
-
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 const MEMPOOL_FILE_PREFIX = "plc_mempool_"
@@ -19,7 +18,7 @@ const MEMPOOL_FILE_PREFIX = "plc_mempool_"
 // Mempool stores operations waiting to be bundled
 // Operations must be strictly chronological
 type Mempool struct {
-	operations   []plc.PLCOperation
+	operations   []plcclient.PLCOperation
 	targetBundle int       // Which bundle number these operations are for
 	minTimestamp time.Time // Operations must be after this time
 	file         string
@@ -37,7 +36,7 @@ func NewMempool(bundleDir string, targetBundle int, minTimestamp time.Time, logg
 		file:         filepath.Join(bundleDir, filename),
 		targetBundle: targetBundle,
 		minTimestamp: minTimestamp,
-		operations:   make([]plc.PLCOperation, 0),
+		operations:   make([]plcclient.PLCOperation, 0),
 		logger:       logger,
 		validated:    false,
 	}
@@ -54,7 +53,7 @@ func NewMempool(bundleDir string, targetBundle int, minTimestamp time.Time, logg
 }
 
 // Add adds operations to the mempool with strict validation
-func (m *Mempool) Add(ops []plc.PLCOperation) (int, error) {
+func (m *Mempool) Add(ops []plcclient.PLCOperation) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -69,7 +68,7 @@ func (m *Mempool) Add(ops []plc.PLCOperation) (int, error) {
 	}
 
 	// Validate and add operations
-	var newOps []plc.PLCOperation
+	var newOps []plcclient.PLCOperation
 	var lastTime time.Time
 
 	// Start from last operation time if we have any
@@ -170,7 +169,7 @@ func (m *Mempool) Count() int {
 }
 
 // Take removes and returns up to n operations from the front
-func (m *Mempool) Take(n int) ([]plc.PLCOperation, error) {
+func (m *Mempool) Take(n int) ([]plcclient.PLCOperation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -183,7 +182,7 @@ func (m *Mempool) Take(n int) ([]plc.PLCOperation, error) {
 		n = len(m.operations)
 	}
 
-	result := make([]plc.PLCOperation, n)
+	result := make([]plcclient.PLCOperation, n)
 	copy(result, m.operations[:n])
 
 	// Remove taken operations
@@ -219,7 +218,7 @@ func (m *Mempool) validateLocked() error {
 }
 
 // Peek returns up to n operations without removing them
-func (m *Mempool) Peek(n int) []plc.PLCOperation {
+func (m *Mempool) Peek(n int) []plcclient.PLCOperation {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -227,7 +226,7 @@ func (m *Mempool) Peek(n int) []plc.PLCOperation {
 		n = len(m.operations)
 	}
 
-	result := make([]plc.PLCOperation, n)
+	result := make([]plcclient.PLCOperation, n)
 	copy(result, m.operations[:n])
 
 	return result
@@ -237,7 +236,7 @@ func (m *Mempool) Peek(n int) []plc.PLCOperation {
 func (m *Mempool) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.operations = make([]plc.PLCOperation, 0)
+	m.operations = make([]plcclient.PLCOperation, 0)
 	m.validated = false
 }
 
@@ -303,7 +302,7 @@ func (m *Mempool) Load() error {
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
-	m.operations = make([]plc.PLCOperation, 0)
+	m.operations = make([]plcclient.PLCOperation, 0)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -311,7 +310,7 @@ func (m *Mempool) Load() error {
 			continue
 		}
 
-		var op plc.PLCOperation
+		var op plcclient.PLCOperation
 		if err := json.Unmarshal(line, &op); err != nil {
 			return fmt.Errorf("failed to parse mempool operation: %w", err)
 		}

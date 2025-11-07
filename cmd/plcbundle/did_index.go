@@ -10,7 +10,7 @@ import (
 
 	"github.com/goccy/go-json"
 	"tangled.org/atscan.net/plcbundle/bundle"
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 func cmdDIDIndex() {
@@ -498,7 +498,7 @@ func cmdDIDIndexResolve() {
 
 	// ✨ STEP 0: Check mempool first (most recent data)
 	mempoolStart := time.Now()
-	var latestOp *plc.PLCOperation
+	var latestOp *plcclient.PLCOperation
 	foundInMempool := false
 
 	if mgr.GetMempool() != nil {
@@ -520,8 +520,8 @@ func cmdDIDIndexResolve() {
 		fmt.Fprintf(os.Stderr, "Mempool check: %s (✓ found in mempool)\n", mempoolTime)
 
 		// Build document from mempool operation
-		ops := []plc.PLCOperation{*latestOp}
-		doc, err := plc.ResolveDIDDocument(did, ops)
+		ops := []plcclient.PLCOperation{*latestOp}
+		doc, err := plcclient.ResolveDIDDocument(did, ops)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Build document failed: %v\n", err)
 			os.Exit(1)
@@ -592,8 +592,8 @@ func cmdDIDIndexResolve() {
 		opTime, latestLoc.Bundle, latestLoc.Position)
 
 	// STEP 3: Build DID document
-	ops := []plc.PLCOperation{*op}
-	doc, err := plc.ResolveDIDDocument(did, ops)
+	ops := []plcclient.PLCOperation{*op}
+	doc, err := plcclient.ResolveDIDDocument(did, ops)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Build document failed: %v\n", err)
 		os.Exit(1)

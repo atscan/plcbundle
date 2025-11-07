@@ -1,4 +1,4 @@
-package plc_test
+package plcclient_test
 
 import (
 	"context"
@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"tangled.org/atscan.net/plcbundle/bundle"
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/internal/storage"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // TestPLCOperation tests operation parsing and methods
@@ -29,7 +29,7 @@ func TestPLCOperation(t *testing.T) {
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				op := plc.PLCOperation{Nullified: tt.nullified}
+				op := plcclient.PLCOperation{Nullified: tt.nullified}
 				if got := op.IsNullified(); got != tt.want {
 					t.Errorf("IsNullified() = %v, want %v", got, tt.want)
 				}
@@ -38,12 +38,12 @@ func TestPLCOperation(t *testing.T) {
 	})
 
 	t.Run("GetNullifyingCID", func(t *testing.T) {
-		op := plc.PLCOperation{Nullified: "bafytest123"}
+		op := plcclient.PLCOperation{Nullified: "bafytest123"}
 		if cid := op.GetNullifyingCID(); cid != "bafytest123" {
 			t.Errorf("expected 'bafytest123', got '%s'", cid)
 		}
 
-		op2 := plc.PLCOperation{Nullified: true}
+		op2 := plcclient.PLCOperation{Nullified: true}
 		if cid := op2.GetNullifyingCID(); cid != "" {
 			t.Errorf("expected empty string, got '%s'", cid)
 		}
@@ -58,7 +58,7 @@ func TestPLCOperation(t *testing.T) {
 			"nullified": false
 		}`
 
-		var op plc.PLCOperation
+		var op plcclient.PLCOperation
 		if err := json.Unmarshal([]byte(jsonData), &op); err != nil {
 			t.Fatalf("failed to parse operation: %v", err)
 		}
@@ -90,7 +90,7 @@ func TestClient(t *testing.T) {
 			// Return mock JSONL data
 			w.Header().Set("Content-Type", "application/x-ndjson")
 			for i := 0; i < 10; i++ {
-				op := plc.PLCOperation{
+				op := plcclient.PLCOperation{
 					DID:       "did:plc:test" + string(rune(i)),
 					CID:       "bafytest" + string(rune(i)),
 					CreatedAt: time.Now(),
@@ -102,12 +102,12 @@ func TestClient(t *testing.T) {
 		defer server.Close()
 
 		// Create client
-		client := plc.NewClient(server.URL)
+		client := plcclient.NewClient(server.URL)
 		defer client.Close()
 
 		// Test export
 		ctx := context.Background()
-		ops, err := client.Export(ctx, plc.ExportOptions{
+		ops, err := client.Export(ctx, plcclient.ExportOptions{
 			Count: 100,
 		})
 		if err != nil {
@@ -136,16 +136,16 @@ func TestClient(t *testing.T) {
 			}
 			// Success on second attempt
 			w.Header().Set("Content-Type", "application/x-ndjson")
-			op := plc.PLCOperation{DID: "did:plc:test", CID: "bafytest", CreatedAt: time.Now()}
+			op := plcclient.PLCOperation{DID: "did:plc:test", CID: "bafytest", CreatedAt: time.Now()}
 			json.NewEncoder(w).Encode(op)
 		}))
 		defer server.Close()
 
-		client := plc.NewClient(server.URL)
+		client := plcclient.NewClient(server.URL)
 		defer client.Close()
 
 		ctx := context.Background()
-		ops, err := client.Export(ctx, plc.ExportOptions{Count: 1})
+		ops, err := client.Export(ctx, plcclient.ExportOptions{Count: 1})
 		if err != nil {
 			t.Fatalf("Export failed after retry: %v", err)
 		}
@@ -165,7 +165,7 @@ func TestClient(t *testing.T) {
 				t.Errorf("unexpected path: %s", r.URL.Path)
 			}
 
-			doc := plc.DIDDocument{
+			doc := plcclient.DIDDocument{
 				Context: []string{"https://www.w3.org/ns/did/v1"},
 				ID:      "did:plc:test123",
 			}
@@ -173,7 +173,7 @@ func TestClient(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := plc.NewClient(server.URL)
+		client := plcclient.NewClient(server.URL)
 		defer client.Close()
 
 		ctx := context.Background()
@@ -192,7 +192,7 @@ func TestClient(t *testing.T) {
 func TestRateLimiter(t *testing.T) {
 	t.Run("BasicRateLimit", func(t *testing.T) {
 		// 10 requests per second
-		rl := plc.NewRateLimiter(10, time.Second)
+		rl := plcclient.NewRateLimiter(10, time.Second)
 		defer rl.Stop()
 
 		ctx := context.Background()
@@ -213,7 +213,7 @@ func TestRateLimiter(t *testing.T) {
 	})
 
 	t.Run("ContextCancellation", func(t *testing.T) {
-		rl := plc.NewRateLimiter(1, time.Minute) // Very slow rate
+		rl := plcclient.NewRateLimiter(1, time.Minute) // Very slow rate
 		defer rl.Stop()
 
 		// Consume the one available token
@@ -233,9 +233,9 @@ func TestRateLimiter(t *testing.T) {
 
 // Benchmark tests
 func BenchmarkSerializeJSONL(b *testing.B) {
-	ops := make([]plc.PLCOperation, 10000)
+	ops := make([]plcclient.PLCOperation, 10000)
 	for i := 0; i < 10000; i++ {
-		ops[i] = plc.PLCOperation{
+		ops[i] = plcclient.PLCOperation{
 			DID:       "did:plc:test",
 			CID:       "bafytest",
 			CreatedAt: time.Now(),
@@ -244,7 +244,7 @@ func BenchmarkSerializeJSONL(b *testing.B) {
 	}
 
 	logger := &benchLogger{}
-	operations, _ := bundle.NewOperations(logger)
+	operations, _ := storage.NewOperations(logger)
 	defer operations.Close()
 
 	b.ResetTimer()

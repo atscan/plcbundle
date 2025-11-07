@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 const (
@@ -478,7 +478,7 @@ func (dim *DIDIndexManager) Exists() bool {
 
 // extractDIDIdentifier extracts the 24-char identifier from full DID
 func extractDIDIdentifier(did string) (string, error) {
-	if err := plc.ValidateDIDFormat(did); err != nil {
+	if err := plcclient.ValidateDIDFormat(did); err != nil {
 		return "", err
 	}
 

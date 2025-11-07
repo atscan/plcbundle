@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // NoOpDetector is an empty detector for speed testing
@@ -22,7 +22,7 @@ func (d *NoOpDetector) Description() string {
 }
 func (d *NoOpDetector) Version() string { return "1.0.0" }
 
-func (d *NoOpDetector) Detect(ctx context.Context, op plc.PLCOperation) (*Match, error) {
+func (d *NoOpDetector) Detect(ctx context.Context, op plcclient.PLCOperation) (*Match, error) {
 	// Instant return - no work done
 	return nil, nil
 }
@@ -48,7 +48,7 @@ func (d *InvalidHandleDetector) Description() string {
 }
 func (d *InvalidHandleDetector) Version() string { return "1.0.0" }
 
-func (d *InvalidHandleDetector) Detect(ctx context.Context, op plc.PLCOperation) (*Match, error) {
+func (d *InvalidHandleDetector) Detect(ctx context.Context, op plcclient.PLCOperation) (*Match, error) {
 	// Parse Operation field on-demand
 	operation, err := op.GetOperationMap()
 	if err != nil {
@@ -212,7 +212,7 @@ func (d *AlsoKnownAsSpamDetector) Description() string {
 }
 func (d *AlsoKnownAsSpamDetector) Version() string { return "1.0.0" }
 
-func (d *AlsoKnownAsSpamDetector) Detect(ctx context.Context, op plc.PLCOperation) (*Match, error) {
+func (d *AlsoKnownAsSpamDetector) Detect(ctx context.Context, op plcclient.PLCOperation) (*Match, error) {
 	// Parse Operation field on-demand
 	operation, err := op.GetOperationMap()
 	if err != nil {
@@ -313,7 +313,7 @@ func (d *SpamPDSDetector) Description() string {
 }
 func (d *SpamPDSDetector) Version() string { return "1.0.0" }
 
-func (d *SpamPDSDetector) Detect(ctx context.Context, op plc.PLCOperation) (*Match, error) {
+func (d *SpamPDSDetector) Detect(ctx context.Context, op plcclient.PLCOperation) (*Match, error) {
 	// Parse Operation field on-demand
 	operation, err := op.GetOperationMap()
 	if err != nil {
@@ -416,7 +416,7 @@ func (d *ServiceAbuseDetector) Description() string {
 }
 func (d *ServiceAbuseDetector) Version() string { return "1.0.0" }
 
-func (d *ServiceAbuseDetector) Detect(ctx context.Context, op plc.PLCOperation) (*Match, error) {
+func (d *ServiceAbuseDetector) Detect(ctx context.Context, op plcclient.PLCOperation) (*Match, error) {
 	// Parse Operation field on-demand
 	operation, err := op.GetOperationMap()
 	if err != nil {

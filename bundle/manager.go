@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // defaultLogger is a simple logger implementation
@@ -34,7 +34,7 @@ type Manager struct {
 	operations *Operations
 	index      *Index
 	indexPath  string
-	plcClient  *plc.Client
+	plcClient  *plcclient.Client
 	logger     Logger
 	mempool    *Mempool
 	didIndex   *DIDIndexManager
@@ -45,7 +45,7 @@ type Manager struct {
 }
 
 // NewManager creates a new bundle manager
-func NewManager(config *Config, plcClient *plc.Client) (*Manager, error) {
+func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 	if config == nil {
 		config = DefaultConfig("./plc_bundles")
 	}
@@ -574,7 +574,7 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 				fetchNum+1, batchSize, m.mempool.Count())
 		}
 
-		batch, err := m.plcClient.Export(ctx, plc.ExportOptions{
+		batch, err := m.plcClient.Export(ctx, plcclient.ExportOptions{
 			Count: batchSize,
 			After: currentAfter,
 		})
@@ -595,7 +595,7 @@ func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoun
 		}
 
 		// Deduplicate
-		uniqueOps := make([]plc.PLCOperation, 0)
+		uniqueOps := make([]plcclient.PLCOperation, 0)
 		for _, op := range batch {
 			if !seenCIDs[op.CID] {
 				seenCIDs[op.CID] = true
@@ -646,7 +646,7 @@ func (m *Manager) GetMempoolStats() map[string]interface{} {
 }
 
 // GetMempoolOperations returns all operations currently in mempool
-func (m *Manager) GetMempoolOperations() ([]plc.PLCOperation, error) {
+func (m *Manager) GetMempoolOperations() ([]plcclient.PLCOperation, error) {
 	if m.mempool == nil {
 		return nil, fmt.Errorf("mempool not initialized")
 	}
@@ -654,7 +654,7 @@ func (m *Manager) GetMempoolOperations() ([]plc.PLCOperation, error) {
 	// Use Peek to get operations without removing them
 	count := m.mempool.Count()
 	if count == 0 {
-		return []plc.PLCOperation{}, nil
+		return []plcclient.PLCOperation{}, nil
 	}
 
 	return m.mempool.Peek(count), nil
@@ -1078,12 +1078,12 @@ func (m *Manager) GetInfo() map[string]interface{} {
 }
 
 // ExportOperations exports operations from bundles
-func (m *Manager) ExportOperations(ctx context.Context, afterTime time.Time, count int) ([]plc.PLCOperation, error) {
+func (m *Manager) ExportOperations(ctx context.Context, afterTime time.Time, count int) ([]plcclient.PLCOperation, error) {
 	if count <= 0 {
 		count = 1000
 	}
 
-	var result []plc.PLCOperation
+	var result []plcclient.PLCOperation
 	seenCIDs := make(map[string]bool)
 
 	bundles := m.index.GetBundles()
@@ -1344,7 +1344,7 @@ func (m *Manager) GetDIDIndex() *DIDIndexManager {
 
 // LoadOperation loads a single operation from a bundle efficiently
 // This is much faster than LoadBundle() when you only need one operation
-func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position int) (*plc.PLCOperation, error) {
+func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position int) (*plcclient.PLCOperation, error) {
 
 	// Validate bundle exists in index
 	_, err := m.index.GetBundle(bundleNumber)

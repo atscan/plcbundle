@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"tangled.org/atscan.net/plcbundle/bundle"
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // Runner executes detectors against operations
@@ -82,7 +82,7 @@ func (r *Runner) runSequential(ctx context.Context, detector Detector, b *bundle
 func (r *Runner) runParallel(ctx context.Context, detector Detector, b *bundle.Bundle) []*Result {
 	type job struct {
 		pos int
-		op  plc.PLCOperation
+		op  plcclient.PLCOperation
 	}
 
 	jobs := make(chan job, len(b.Operations))
@@ -130,7 +130,7 @@ func (r *Runner) runParallel(ctx context.Context, detector Detector, b *bundle.B
 	return results
 }
 
-func (r *Runner) detectOne(ctx context.Context, detector Detector, bundleNum, pos int, op plc.PLCOperation) *Result {
+func (r *Runner) detectOne(ctx context.Context, detector Detector, bundleNum, pos int, op plcclient.PLCOperation) *Result {
 	// Create timeout context
 	detectCtx, cancel := context.WithTimeout(ctx, r.config.Timeout)
 	defer cancel()

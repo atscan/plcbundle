@@ -13,8 +13,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
-
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // ScriptDetector runs a JavaScript detector via Unix socket
@@ -140,7 +139,7 @@ func (d *ScriptDetector) connectToServer() error {
 	return fmt.Errorf("failed to connect to socket within timeout")
 }
 
-func (d *ScriptDetector) Detect(ctx context.Context, op plc.PLCOperation) (*Match, error) {
+func (d *ScriptDetector) Detect(ctx context.Context, op plcclient.PLCOperation) (*Match, error) {
 	if d.conn == nil {
 		return nil, fmt.Errorf("not connected to server")
 	}

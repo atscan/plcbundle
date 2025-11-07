@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // Detector represents a spam detection algorithm
@@ -17,7 +17,7 @@ type Detector interface {
 	Description() string
 
 	// Detect analyzes an operation and returns a match result
-	Detect(ctx context.Context, op plc.PLCOperation) (*Match, error)
+	Detect(ctx context.Context, op plcclient.PLCOperation) (*Match, error)
 
 	// Version returns the detector version
 	Version() string

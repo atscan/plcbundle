@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"tangled.org/atscan.net/plcbundle/bundle"
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/internal/storage"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // TestIndex tests index operations
@@ -230,7 +231,7 @@ func TestMempool(t *testing.T) {
 		}
 
 		// Try to add operation before last one (should fail)
-		oldOp := []plc.PLCOperation{
+		oldOp := []plcclient.PLCOperation{
 			{
 				DID:       "did:plc:old",
 				CID:       "old123",
@@ -311,7 +312,7 @@ func TestOperations(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger := &testLogger{t: t}
 
-	ops, err := bundle.NewOperations(logger)
+	ops, err := storage.NewOperations(logger)
 	if err != nil {
 		t.Fatalf("NewOperations failed: %v", err)
 	}
@@ -371,7 +372,7 @@ func TestOperations(t *testing.T) {
 	})
 
 	t.Run("ExtractUniqueDIDs", func(t *testing.T) {
-		operations := []plc.PLCOperation{
+		operations := []plcclient.PLCOperation{
 			{DID: "did:plc:1"},
 			{DID: "did:plc:2"},
 			{DID: "did:plc:1"}, // duplicate
@@ -386,7 +387,7 @@ func TestOperations(t *testing.T) {
 
 	t.Run("GetBoundaryCIDs", func(t *testing.T) {
 		baseTime := time.Now()
-		operations := []plc.PLCOperation{
+		operations := []plcclient.PLCOperation{
 			{CID: "cid1", CreatedAt: baseTime},
 			{CID: "cid2", CreatedAt: baseTime.Add(time.Second)},
 			{CID: "cid3", CreatedAt: baseTime.Add(2 * time.Second)},
@@ -406,12 +407,12 @@ func TestOperations(t *testing.T) {
 
 // Helper functions
 
-func makeTestOperations(count int) []plc.PLCOperation {
-	ops := make([]plc.PLCOperation, count)
+func makeTestOperations(count int) []plcclient.PLCOperation {
+	ops := make([]plcclient.PLCOperation, count)
 	baseTime := time.Now().Add(-time.Hour)
 
 	for i := 0; i < count; i++ {
-		ops[i] = plc.PLCOperation{
+		ops[i] = plcclient.PLCOperation{
 			DID:       "did:plc:test" + string(rune(i)),
 			CID:       "bafytest" + string(rune(i)),
 			CreatedAt: baseTime.Add(time.Duration(i) * time.Second),

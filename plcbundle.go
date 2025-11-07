@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"tangled.org/atscan.net/plcbundle/bundle"
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // Re-export commonly used types for convenience
@@ -21,9 +21,9 @@ type (
 	DirectoryScanResult     = bundle.DirectoryScanResult
 	Logger                  = bundle.Logger
 
-	PLCOperation  = plc.PLCOperation
-	PLCClient     = plc.Client
-	ExportOptions = plc.ExportOptions
+	PLCOperation  = plcclient.PLCOperation
+	PLCClient     = plcclient.Client
+	ExportOptions = plcclient.ExportOptions
 )
 
 // Re-export constants
@@ -38,8 +38,8 @@ func NewManager(config *Config, plcClient *PLCClient) (*Manager, error) {
 }
 
 // NewPLCClient creates a new PLC client (convenience wrapper)
-func NewPLCClient(baseURL string, opts ...plc.ClientOption) *PLCClient {
-	return plc.NewClient(baseURL, opts...)
+func NewPLCClient(baseURL string, opts ...plcclient.ClientOption) *PLCClient {
+	return plcclient.NewClient(baseURL, opts...)
 }
 
 // DefaultConfig returns default configuration (convenience wrapper)

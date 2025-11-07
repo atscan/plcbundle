@@ -1,4 +1,4 @@
-package bundle
+package storage
 
 import (
 	"bufio"
@@ -13,15 +13,17 @@ import (
 
 	gozstd "github.com/DataDog/zstd"
 	"github.com/goccy/go-json"
+
+	"tangled.org/atscan.net/plcbundle/bundle"
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // Operations handles low-level bundle file operations
 type Operations struct {
-	logger Logger
+	logger bundle.Logger
 }
 
-func NewOperations(logger Logger) (*Operations, error) {
+func NewOperations(logger bundle.Logger) (*Operations, error) {
 	return &Operations{logger: logger}, nil
 }
 
@@ -371,9 +373,9 @@ func (op *Operations) StripBoundaryDuplicates(operations []plcclient.PLCOperatio
 }
 
 // CreateBundle creates a complete bundle structure from operations
-func (op *Operations) CreateBundle(bundleNumber int, operations []plcclient.PLCOperation, cursor string, parent string) *Bundle {
-	if len(operations) != BUNDLE_SIZE {
-		op.logger.Printf("Warning: bundle has %d operations, expected %d", len(operations), BUNDLE_SIZE)
+func (op *Operations) CreateBundle(bundleNumber int, operations []plcclient.PLCOperation, cursor string, parent string) *bundle.Bundle {
+	if len(operations) != bundle.BUNDLE_SIZE {
+		op.logger.Printf("Warning: bundle has %d operations, expected %d", len(operations), bundle.BUNDLE_SIZE)
 	}
 
 	dids := op.ExtractUniqueDIDs(operations)
@@ -385,7 +387,7 @@ func (op *Operations) CreateBundle(bundleNumber int, operations []plcclient.PLCO
 		cidSlice = append(cidSlice, cid)
 	}
 
-	bundle := &Bundle{
+	bundle := &bundle.Bundle{
 		BundleNumber: bundleNumber,
 		StartTime:    operations[0].CreatedAt,
 		EndTime:      operations[len(operations)-1].CreatedAt,
@@ -407,7 +409,7 @@ func (op *Operations) CreateBundle(bundleNumber int, operations []plcclient.PLCO
 
 // CalculateBundleMetadata calculates complete metadata for a bundle
 // This is the ONE method everyone should use for metadata calculation
-func (op *Operations) CalculateBundleMetadata(bundleNumber int, path string, operations []plcclient.PLCOperation, parent string, cursor string) (*BundleMetadata, error) {
+func (op *Operations) CalculateBundleMetadata(bundleNumber int, path string, operations []plcclient.PLCOperation, parent string, cursor string) (*bundle.BundleMetadata, error) {
 	if len(operations) == 0 {
 		return nil, fmt.Errorf("bundle is empty")
 	}
@@ -437,7 +439,7 @@ func (op *Operations) CalculateBundleMetadata(bundleNumber int, path string, ope
 	// Calculate chain hash
 	chainHash := op.CalculateChainHash(parent, contentHash)
 
-	return &BundleMetadata{
+	return &bundle.BundleMetadata{
 		BundleNumber:     bundleNumber,
 		StartTime:        operations[0].CreatedAt,
 		EndTime:          operations[len(operations)-1].CreatedAt,
@@ -456,7 +458,7 @@ func (op *Operations) CalculateBundleMetadata(bundleNumber int, path string, ope
 
 // CalculateBundleMetadataFast calculates metadata quickly without chain hash
 // Used during parallel scanning - chain hash calculated later sequentially
-func (op *Operations) CalculateBundleMetadataFast(bundleNumber int, path string, operations []plcclient.PLCOperation, cursor string) (*BundleMetadata, error) {
+func (op *Operations) CalculateBundleMetadataFast(bundleNumber int, path string, operations []plcclient.PLCOperation, cursor string) (*bundle.BundleMetadata, error) {
 	if len(operations) == 0 {
 		return nil, fmt.Errorf("bundle is empty")
 	}
@@ -471,7 +473,7 @@ func (op *Operations) CalculateBundleMetadataFast(bundleNumber int, path string,
 	dids := op.ExtractUniqueDIDs(operations)
 
 	// Note: Hash, Parent, and Cursor are set to empty - will be calculated later sequentially
-	return &BundleMetadata{
+	return &bundle.BundleMetadata{
 		BundleNumber:     bundleNumber,
 		StartTime:        operations[0].CreatedAt,
 		EndTime:          operations[len(operations)-1].CreatedAt,

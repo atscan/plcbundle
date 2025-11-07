@@ -189,7 +189,7 @@ type Bundle struct {
     BundleNumber     int                    // Sequential number (1, 2, 3...)
     StartTime        time.Time              // First operation timestamp
     EndTime          time.Time              // Last operation timestamp
-    Operations       []plc.PLCOperation     // The 10,000 operations
+    Operations       []plcclient.PLCOperation     // The 10,000 operations
     DIDCount         int                    // Unique DIDs in bundle
     Hash             string                 // Chain hash (includes history)
     ContentHash      string                 // This bundle's content hash
@@ -1130,7 +1130,7 @@ import (
     "time"
     
     "tangled.org/atscan.net/plcbundle/bundle"
-    "tangled.org/atscan.net/plcbundle/plc"
+    "tangled.org/atscan.net/plcbundle/plcclient"
     plcbundle "tangled.org/atscan.net/plcbundle"
 )
 
@@ -1153,10 +1153,10 @@ func main() {
     }
     
     // Custom PLC client with rate limiting
-    plcClient := plc.NewClient("https://plc.directory",
-        plc.WithRateLimit(60, time.Minute),      // 60 req/min
-        plc.WithTimeout(30*time.Second),         // 30s timeout
-        plc.WithLogger(&MyCustomLogger{}),       // Custom logger
+    plcClient := plcclient.NewClient("https://plc.directory",
+        plcclient.WithRateLimit(60, time.Minute),      // 60 req/min
+        plcclient.WithTimeout(30*time.Second),         // 30s timeout
+        plcclient.WithLogger(&MyCustomLogger{}),       // Custom logger
     )
     
     // Create manager
@@ -1523,15 +1523,15 @@ Configure PLC client appropriately:
 
 ```go
 // Production: Be conservative
-plcClient := plc.NewClient("https://plc.directory",
-    plc.WithRateLimit(60, time.Minute),  // 60 req/min max
-    plc.WithTimeout(60*time.Second),
+plcClient := plcclient.NewClient("https://plc.directory",
+    plcclient.WithRateLimit(60, time.Minute),  // 60 req/min max
+    plcclient.WithTimeout(60*time.Second),
 )
 
 // Development: Can be more aggressive (but respectful)
-plcClient := plc.NewClient("https://plc.directory",
-    plc.WithRateLimit(90, time.Minute),
-    plc.WithTimeout(30*time.Second),
+plcClient := plcclient.NewClient("https://plc.directory",
+    plcclient.WithRateLimit(90, time.Minute),
+    plcclient.WithTimeout(30*time.Second),
 )
 ```
 

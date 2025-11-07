@@ -16,7 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"tangled.org/atscan.net/plcbundle/bundle"
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 var upgrader = websocket.Upgrader{
@@ -692,7 +692,7 @@ func handleDIDDocumentLatestNative(mgr *bundle.Manager, did string) http.Handler
 			return
 		}
 
-		doc, err := plc.ResolveDIDDocument(did, []plc.PLCOperation{*op})
+		doc, err := plcclient.ResolveDIDDocument(did, []plcclient.PLCOperation{*op})
 		if err != nil {
 			if strings.Contains(err.Error(), "deactivated") {
 				sendJSON(w, 410, map[string]string{"error": "DID has been deactivated"})
@@ -709,7 +709,7 @@ func handleDIDDocumentLatestNative(mgr *bundle.Manager, did string) http.Handler
 
 func handleDIDDataNative(mgr *bundle.Manager, did string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := plc.ValidateDIDFormat(did); err != nil {
+		if err := plcclient.ValidateDIDFormat(did); err != nil {
 			sendJSON(w, 400, map[string]string{"error": "Invalid DID format"})
 			return
 		}
@@ -725,7 +725,7 @@ func handleDIDDataNative(mgr *bundle.Manager, did string) http.HandlerFunc {
 			return
 		}
 
-		state, err := plc.BuildDIDState(did, operations)
+		state, err := plcclient.BuildDIDState(did, operations)
 		if err != nil {
 			if strings.Contains(err.Error(), "deactivated") {
 				sendJSON(w, 410, map[string]string{"error": "DID has been deactivated"})
@@ -741,7 +741,7 @@ func handleDIDDataNative(mgr *bundle.Manager, did string) http.HandlerFunc {
 
 func handleDIDAuditLogNative(mgr *bundle.Manager, did string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := plc.ValidateDIDFormat(did); err != nil {
+		if err := plcclient.ValidateDIDFormat(did); err != nil {
 			sendJSON(w, 400, map[string]string{"error": "Invalid DID format"})
 			return
 		}
@@ -757,7 +757,7 @@ func handleDIDAuditLogNative(mgr *bundle.Manager, did string) http.HandlerFunc {
 			return
 		}
 
-		auditLog := plc.FormatAuditLog(operations)
+		auditLog := plcclient.FormatAuditLog(operations)
 		sendJSON(w, 200, auditLog)
 	}
 }
@@ -925,7 +925,7 @@ func streamMempool(conn *websocket.Conn, mgr *bundle.Manager, startCursor int, b
 	return nil
 }
 
-func sendOperation(conn *websocket.Conn, op plc.PLCOperation) error {
+func sendOperation(conn *websocket.Conn, op plcclient.PLCOperation) error {
 	var data []byte
 	var err error
 

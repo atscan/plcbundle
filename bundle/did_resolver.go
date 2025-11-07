@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"sort"
 
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // GetDIDOperationsBundledOnly retrieves operations from bundles only (no mempool)
-func (m *Manager) GetDIDOperationsBundledOnly(ctx context.Context, did string, verbose bool) ([]plc.PLCOperation, error) {
-	if err := plc.ValidateDIDFormat(did); err != nil {
+func (m *Manager) GetDIDOperationsBundledOnly(ctx context.Context, did string, verbose bool) ([]plcclient.PLCOperation, error) {
+	if err := plcclient.ValidateDIDFormat(did); err != nil {
 		return nil, err
 	}
 
@@ -36,13 +36,13 @@ func (m *Manager) GetDIDOperationsBundledOnly(ctx context.Context, did string, v
 }
 
 // GetDIDOperationsFromMempool retrieves operations for a DID from mempool only
-func (m *Manager) GetDIDOperationsFromMempool(did string) ([]plc.PLCOperation, error) {
-	if err := plc.ValidateDIDFormat(did); err != nil {
+func (m *Manager) GetDIDOperationsFromMempool(did string) ([]plcclient.PLCOperation, error) {
+	if err := plcclient.ValidateDIDFormat(did); err != nil {
 		return nil, err
 	}
 
 	if m.mempool == nil {
-		return []plc.PLCOperation{}, nil
+		return []plcclient.PLCOperation{}, nil
 	}
 
 	// Get all mempool operations (max 10K)
@@ -52,7 +52,7 @@ func (m *Manager) GetDIDOperationsFromMempool(did string) ([]plc.PLCOperation, e
 	}
 
 	// Pre-allocate with reasonable capacity
-	matchingOps := make([]plc.PLCOperation, 0, 16)
+	matchingOps := make([]plcclient.PLCOperation, 0, 16)
 
 	// Linear scan (fast for 10K operations)
 	for _, op := range allMempoolOps {
@@ -65,8 +65,8 @@ func (m *Manager) GetDIDOperationsFromMempool(did string) ([]plc.PLCOperation, e
 }
 
 // GetDIDOperations retrieves all operations for a DID (bundles + mempool combined)
-func (m *Manager) GetDIDOperations(ctx context.Context, did string, verbose bool) ([]plc.PLCOperation, error) {
-	if err := plc.ValidateDIDFormat(did); err != nil {
+func (m *Manager) GetDIDOperations(ctx context.Context, did string, verbose bool) ([]plcclient.PLCOperation, error) {
+	if err := plcclient.ValidateDIDFormat(did); err != nil {
 		return nil, err
 	}
 
@@ -97,14 +97,14 @@ func (m *Manager) GetDIDOperations(ctx context.Context, did string, verbose bool
 }
 
 // getDIDOperationsIndexed uses index for fast lookup (PRIVATE - bundles only)
-func (m *Manager) getDIDOperationsIndexed(ctx context.Context, did string, verbose bool) ([]plc.PLCOperation, error) {
+func (m *Manager) getDIDOperationsIndexed(ctx context.Context, did string, verbose bool) ([]plcclient.PLCOperation, error) {
 	locations, err := m.didIndex.GetDIDLocations(did)
 	if err != nil {
 		return nil, err
 	}
 
 	if len(locations) == 0 {
-		return []plc.PLCOperation{}, nil
+		return []plcclient.PLCOperation{}, nil
 	}
 
 	// Filter nullified at index level (save loading those bundles!)
@@ -131,7 +131,7 @@ func (m *Manager) getDIDOperationsIndexed(ctx context.Context, did string, verbo
 	}
 
 	// Load operations
-	var allOps []plc.PLCOperation
+	var allOps []plcclient.PLCOperation
 	for bundleNum, positions := range bundleMap {
 		bundle, err := m.LoadBundle(ctx, int(bundleNum))
 		if err != nil {
@@ -158,8 +158,8 @@ func (m *Manager) getDIDOperationsIndexed(ctx context.Context, did string, verbo
 }
 
 // getDIDOperationsScan falls back to full scan (slow) (PRIVATE - bundles only)
-func (m *Manager) getDIDOperationsScan(ctx context.Context, did string) ([]plc.PLCOperation, error) {
-	var allOps []plc.PLCOperation
+func (m *Manager) getDIDOperationsScan(ctx context.Context, did string) ([]plcclient.PLCOperation, error) {
+	var allOps []plcclient.PLCOperation
 	bundles := m.index.GetBundles()
 
 	for _, meta := range bundles {
@@ -190,8 +190,8 @@ func (m *Manager) getDIDOperationsScan(ctx context.Context, did string) ([]plc.P
 }
 
 // GetLatestDIDOperation returns only the most recent non-nullified operation
-func (m *Manager) GetLatestDIDOperation(ctx context.Context, did string) (*plc.PLCOperation, error) {
-	if err := plc.ValidateDIDFormat(did); err != nil {
+func (m *Manager) GetLatestDIDOperation(ctx context.Context, did string) (*plcclient.PLCOperation, error) {
+	if err := plcclient.ValidateDIDFormat(did); err != nil {
 		return nil, err
 	}
 
@@ -234,7 +234,7 @@ func (m *Manager) GetLatestDIDOperation(ctx context.Context, did string) (*plc.P
 }
 
 // getLatestDIDOperationIndexed uses index to find only the latest operation (PRIVATE)
-func (m *Manager) getLatestDIDOperationIndexed(ctx context.Context, did string) (*plc.PLCOperation, error) {
+func (m *Manager) getLatestDIDOperationIndexed(ctx context.Context, did string) (*plcclient.PLCOperation, error) {
 	// Get all locations from index
 	locations, err := m.didIndex.GetDIDLocations(did)
 	if err != nil {
@@ -330,7 +330,7 @@ func (m *Manager) GetDIDIndexStats() map[string]interface{} {
 
 // GetDIDOperationsWithLocations returns operations along with their bundle/position info
 func (m *Manager) GetDIDOperationsWithLocations(ctx context.Context, did string, verbose bool) ([]PLCOperationWithLocation, error) {
-	if err := plc.ValidateDIDFormat(did); err != nil {
+	if err := plcclient.ValidateDIDFormat(did); err != nil {
 		return nil, err
 	}
 

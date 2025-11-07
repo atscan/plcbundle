@@ -16,7 +16,7 @@ import (
 	"github.com/goccy/go-json"
 
 	"tangled.org/atscan.net/plcbundle/detector"
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 type defaultLogger struct{}
@@ -136,7 +136,7 @@ func cmdDetectorFilter() {
 		totalCount++
 		totalBytes += int64(len(line))
 
-		var op plc.PLCOperation
+		var op plcclient.PLCOperation
 		if err := json.Unmarshal(line, &op); err != nil {
 			continue
 		}
@@ -544,7 +544,7 @@ func parseAndLoadDetectors(detectorNames []string, confidence float64) (*detecto
 }
 
 // detectOperation runs all detectors on an operation and returns labels + confidence
-func detectOperation(ctx context.Context, detectors []detector.Detector, op plc.PLCOperation, minConfidence float64) ([]string, float64) {
+func detectOperation(ctx context.Context, detectors []detector.Detector, op plcclient.PLCOperation, minConfidence float64) ([]string, float64) {
 	// Parse Operation ONCE before running detectors
 	opData, err := op.GetOperationData()
 	if err != nil {

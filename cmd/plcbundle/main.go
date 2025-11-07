@@ -19,7 +19,7 @@ import (
 	"github.com/goccy/go-json"
 
 	"tangled.org/atscan.net/plcbundle/bundle"
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // Version information (injected at build time via ldflags or read from build info)
@@ -149,9 +149,9 @@ func getManager(plcURL string) (*bundle.Manager, string, error) {
 
 	config := bundle.DefaultConfig(dir)
 
-	var client *plc.Client
+	var client *plcclient.Client
 	if plcURL != "" {
-		client = plc.NewClient(plcURL)
+		client = plcclient.NewClient(plcURL)
 	}
 
 	mgr, err := bundle.NewManager(config, client)
@@ -1289,9 +1289,9 @@ func cmdServe() {
 		}
 	}
 
-	var client *plc.Client
+	var client *plcclient.Client
 	if plcURLForManager != "" {
-		client = plc.NewClient(plcURLForManager)
+		client = plcclient.NewClient(plcURLForManager)
 	}
 
 	fmt.Printf("Starting plcbundle HTTP server...\n")

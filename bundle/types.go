@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"tangled.org/atscan.net/plcbundle/plc"
+	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 const (
@@ -15,11 +15,11 @@ const (
 
 // Bundle represents a PLC bundle
 type Bundle struct {
-	BundleNumber int                `json:"bundle_number"`
-	StartTime    time.Time          `json:"start_time"`
-	EndTime      time.Time          `json:"end_time"`
-	Operations   []plc.PLCOperation `json:"-"`
-	DIDCount     int                `json:"did_count"`
+	BundleNumber int                      `json:"bundle_number"`
+	StartTime    time.Time                `json:"start_time"`
+	EndTime      time.Time                `json:"end_time"`
+	Operations   []plcclient.PLCOperation `json:"-"`
+	DIDCount     int                      `json:"did_count"`
 
 	Hash        string `json:"hash"`         // Chain hash (primary)
 	ContentHash string `json:"content_hash"` // Content hash
@@ -216,7 +216,7 @@ type CloneResult struct {
 
 // PLCOperationWithLocation contains an operation with its bundle/position metadata
 type PLCOperationWithLocation struct {
-	Operation plc.PLCOperation
+	Operation plcclient.PLCOperation
 	Bundle    int
 	Position  int
 }
