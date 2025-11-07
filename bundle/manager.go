@@ -935,8 +935,13 @@ func (m *Manager) GetDIDOperations(ctx context.Context, did string, verbose bool
 		return nil, err
 	}
 
-	// Get bundled operations
-	bundledOps, err := m.getDIDOperationsBundledOnly(ctx, did, verbose)
+	// Set verbose mode
+	if m.didIndex != nil {
+		m.didIndex.SetVerbose(verbose)
+	}
+
+	// Get bundled operations from DID index
+	bundledOps, err := m.didIndex.GetDIDOperations(ctx, did, m)
 	if err != nil {
 		return nil, err
 	}
@@ -961,87 +966,6 @@ func (m *Manager) GetDIDOperations(ctx context.Context, did string, verbose bool
 	return allOps, nil
 }
 
-// getDIDOperationsBundledOnly retrieves operations from bundles only (private helper)
-func (m *Manager) getDIDOperationsBundledOnly(ctx context.Context, did string, verbose bool) ([]plcclient.PLCOperation, error) {
-	// Set verbose mode on index
-	if m.didIndex != nil {
-		m.didIndex.SetVerbose(verbose)
-	}
-
-	// Use index if available
-	if m.didIndex != nil && m.didIndex.Exists() {
-		if verbose {
-			m.logger.Printf("DEBUG: Using DID index for lookup")
-		}
-
-		locations, err := m.didIndex.GetDIDLocations(did)
-		if err != nil {
-			return nil, err
-		}
-
-		if len(locations) == 0 {
-			return []plcclient.PLCOperation{}, nil
-		}
-
-		// Filter nullified
-		var validLocations []didindex.OpLocation
-		for _, loc := range locations {
-			if !loc.Nullified {
-				validLocations = append(validLocations, loc)
-			}
-		}
-
-		if verbose {
-			m.logger.Printf("DEBUG: Filtered %d valid locations (from %d total)",
-				len(validLocations), len(locations))
-		}
-
-		// Group by bundle
-		bundleMap := make(map[uint16][]uint16)
-		for _, loc := range validLocations {
-			bundleMap[loc.Bundle] = append(bundleMap[loc.Bundle], loc.Position)
-		}
-
-		if verbose {
-			m.logger.Printf("DEBUG: Loading from %d bundle(s)", len(bundleMap))
-		}
-
-		// Load operations
-		var allOps []plcclient.PLCOperation
-		for bundleNum, positions := range bundleMap {
-			bundle, err := m.LoadBundle(ctx, int(bundleNum))
-			if err != nil {
-				m.logger.Printf("Warning: failed to load bundle %d: %v", bundleNum, err)
-				continue
-			}
-
-			for _, pos := range positions {
-				if int(pos) < len(bundle.Operations) {
-					allOps = append(allOps, bundle.Operations[pos])
-				}
-			}
-		}
-
-		if verbose {
-			m.logger.Printf("DEBUG: Loaded %d total operations", len(allOps))
-		}
-
-		sort.Slice(allOps, func(i, j int) bool {
-			return allOps[i].CreatedAt.Before(allOps[j].CreatedAt)
-		})
-
-		return allOps, nil
-	}
-
-	// Fallback to full scan
-	if verbose {
-		m.logger.Printf("DEBUG: DID index not available, using full scan")
-	}
-	m.logger.Printf("Warning: DID index not available, falling back to full scan")
-
-	return m.getDIDOperationsScan(ctx, did)
-}
-
 // getDIDOperationsFromMempool retrieves operations for a DID from mempool only
 func (m *Manager) GetDIDOperationsFromMempool(did string) ([]plcclient.PLCOperation, error) {
 	if m.mempool == nil {
@@ -1064,48 +988,15 @@ func (m *Manager) GetDIDOperationsFromMempool(did string) ([]plcclient.PLCOperat
 	return matchingOps, nil
 }
 
-// getDIDOperationsScan falls back to full scan (private helper)
-func (m *Manager) getDIDOperationsScan(ctx context.Context, did string) ([]plcclient.PLCOperation, error) {
-	var allOps []plcclient.PLCOperation
-	bundles := m.index.GetBundles()
-
-	for _, meta := range bundles {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
-		bundle, err := m.LoadBundle(ctx, meta.BundleNumber)
-		if err != nil {
-			m.logger.Printf("Warning: failed to load bundle %d: %v", meta.BundleNumber, err)
-			continue
-		}
-
-		for _, op := range bundle.Operations {
-			if op.DID == did {
-				allOps = append(allOps, op)
-			}
-		}
-	}
-
-	sort.Slice(allOps, func(i, j int) bool {
-		return allOps[i].CreatedAt.Before(allOps[j].CreatedAt)
-	})
-
-	return allOps, nil
-}
-
 // GetLatestDIDOperation returns only the most recent non-nullified operation
 func (m *Manager) GetLatestDIDOperation(ctx context.Context, did string) (*plcclient.PLCOperation, error) {
 	if err := plcclient.ValidateDIDFormat(did); err != nil {
 		return nil, err
 	}
 
-	// Check mempool first
-	mempoolOps, err := m.GetDIDOperationsFromMempool(did)
-	if err == nil && len(mempoolOps) > 0 {
-		// Find latest non-nullified in mempool
+	// Check mempool first (most recent data)
+	mempoolOps, _ := m.GetDIDOperationsFromMempool(did)
+	if len(mempoolOps) > 0 {
 		for i := len(mempoolOps) - 1; i >= 0; i-- {
 			if !mempoolOps[i].IsNullified() {
 				return &mempoolOps[i], nil
@@ -1113,62 +1004,8 @@ func (m *Manager) GetLatestDIDOperation(ctx context.Context, did string) (*plccl
 		}
 	}
 
-	// Use index if available
-	if m.didIndex != nil && m.didIndex.Exists() {
-		locations, err := m.didIndex.GetDIDLocations(did)
-		if err != nil {
-			return nil, err
-		}
-
-		if len(locations) == 0 {
-			return nil, fmt.Errorf("DID not found")
-		}
-
-		// Find latest non-nullified location
-		var latestLoc *didindex.OpLocation
-		for i := range locations {
-			if locations[i].Nullified {
-				continue
-			}
-
-			if latestLoc == nil {
-				latestLoc = &locations[i]
-			} else {
-				if locations[i].Bundle > latestLoc.Bundle ||
-					(locations[i].Bundle == latestLoc.Bundle && locations[i].Position > latestLoc.Position) {
-					latestLoc = &locations[i]
-				}
-			}
-		}
-
-		if latestLoc == nil {
-			return nil, fmt.Errorf("no valid operations found (all nullified)")
-		}
-
-		// Load operation
-		op, err := m.LoadOperation(ctx, int(latestLoc.Bundle), int(latestLoc.Position))
-		if err != nil {
-			return nil, fmt.Errorf("failed to load operation at bundle %d position %d: %w",
-				latestLoc.Bundle, latestLoc.Position, err)
-		}
-
-		return op, nil
-	}
-
-	// Fallback to full lookup
-	ops, err := m.getDIDOperationsBundledOnly(ctx, did, false)
-	if err != nil {
-		return nil, err
-	}
-
-	// Find latest non-nullified
-	for i := len(ops) - 1; i >= 0; i-- {
-		if !ops[i].IsNullified() {
-			return &ops[i], nil
-		}
-	}
-
-	return nil, fmt.Errorf("no valid operations found")
+	// Delegate to DID index for bundled operations
+	return m.didIndex.GetLatestDIDOperation(ctx, did, m)
 }
 
 // GetDIDOperationsWithLocations returns operations along with their bundle/position info
@@ -1182,116 +1019,23 @@ func (m *Manager) GetDIDOperationsWithLocations(ctx context.Context, did string,
 		m.didIndex.SetVerbose(verbose)
 	}
 
-	// Use index if available
-	if m.didIndex != nil && m.didIndex.Exists() {
-		if verbose {
-			m.logger.Printf("DEBUG: Using DID index for lookup with locations")
-		}
-		return m.getDIDOperationsWithLocationsIndexed(ctx, did, verbose)
-	}
-
-	// Fallback to scan
-	if verbose {
-		m.logger.Printf("DEBUG: Using full scan with locations")
-	}
-	return m.getDIDOperationsWithLocationsScan(ctx, did)
-}
-
-// getDIDOperationsWithLocationsIndexed uses index for fast lookup with locations
-func (m *Manager) getDIDOperationsWithLocationsIndexed(ctx context.Context, did string, verbose bool) ([]PLCOperationWithLocation, error) {
-	locations, err := m.didIndex.GetDIDLocations(did)
+	// Delegate to DID index
+	results, err := m.didIndex.GetDIDOperationsWithLocations(ctx, did, m)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(locations) == 0 {
-		return []PLCOperationWithLocation{}, nil
-	}
-
-	if verbose {
-		m.logger.Printf("DEBUG: Found %d locations in index", len(locations))
-	}
-
-	// Load operations with their locations preserved
-	var results []PLCOperationWithLocation
-
-	// Group by bundle for efficient loading
-	bundleMap := make(map[uint16][]didindex.OpLocation)
-	for _, loc := range locations {
-		bundleMap[loc.Bundle] = append(bundleMap[loc.Bundle], loc)
-	}
-
-	if verbose {
-		m.logger.Printf("DEBUG: Loading from %d bundle(s)", len(bundleMap))
-	}
-
-	for bundleNum, locs := range bundleMap {
-		bundle, err := m.LoadBundle(ctx, int(bundleNum))
-		if err != nil {
-			m.logger.Printf("Warning: failed to load bundle %d: %v", bundleNum, err)
-			continue
-		}
-
-		for _, loc := range locs {
-			if int(loc.Position) >= len(bundle.Operations) {
-				continue
-			}
-
-			op := bundle.Operations[loc.Position]
-			results = append(results, PLCOperationWithLocation{
-				Operation: op,
-				Bundle:    int(loc.Bundle),
-				Position:  int(loc.Position),
-			})
+	// Convert to bundle's type
+	bundleResults := make([]PLCOperationWithLocation, len(results))
+	for i, r := range results {
+		bundleResults[i] = PLCOperationWithLocation{
+			Operation: r.Operation,
+			Bundle:    r.Bundle,
+			Position:  r.Position,
 		}
 	}
 
-	// Sort by time
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Operation.CreatedAt.Before(results[j].Operation.CreatedAt)
-	})
-
-	if verbose {
-		m.logger.Printf("DEBUG: Loaded %d total operations", len(results))
-	}
-
-	return results, nil
-}
-
-// getDIDOperationsWithLocationsScan falls back to full scan with locations
-func (m *Manager) getDIDOperationsWithLocationsScan(ctx context.Context, did string) ([]PLCOperationWithLocation, error) {
-	var results []PLCOperationWithLocation
-	bundles := m.index.GetBundles()
-
-	for _, meta := range bundles {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
-		bundle, err := m.LoadBundle(ctx, meta.BundleNumber)
-		if err != nil {
-			m.logger.Printf("Warning: failed to load bundle %d: %v", meta.BundleNumber, err)
-			continue
-		}
-
-		for pos, op := range bundle.Operations {
-			if op.DID == did {
-				results = append(results, PLCOperationWithLocation{
-					Operation: op,
-					Bundle:    meta.BundleNumber,
-					Position:  pos,
-				})
-			}
-		}
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Operation.CreatedAt.Before(results[j].Operation.CreatedAt)
-	})
-
-	return results, nil
+	return bundleResults, nil
 }
 
 // VerifyChain verifies the entire bundle chain
@@ -1428,54 +1172,11 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		return nil, err
 	}
 
-	bundle := m.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash)
-	m.mempool.Save()
+	// Create bundle structure directly
+	syncBundle := internalsync.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash, m.operations)
 
-	return bundle, nil
-}
-
-// CloneFromRemote delegates to sync.Cloner
-func (m *Manager) CloneFromRemote(ctx context.Context, opts internalsync.CloneOptions) (*internalsync.CloneResult, error) {
-	// Delegate to cloner with index update callback
-	return m.cloner.Clone(ctx, opts, m.index, m.updateIndexFromRemote)
-}
-
-// updateIndexFromRemote updates local index with metadata from remote index
-func (m *Manager) updateIndexFromRemote(bundleNumbers []int, remoteMeta map[int]*bundleindex.BundleMetadata, verbose bool) error {
-	if len(bundleNumbers) == 0 {
-		return nil
-	}
-
-	// Add/update bundles in local index using remote metadata
-	// Hash verification was already done during download
-	for _, num := range bundleNumbers {
-		if meta, exists := remoteMeta[num]; exists {
-			// Verify the file exists locally
-			path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", num))
-			if !m.operations.FileExists(path) {
-				m.logger.Printf("Warning: bundle %06d not found locally, skipping", num)
-				continue
-			}
-
-			// Add to index (no need to re-verify hash - already verified during download)
-			m.index.AddBundle(meta)
-
-			if verbose {
-				m.logger.Printf("Added bundle %06d to index", num)
-			}
-		}
-	}
-
-	// Save index
-	return m.SaveIndex()
-}
-
-func (m *Manager) CreateBundle(bundleNumber int, operations []plcclient.PLCOperation, cursor string, parent string) *Bundle {
-	// Delegate to sync package
-	syncBundle := internalsync.CreateBundle(bundleNumber, operations, cursor, parent, m.operations)
-
-	// Convert if needed (or just return directly if types match)
-	return &Bundle{
+	// Convert from sync.Bundle to bundle.Bundle inline
+	bundle := &Bundle{
 		BundleNumber: syncBundle.BundleNumber,
 		StartTime:    syncBundle.StartTime,
 		EndTime:      syncBundle.EndTime,
@@ -1486,5 +1187,37 @@ func (m *Manager) CreateBundle(bundleNumber int, operations []plcclient.PLCOpera
 		BoundaryCIDs: syncBundle.BoundaryCIDs,
 		Compressed:   syncBundle.Compressed,
 		CreatedAt:    syncBundle.CreatedAt,
+		// Note: Hash fields are empty here, will be calculated in SaveBundle
 	}
+
+	m.mempool.Save()
+
+	return bundle, nil
+}
+
+// CloneFromRemote clones bundles from a remote endpoint
+func (m *Manager) CloneFromRemote(ctx context.Context, opts internalsync.CloneOptions) (*internalsync.CloneResult, error) {
+	// Define index update callback inline
+	updateIndexCallback := func(bundleNumbers []int, remoteMeta map[int]*bundleindex.BundleMetadata, verbose bool) error {
+		if len(bundleNumbers) == 0 {
+			return nil
+		}
+
+		// Create file existence checker
+		fileExists := func(bundleNum int) bool {
+			path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", bundleNum))
+			return m.operations.FileExists(path)
+		}
+
+		// Update index with remote metadata
+		if err := m.index.UpdateFromRemote(bundleNumbers, remoteMeta, fileExists, verbose, m.logger); err != nil {
+			return err
+		}
+
+		// Save index
+		return m.SaveIndex()
+	}
+
+	// Delegate to cloner with inline callback
+	return m.cloner.Clone(ctx, opts, m.index, updateIndexCallback)
 }

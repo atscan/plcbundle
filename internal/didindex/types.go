@@ -3,6 +3,8 @@ package didindex
 import (
 	"sync"
 	"time"
+
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 )
 
 const (
@@ -69,4 +71,11 @@ type OpLocation struct {
 type ShardBuilder struct {
 	entries map[string][]OpLocation
 	mu      sync.Mutex
+}
+
+// OpLocationWithOperation contains an operation with its bundle/position
+type OpLocationWithOperation struct {
+	Operation plcclient.PLCOperation
+	Bundle    int
+	Position  int
 }

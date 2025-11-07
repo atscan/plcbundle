@@ -11,6 +11,7 @@ import (
 // The bundle.Manager implements this interface
 type BundleProvider interface {
 	LoadBundleForDIDIndex(ctx context.Context, bundleNumber int) (*BundleData, error)
+	LoadOperation(ctx context.Context, bundleNumber int, position int) (*plcclient.PLCOperation, error)
 	GetBundleIndex() BundleIndexProvider
 }
 

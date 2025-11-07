@@ -280,3 +280,71 @@ func (idx *Index) FindGaps() []int {
 
 	return gaps
 }
+
+// Logger interface for bundleindex
+type Logger interface {
+	Printf(format string, v ...interface{})
+}
+
+// UpdateFromRemote updates the index with metadata from remote bundles
+// fileExists is a callback to check if bundle file exists locally
+func (idx *Index) UpdateFromRemote(
+	bundleNumbers []int,
+	remoteMeta map[int]*BundleMetadata,
+	fileExists func(bundleNum int) bool,
+	verbose bool,
+	logger Logger,
+) error {
+	if len(bundleNumbers) == 0 {
+		return nil
+	}
+
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	addedCount := 0
+	for _, num := range bundleNumbers {
+		meta, exists := remoteMeta[num]
+		if !exists {
+			continue
+		}
+
+		// Verify the file exists locally
+		if !fileExists(num) {
+			if logger != nil && verbose {
+				logger.Printf("Warning: bundle %06d not found locally, skipping", num)
+			}
+			continue
+		}
+
+		// Add to index (uses existing AddBundle logic but we're already locked)
+		// Check if bundle already exists
+		found := false
+		for i, existing := range idx.Bundles {
+			if existing.BundleNumber == num {
+				// Update existing
+				idx.Bundles[i] = meta
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			// Add new bundle
+			idx.Bundles = append(idx.Bundles, meta)
+		}
+
+		addedCount++
+
+		if logger != nil && verbose {
+			logger.Printf("Added bundle %06d to index", num)
+		}
+	}
+
+	if addedCount > 0 {
+		idx.sort()
+		idx.recalculate()
+	}
+
+	return nil
+}

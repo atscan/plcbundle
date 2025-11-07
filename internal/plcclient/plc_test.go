@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 	"tangled.org/atscan.net/plcbundle/internal/storage"
-	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // TestPLCOperation tests operation parsing and methods
