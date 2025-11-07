@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -1446,14 +1447,14 @@ func cmdServe() {
 		go runSync(ctx, mgr, syncInterval, *verbose, *enableResolver)
 	}
 
-	// Create and run server
-	server := newServerHandler(mgr, *sync, *enableWebSocket, *enableResolver)
+	handler := newServerHandler(mgr, *sync, *enableWebSocket, *enableResolver)
+	server := &http.Server{
+		Addr:    addr,
+		Handler: handler,
+	}
 
-	// Run server (blocks until error or shutdown)
-	if err := server.Run(addr); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
-
-		// Ensure cleanup on error
 		mgr.SaveMempool()
 		mgr.Close()
 		os.Exit(1)

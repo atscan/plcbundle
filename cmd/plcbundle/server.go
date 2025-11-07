@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"git.urbach.dev/go/web"
 	"github.com/goccy/go-json"
 	"github.com/gorilla/websocket"
 
@@ -33,145 +32,143 @@ var syncInterval time.Duration
 var verboseMode bool
 var resolverEnabled bool
 
-func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolverEnabled bool) web.Server {
-	s := web.NewServer()
+// newServerHandler creates HTTP handler with all routes
+func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolverEnabled bool) http.Handler {
+	mux := http.NewServeMux()
 
-	// CORS middleware
-	s.Use(corsMiddleware)
+	// Specific routes first (highest priority)
+	mux.HandleFunc("GET /index.json", handleIndexJSONNative(mgr))
+	mux.HandleFunc("GET /bundle/{number}", handleBundleNative(mgr))
+	mux.HandleFunc("GET /data/{number}", handleBundleDataNative(mgr))
+	mux.HandleFunc("GET /jsonl/{number}", handleBundleJSONLNative(mgr))
+	mux.HandleFunc("GET /status", handleStatusNative(mgr, syncMode, wsEnabled))
+	mux.HandleFunc("GET /debug/memory", handleDebugMemoryNative(mgr))
 
-	// Root endpoint
-	s.Get("/", func(ctx web.Context) error {
-		return handleRoot(ctx, mgr, syncMode, wsEnabled, resolverEnabled)
-	})
-
-	// Bundle endpoints
-	s.Get("/index.json", func(ctx web.Context) error {
-		return handleIndexJSON(ctx, mgr)
-	})
-
-	s.Get("/bundle/:number", func(ctx web.Context) error {
-		return handleBundle(ctx, mgr)
-	})
-
-	s.Get("/data/:number", func(ctx web.Context) error {
-		return handleBundleData(ctx, mgr)
-	})
-
-	s.Get("/jsonl/:number", func(ctx web.Context) error {
-		return handleBundleJSONL(ctx, mgr)
-	})
-
-	s.Get("/status", func(ctx web.Context) error {
-		return handleStatus(ctx, mgr, syncMode, wsEnabled)
-	})
-
-	s.Get("/debug/memory", func(ctx web.Context) error {
-		return handleDebugMemory(ctx, mgr)
-	})
-
-	// WebSocket endpoint - needs special handling
+	// WebSocket endpoint
 	if wsEnabled {
-		s.Get("/ws", func(ctx web.Context) error {
-			// WebSocket needs raw ResponseWriter, get it from underlying request
-			handleWebSocketRaw(ctx, mgr)
-			return nil
-		})
+		mux.HandleFunc("GET /ws", handleWebSocketNative(mgr))
 	}
 
 	// Sync mode endpoints
 	if syncMode {
-		s.Get("/mempool", func(ctx web.Context) error {
-			return handleMempool(ctx, mgr)
-		})
+		mux.HandleFunc("GET /mempool", handleMempoolNative(mgr))
 	}
 
-	// DID resolution endpoints (must be LAST to avoid conflicts)
-	if resolverEnabled {
-		// Single catch-all handler for DID routes
-		s.Get("/*path", func(ctx web.Context) error {
-			path := ctx.Request().Param("path")
+	// Combined root and DID resolver handler
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
 
-			// Remove leading slash
-			path = strings.TrimPrefix(path, "/")
+		// Handle exact root
+		if path == "/" {
+			handleRootNative(mgr, syncMode, wsEnabled, resolverEnabled)(w, r)
+			return
+		}
 
-			// Parse DID and sub-path
-			parts := strings.SplitN(path, "/", 2)
-			did := parts[0]
+		// Handle DID routes if enabled
+		if resolverEnabled {
+			handleDIDRouting(w, r, mgr)
+			return
+		}
 
-			// Validate it's a DID
-			if !strings.HasPrefix(did, "did:plc:") {
-				return sendJSON(ctx, 404, map[string]string{"error": "not found"})
-			}
+		// 404 for everything else
+		sendJSON(w, 404, map[string]string{"error": "not found"})
+	})
 
-			// Route based on sub-path
-			if len(parts) == 1 {
-				// /did:plc:xxx -> DID document
-				return handleDIDDocumentLatest(ctx, mgr, did)
-			} else if parts[1] == "data" {
-				// /did:plc:xxx/data -> PLC state
-				return handleDIDData(ctx, mgr, did)
-			} else if parts[1] == "log/audit" {
-				// /did:plc:xxx/log/audit -> Audit log
-				return handleDIDAuditLog(ctx, mgr, did)
-			}
-
-			return sendJSON(ctx, 404, map[string]string{"error": "not found"})
-		})
-	}
-
-	return s
+	// Wrap with CORS middleware
+	return corsMiddleware(mux)
 }
 
-// Helper to send JSON responses using goccy/go-json
-func sendJSON(ctx web.Context, statusCode int, data interface{}) error {
-	ctx.Response().SetHeader("Content-Type", "application/json")
+// handleDIDRouting routes DID-related requests
+func handleDIDRouting(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager) {
+	path := strings.TrimPrefix(r.URL.Path, "/")
 
-	if statusCode != 200 {
-		ctx.Status(statusCode)
+	// Parse DID and sub-path
+	parts := strings.SplitN(path, "/", 2)
+	did := parts[0]
+
+	// Validate it's a DID
+	if !strings.HasPrefix(did, "did:plc:") {
+		sendJSON(w, 404, map[string]string{"error": "not found"})
+		return
 	}
+
+	// Route based on sub-path
+	if len(parts) == 1 {
+		// /did:plc:xxx -> DID document
+		handleDIDDocumentLatestNative(mgr, did)(w, r)
+	} else if parts[1] == "data" {
+		// /did:plc:xxx/data -> PLC state
+		handleDIDDataNative(mgr, did)(w, r)
+	} else if parts[1] == "log/audit" {
+		// /did:plc:xxx/log/audit -> Audit log
+		handleDIDAuditLogNative(mgr, did)(w, r)
+	} else {
+		sendJSON(w, 404, map[string]string{"error": "not found"})
+	}
+}
+
+// corsMiddleware adds CORS headers (skips WebSocket upgrade requests)
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if this is a WebSocket upgrade request
+		if r.Header.Get("Upgrade") == "websocket" {
+			// Skip CORS for WebSocket - pass through directly
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Normal CORS handling for non-WebSocket requests
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+
+		if requestedHeaders := r.Header.Get("Access-Control-Request-Headers"); requestedHeaders != "" {
+			w.Header().Set("Access-Control-Allow-Headers", requestedHeaders)
+		} else {
+			w.Header().Set("Access-Control-Allow-Headers", "*")
+		}
+
+		w.Header().Set("Access-Control-Max-Age", "86400")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(204)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// sendJSON sends JSON response
+func sendJSON(w http.ResponseWriter, statusCode int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
 
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return err
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error":"failed to marshal JSON"}`))
+		return
 	}
 
-	_, err = ctx.Response().Write(jsonData)
-	return err
+	w.WriteHeader(statusCode)
+	w.Write(jsonData)
 }
 
-// CORS middleware
-func corsMiddleware(ctx web.Context) error {
-	ctx.Response().SetHeader("Access-Control-Allow-Origin", "*")
-	ctx.Response().SetHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+// Handler implementations
 
-	if requestedHeaders := ctx.Request().Header("Access-Control-Request-Headers"); requestedHeaders != "" {
-		ctx.Response().SetHeader("Access-Control-Allow-Headers", requestedHeaders)
-	} else {
-		ctx.Response().SetHeader("Access-Control-Allow-Headers", "*")
-	}
+func handleRootNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolverEnabled bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
-	ctx.Response().SetHeader("Access-Control-Max-Age", "86400")
+		index := mgr.GetIndex()
+		stats := index.GetStats()
+		bundleCount := stats["bundle_count"].(int)
 
-	if ctx.Request().Method() == "OPTIONS" {
-		return ctx.Status(204).String("")
-	}
+		baseURL := getBaseURL(r)
+		wsURL := getWSURL(r)
 
-	return ctx.Next(ctx)
-}
+		var sb strings.Builder
 
-func handleRoot(ctx web.Context, mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolverEnabled bool) error {
-	ctx.Response().SetHeader("Content-Type", "text/plain; charset=utf-8")
-
-	index := mgr.GetIndex()
-	stats := index.GetStats()
-	bundleCount := stats["bundle_count"].(int)
-
-	baseURL := getBaseURLFromContext(ctx)
-	wsURL := getWSURLFromContext(ctx)
-
-	var sb strings.Builder
-
-	sb.WriteString(`
+		sb.WriteString(`
 
 	⠀⠀⠀⠀⠀⠀⠀⠀⠀⠄⠀⡀⠀⠀⠀⠀⠀⠀⢀⠀⠀⡀⠀⢀⠀⢀⡀⣤⡢⣤⡤⡀⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⡄⡄⠐⡀⠈⣀⠀⡠⡠⠀⣢⣆⢌⡾⢙⠺⢽⠾⡋⣻⡷⡫⢵⣭⢦⣴⠦⠀⢠⠀⠀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -210,389 +207,408 @@ func handleRoot(ctx web.Context, mgr *bundle.Manager, syncMode bool, wsEnabled b
 
 `)
 
-	sb.WriteString("\nplcbundle server\n\n")
-	sb.WriteString("What is PLC Bundle?\n")
-	sb.WriteString("━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString("plcbundle archives AT Protocol's DID PLC Directory operations into\n")
-	sb.WriteString("immutable, cryptographically-chained bundles of 10,000 operations.\n\n")
-	sb.WriteString("More info: https://tangled.org/@atscan.net/plcbundle\n\n")
+		sb.WriteString("\nplcbundle server\n\n")
+		sb.WriteString("What is PLC Bundle?\n")
+		sb.WriteString("━━━━━━━━━━━━━━━━━━━━\n")
+		sb.WriteString("plcbundle archives AT Protocol's DID PLC Directory operations into\n")
+		sb.WriteString("immutable, cryptographically-chained bundles of 10,000 operations.\n\n")
+		sb.WriteString("More info: https://tangled.org/@atscan.net/plcbundle\n\n")
 
-	if bundleCount > 0 {
-		sb.WriteString("Bundles\n")
-		sb.WriteString("━━━━━━━\n")
-		sb.WriteString(fmt.Sprintf("  Bundle count:  %d\n", bundleCount))
+		if bundleCount > 0 {
+			sb.WriteString("Bundles\n")
+			sb.WriteString("━━━━━━━\n")
+			sb.WriteString(fmt.Sprintf("  Bundle count:  %d\n", bundleCount))
 
-		firstBundle := stats["first_bundle"].(int)
-		lastBundle := stats["last_bundle"].(int)
-		totalSize := stats["total_size"].(int64)
-		totalUncompressed := stats["total_uncompressed_size"].(int64)
+			firstBundle := stats["first_bundle"].(int)
+			lastBundle := stats["last_bundle"].(int)
+			totalSize := stats["total_size"].(int64)
+			totalUncompressed := stats["total_uncompressed_size"].(int64)
 
-		sb.WriteString(fmt.Sprintf("  Last bundle:   %d (%s)\n", lastBundle,
-			stats["updated_at"].(time.Time).Format("2006-01-02 15:04:05")))
-		sb.WriteString(fmt.Sprintf("  Range:         %06d - %06d\n", firstBundle, lastBundle))
-		sb.WriteString(fmt.Sprintf("  Total size:    %.2f MB\n", float64(totalSize)/(1000*1000)))
-		sb.WriteString(fmt.Sprintf("  Uncompressed:  %.2f MB (%.2fx)\n",
-			float64(totalUncompressed)/(1000*1000),
-			float64(totalUncompressed)/float64(totalSize)))
+			sb.WriteString(fmt.Sprintf("  Last bundle:   %d (%s)\n", lastBundle,
+				stats["updated_at"].(time.Time).Format("2006-01-02 15:04:05")))
+			sb.WriteString(fmt.Sprintf("  Range:         %06d - %06d\n", firstBundle, lastBundle))
+			sb.WriteString(fmt.Sprintf("  Total size:    %.2f MB\n", float64(totalSize)/(1000*1000)))
+			sb.WriteString(fmt.Sprintf("  Uncompressed:  %.2f MB (%.2fx)\n",
+				float64(totalUncompressed)/(1000*1000),
+				float64(totalUncompressed)/float64(totalSize)))
 
-		if gaps, ok := stats["gaps"].(int); ok && gaps > 0 {
-			sb.WriteString(fmt.Sprintf("  ⚠ Gaps:        %d missing bundles\n", gaps))
+			if gaps, ok := stats["gaps"].(int); ok && gaps > 0 {
+				sb.WriteString(fmt.Sprintf("  ⚠ Gaps:        %d missing bundles\n", gaps))
+			}
+
+			firstMeta, err := index.GetBundle(firstBundle)
+			if err == nil {
+				sb.WriteString(fmt.Sprintf("\n  Root: %s\n", firstMeta.Hash))
+			}
+
+			lastMeta, err := index.GetBundle(lastBundle)
+			if err == nil {
+				sb.WriteString(fmt.Sprintf("  Head: %s\n", lastMeta.Hash))
+			}
 		}
 
-		firstMeta, err := index.GetBundle(firstBundle)
-		if err == nil {
-			sb.WriteString(fmt.Sprintf("\n  Root: %s\n", firstMeta.Hash))
+		if syncMode {
+			mempoolStats := mgr.GetMempoolStats()
+			count := mempoolStats["count"].(int)
+			targetBundle := mempoolStats["target_bundle"].(int)
+			canCreate := mempoolStats["can_create_bundle"].(bool)
+
+			sb.WriteString("\nMempool Stats\n")
+			sb.WriteString("━━━━━━━━━━━━━\n")
+			sb.WriteString(fmt.Sprintf("  Target bundle:     %d\n", targetBundle))
+			sb.WriteString(fmt.Sprintf("  Operations:        %d / %d\n", count, bundle.BUNDLE_SIZE))
+			sb.WriteString(fmt.Sprintf("  Can create bundle: %v\n", canCreate))
+
+			if count > 0 {
+				progress := float64(count) / float64(bundle.BUNDLE_SIZE) * 100
+				sb.WriteString(fmt.Sprintf("  Progress:          %.1f%%\n", progress))
+
+				barWidth := 50
+				filled := int(float64(barWidth) * float64(count) / float64(bundle.BUNDLE_SIZE))
+				if filled > barWidth {
+					filled = barWidth
+				}
+				bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+				sb.WriteString(fmt.Sprintf("  [%s]\n", bar))
+
+				if firstTime, ok := mempoolStats["first_time"].(time.Time); ok {
+					sb.WriteString(fmt.Sprintf("  First op:          %s\n", firstTime.Format("2006-01-02 15:04:05")))
+				}
+				if lastTime, ok := mempoolStats["last_time"].(time.Time); ok {
+					sb.WriteString(fmt.Sprintf("  Last op:           %s\n", lastTime.Format("2006-01-02 15:04:05")))
+				}
+			} else {
+				sb.WriteString("  (empty)\n")
+			}
 		}
 
-		lastMeta, err := index.GetBundle(lastBundle)
-		if err == nil {
-			sb.WriteString(fmt.Sprintf("  Head: %s\n", lastMeta.Hash))
+		if didStats := mgr.GetDIDIndexStats(); didStats["exists"].(bool) {
+			sb.WriteString("\nDID Index\n")
+			sb.WriteString("━━━━━━━━━\n")
+			sb.WriteString("  Status:        enabled\n")
+
+			indexedDIDs := didStats["indexed_dids"].(int64)
+			mempoolDIDs := didStats["mempool_dids"].(int64)
+			totalDIDs := didStats["total_dids"].(int64)
+
+			if mempoolDIDs > 0 {
+				sb.WriteString(fmt.Sprintf("  Total DIDs:    %s (%s indexed + %s mempool)\n",
+					formatNumber(int(totalDIDs)),
+					formatNumber(int(indexedDIDs)),
+					formatNumber(int(mempoolDIDs))))
+			} else {
+				sb.WriteString(fmt.Sprintf("  Total DIDs:    %s\n", formatNumber(int(totalDIDs))))
+			}
+
+			sb.WriteString(fmt.Sprintf("  Cached shards: %d / %d\n",
+				didStats["cached_shards"], didStats["cache_limit"]))
+			sb.WriteString("\n")
 		}
-	}
 
-	if syncMode {
-		mempoolStats := mgr.GetMempoolStats()
-		count := mempoolStats["count"].(int)
-		targetBundle := mempoolStats["target_bundle"].(int)
-		canCreate := mempoolStats["can_create_bundle"].(bool)
+		sb.WriteString("Server Stats\n")
+		sb.WriteString("━━━━━━━━━━━━\n")
+		sb.WriteString(fmt.Sprintf("  Version:       %s\n", version))
+		if origin := mgr.GetPLCOrigin(); origin != "" {
+			sb.WriteString(fmt.Sprintf("  Origin:        %s\n", origin))
+		}
+		sb.WriteString(fmt.Sprintf("  Sync mode:     %v\n", syncMode))
+		sb.WriteString(fmt.Sprintf("  WebSocket:     %v\n", wsEnabled))
+		sb.WriteString(fmt.Sprintf("  Resolver:      %v\n", resolverEnabled))
+		sb.WriteString(fmt.Sprintf("  Uptime:        %s\n", time.Since(serverStartTime).Round(time.Second)))
 
-		sb.WriteString("\nMempool Stats\n")
+		sb.WriteString("\n\nAPI Endpoints\n")
 		sb.WriteString("━━━━━━━━━━━━━\n")
-		sb.WriteString(fmt.Sprintf("  Target bundle:     %d\n", targetBundle))
-		sb.WriteString(fmt.Sprintf("  Operations:        %d / %d\n", count, bundle.BUNDLE_SIZE))
-		sb.WriteString(fmt.Sprintf("  Can create bundle: %v\n", canCreate))
+		sb.WriteString("  GET  /                    This info page\n")
+		sb.WriteString("  GET  /index.json          Full bundle index\n")
+		sb.WriteString("  GET  /bundle/:number      Bundle metadata (JSON)\n")
+		sb.WriteString("  GET  /data/:number        Raw bundle (zstd compressed)\n")
+		sb.WriteString("  GET  /jsonl/:number       Decompressed JSONL stream\n")
+		sb.WriteString("  GET  /status              Server status\n")
+		sb.WriteString("  GET  /mempool             Mempool operations (JSONL)\n")
 
-		if count > 0 {
-			progress := float64(count) / float64(bundle.BUNDLE_SIZE) * 100
-			sb.WriteString(fmt.Sprintf("  Progress:          %.1f%%\n", progress))
+		if resolverEnabled {
+			sb.WriteString("\nDID Resolution\n")
+			sb.WriteString("━━━━━━━━━━━━━━\n")
+			sb.WriteString("  GET  /:did                    DID Document (W3C format)\n")
+			sb.WriteString("  GET  /:did/data               PLC State (raw format)\n")
+			sb.WriteString("  GET  /:did/log/audit          Operation history\n")
 
-			barWidth := 50
-			filled := int(float64(barWidth) * float64(count) / float64(bundle.BUNDLE_SIZE))
-			if filled > barWidth {
-				filled = barWidth
+			didStats := mgr.GetDIDIndexStats()
+			if didStats["exists"].(bool) {
+				sb.WriteString(fmt.Sprintf("\n  Index: %s DIDs indexed\n",
+					formatNumber(int(didStats["total_dids"].(int64)))))
+			} else {
+				sb.WriteString("\n  ⚠️  Index: not built (will use slow scan)\n")
 			}
-			bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
-			sb.WriteString(fmt.Sprintf("  [%s]\n", bar))
+			sb.WriteString("\n")
+		}
 
-			if firstTime, ok := mempoolStats["first_time"].(time.Time); ok {
-				sb.WriteString(fmt.Sprintf("  First op:          %s\n", firstTime.Format("2006-01-02 15:04:05")))
+		if wsEnabled {
+			sb.WriteString("\nWebSocket Endpoints\n")
+			sb.WriteString("━━━━━━━━━━━━━━━━━━━\n")
+			sb.WriteString("  WS   /ws                      Live stream (new operations only)\n")
+			sb.WriteString("  WS   /ws?cursor=0             Stream all from beginning\n")
+			sb.WriteString("  WS   /ws?cursor=N             Stream from cursor N\n\n")
+			sb.WriteString("Cursor Format:\n")
+			sb.WriteString("  Global record number: (bundleNumber × 10,000) + position\n")
+			sb.WriteString("  Example: 88410345 = bundle 8841, position 345\n")
+			sb.WriteString("  Default: starts from latest (skips all historical data)\n")
+
+			latestCursor := mgr.GetCurrentCursor()
+			bundledOps := len(index.GetBundles()) * bundle.BUNDLE_SIZE
+			mempoolOps := latestCursor - bundledOps
+
+			if syncMode && mempoolOps > 0 {
+				sb.WriteString(fmt.Sprintf("  Current latest: %d (%d bundled + %d mempool)\n",
+					latestCursor, bundledOps, mempoolOps))
+			} else {
+				sb.WriteString(fmt.Sprintf("  Current latest: %d (%d bundles)\n",
+					latestCursor, len(index.GetBundles())))
 			}
-			if lastTime, ok := mempoolStats["last_time"].(time.Time); ok {
-				sb.WriteString(fmt.Sprintf("  Last op:           %s\n", lastTime.Format("2006-01-02 15:04:05")))
-			}
-		} else {
-			sb.WriteString("  (empty)\n")
-		}
-	}
-
-	if didStats := mgr.GetDIDIndexStats(); didStats["exists"].(bool) {
-		sb.WriteString("\nDID Index\n")
-		sb.WriteString("━━━━━━━━━\n")
-		sb.WriteString("  Status:        enabled\n")
-
-		indexedDIDs := didStats["indexed_dids"].(int64)
-		mempoolDIDs := didStats["mempool_dids"].(int64)
-		totalDIDs := didStats["total_dids"].(int64)
-
-		if mempoolDIDs > 0 {
-			sb.WriteString(fmt.Sprintf("  Total DIDs:    %s (%s indexed + %s mempool)\n",
-				formatNumber(int(totalDIDs)),
-				formatNumber(int(indexedDIDs)),
-				formatNumber(int(mempoolDIDs))))
-		} else {
-			sb.WriteString(fmt.Sprintf("  Total DIDs:    %s\n", formatNumber(int(totalDIDs))))
 		}
 
-		sb.WriteString(fmt.Sprintf("  Cached shards: %d / %d\n",
-			didStats["cached_shards"], didStats["cache_limit"]))
-		sb.WriteString("\n")
-	}
+		sb.WriteString("\nExamples\n")
+		sb.WriteString("━━━━━━━━\n")
+		sb.WriteString(fmt.Sprintf("  curl %s/bundle/1\n", baseURL))
+		sb.WriteString(fmt.Sprintf("  curl %s/data/42 -o 000042.jsonl.zst\n", baseURL))
+		sb.WriteString(fmt.Sprintf("  curl %s/jsonl/1\n", baseURL))
 
-	sb.WriteString("Server Stats\n")
-	sb.WriteString("━━━━━━━━━━━━\n")
-	sb.WriteString(fmt.Sprintf("  Version:       %s\n", version))
-	if origin := mgr.GetPLCOrigin(); origin != "" {
-		sb.WriteString(fmt.Sprintf("  Origin:        %s\n", origin))
-	}
-	sb.WriteString(fmt.Sprintf("  Sync mode:     %v\n", syncMode))
-	sb.WriteString(fmt.Sprintf("  WebSocket:     %v\n", wsEnabled))
-	sb.WriteString(fmt.Sprintf("  Resolver:      %v\n", resolverEnabled))
-	sb.WriteString(fmt.Sprintf("  Uptime:        %s\n", time.Since(serverStartTime).Round(time.Second)))
-
-	sb.WriteString("\n\nAPI Endpoints\n")
-	sb.WriteString("━━━━━━━━━━━━━\n")
-	sb.WriteString("  GET  /                    This info page\n")
-	sb.WriteString("  GET  /index.json          Full bundle index\n")
-	sb.WriteString("  GET  /bundle/:number      Bundle metadata (JSON)\n")
-	sb.WriteString("  GET  /data/:number        Raw bundle (zstd compressed)\n")
-	sb.WriteString("  GET  /jsonl/:number       Decompressed JSONL stream\n")
-	sb.WriteString("  GET  /status              Server status\n")
-	sb.WriteString("  GET  /mempool             Mempool operations (JSONL)\n")
-
-	if resolverEnabled {
-		sb.WriteString("\nDID Resolution\n")
-		sb.WriteString("━━━━━━━━━━━━━━\n")
-		sb.WriteString("  GET  /:did                    DID Document (W3C format)\n")
-		sb.WriteString("  GET  /:did/data               PLC State (raw format)\n")
-		sb.WriteString("  GET  /:did/log/audit          Operation history\n")
-
-		didStats := mgr.GetDIDIndexStats()
-		if didStats["exists"].(bool) {
-			sb.WriteString(fmt.Sprintf("\n  Index: %s DIDs indexed\n",
-				formatNumber(int(didStats["total_dids"].(int64)))))
-		} else {
-			sb.WriteString("\n  ⚠️  Index: not built (will use slow scan)\n")
+		if wsEnabled {
+			sb.WriteString(fmt.Sprintf("  websocat %s/ws\n", wsURL))
+			sb.WriteString(fmt.Sprintf("  websocat '%s/ws?cursor=0'\n", wsURL))
 		}
-		sb.WriteString("\n")
-	}
 
-	if wsEnabled {
-		sb.WriteString("\nWebSocket Endpoints\n")
-		sb.WriteString("━━━━━━━━━━━━━━━━━━━\n")
-		sb.WriteString("  WS   /ws                      Live stream (new operations only)\n")
-		sb.WriteString("  WS   /ws?cursor=0             Stream all from beginning\n")
-		sb.WriteString("  WS   /ws?cursor=N             Stream from cursor N\n\n")
-		sb.WriteString("Cursor Format:\n")
-		sb.WriteString("  Global record number: (bundleNumber × 10,000) + position\n")
-		sb.WriteString("  Example: 88410345 = bundle 8841, position 345\n")
-		sb.WriteString("  Default: starts from latest (skips all historical data)\n")
-
-		latestCursor := mgr.GetCurrentCursor()
-		bundledOps := len(index.GetBundles()) * bundle.BUNDLE_SIZE
-		mempoolOps := latestCursor - bundledOps
-
-		if syncMode && mempoolOps > 0 {
-			sb.WriteString(fmt.Sprintf("  Current latest: %d (%d bundled + %d mempool)\n",
-				latestCursor, bundledOps, mempoolOps))
-		} else {
-			sb.WriteString(fmt.Sprintf("  Current latest: %d (%d bundles)\n",
-				latestCursor, len(index.GetBundles())))
+		if syncMode {
+			sb.WriteString(fmt.Sprintf("  curl %s/status\n", baseURL))
+			sb.WriteString(fmt.Sprintf("  curl %s/mempool\n", baseURL))
 		}
+
+		sb.WriteString("\n────────────────────────────────────────────────────────────────\n")
+		sb.WriteString("https://tangled.org/@atscan.net/plcbundle\n")
+
+		w.Write([]byte(sb.String()))
 	}
-
-	sb.WriteString("\nExamples\n")
-	sb.WriteString("━━━━━━━━\n")
-	sb.WriteString(fmt.Sprintf("  curl %s/bundle/1\n", baseURL))
-	sb.WriteString(fmt.Sprintf("  curl %s/data/42 -o 000042.jsonl.zst\n", baseURL))
-	sb.WriteString(fmt.Sprintf("  curl %s/jsonl/1\n", baseURL))
-
-	if wsEnabled {
-		sb.WriteString(fmt.Sprintf("  websocat %s/ws\n", wsURL))
-		sb.WriteString(fmt.Sprintf("  websocat '%s/ws?cursor=0'\n", wsURL))
-	}
-
-	if syncMode {
-		sb.WriteString(fmt.Sprintf("  curl %s/status\n", baseURL))
-		sb.WriteString(fmt.Sprintf("  curl %s/mempool\n", baseURL))
-	}
-
-	sb.WriteString("\n────────────────────────────────────────────────────────────────\n")
-	sb.WriteString("https://tangled.org/@atscan.net/plcbundle\n")
-
-	return ctx.String(sb.String())
 }
 
-func handleIndexJSON(ctx web.Context, mgr *bundle.Manager) error {
-	index := mgr.GetIndex()
-	return sendJSON(ctx, 200, index)
+func handleIndexJSONNative(mgr *bundle.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		index := mgr.GetIndex()
+		sendJSON(w, 200, index)
+	}
 }
 
-func handleBundle(ctx web.Context, mgr *bundle.Manager) error {
-	bundleNum, err := strconv.Atoi(ctx.Request().Param("number"))
-	if err != nil {
-		return sendJSON(ctx, 400, map[string]string{"error": "Invalid bundle number"})
-	}
+func handleBundleNative(mgr *bundle.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		bundleNum, err := strconv.Atoi(r.PathValue("number"))
+		if err != nil {
+			sendJSON(w, 400, map[string]string{"error": "Invalid bundle number"})
+			return
+		}
 
-	meta, err := mgr.GetIndex().GetBundle(bundleNum)
-	if err != nil {
-		return sendJSON(ctx, 404, map[string]string{"error": "Bundle not found"})
-	}
+		meta, err := mgr.GetIndex().GetBundle(bundleNum)
+		if err != nil {
+			sendJSON(w, 404, map[string]string{"error": "Bundle not found"})
+			return
+		}
 
-	return sendJSON(ctx, 200, meta)
+		sendJSON(w, 200, meta)
+	}
 }
 
-func handleBundleData(ctx web.Context, mgr *bundle.Manager) error {
-	bundleNum, err := strconv.Atoi(ctx.Request().Param("number"))
-	if err != nil {
-		return sendJSON(ctx, 400, map[string]string{"error": "Invalid bundle number"})
-	}
-
-	reader, err := mgr.StreamBundleRaw(context.Background(), bundleNum)
-	if err != nil {
-		if strings.Contains(err.Error(), "not in index") || strings.Contains(err.Error(), "not found") {
-			return sendJSON(ctx, 400, map[string]string{"error": "Bundle not found"})
+func handleBundleDataNative(mgr *bundle.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		bundleNum, err := strconv.Atoi(r.PathValue("number"))
+		if err != nil {
+			sendJSON(w, 400, map[string]string{"error": "Invalid bundle number"})
+			return
 		}
-		return sendJSON(ctx, 500, map[string]string{"error": err.Error()})
+
+		reader, err := mgr.StreamBundleRaw(context.Background(), bundleNum)
+		if err != nil {
+			if strings.Contains(err.Error(), "not in index") || strings.Contains(err.Error(), "not found") {
+				sendJSON(w, 404, map[string]string{"error": "Bundle not found"})
+			} else {
+				sendJSON(w, 500, map[string]string{"error": err.Error()})
+			}
+			return
+		}
+		defer reader.Close()
+
+		w.Header().Set("Content-Type", "application/zstd")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%06d.jsonl.zst", bundleNum))
+
+		io.Copy(w, reader)
 	}
-	defer reader.Close()
-
-	ctx.Response().SetHeader("Content-Type", "application/zstd")
-	ctx.Response().SetHeader("Content-Disposition", fmt.Sprintf("attachment; filename=%06d.jsonl.zst", bundleNum))
-
-	_, err = io.Copy(ctx.Response(), reader)
-	return err
 }
 
-func handleBundleJSONL(ctx web.Context, mgr *bundle.Manager) error {
-	bundleNum, err := strconv.Atoi(ctx.Request().Param("number"))
-	if err != nil {
-		return sendJSON(ctx, 400, map[string]string{"error": "Invalid bundle number"})
-	}
-
-	reader, err := mgr.StreamBundleDecompressed(context.Background(), bundleNum)
-	if err != nil {
-		if strings.Contains(err.Error(), "not in index") || strings.Contains(err.Error(), "not found") {
-			return sendJSON(ctx, 404, map[string]string{"error": "Bundle not found"})
+func handleBundleJSONLNative(mgr *bundle.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		bundleNum, err := strconv.Atoi(r.PathValue("number"))
+		if err != nil {
+			sendJSON(w, 400, map[string]string{"error": "Invalid bundle number"})
+			return
 		}
-		return sendJSON(ctx, 500, map[string]string{"error": err.Error()})
+
+		reader, err := mgr.StreamBundleDecompressed(context.Background(), bundleNum)
+		if err != nil {
+			if strings.Contains(err.Error(), "not in index") || strings.Contains(err.Error(), "not found") {
+				sendJSON(w, 404, map[string]string{"error": "Bundle not found"})
+			} else {
+				sendJSON(w, 500, map[string]string{"error": err.Error()})
+			}
+			return
+		}
+		defer reader.Close()
+
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%06d.jsonl", bundleNum))
+
+		io.Copy(w, reader)
 	}
-	defer reader.Close()
-
-	ctx.Response().SetHeader("Content-Type", "application/x-ndjson")
-	ctx.Response().SetHeader("Content-Disposition", fmt.Sprintf("attachment; filename=%06d.jsonl", bundleNum))
-
-	_, err = io.Copy(ctx.Response(), reader)
-	return err
 }
 
-func handleStatus(ctx web.Context, mgr *bundle.Manager, syncMode bool, wsEnabled bool) error {
-	index := mgr.GetIndex()
-	indexStats := index.GetStats()
+func handleStatusNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		index := mgr.GetIndex()
+		indexStats := index.GetStats()
 
-	response := StatusResponse{
-		Server: ServerStatus{
-			Version:          version,
-			UptimeSeconds:    int(time.Since(serverStartTime).Seconds()),
-			SyncMode:         syncMode,
-			WebSocketEnabled: wsEnabled,
-			Origin:           mgr.GetPLCOrigin(),
-		},
-		Bundles: BundleStatus{
-			Count:            indexStats["bundle_count"].(int),
-			TotalSize:        indexStats["total_size"].(int64),
-			UncompressedSize: indexStats["total_uncompressed_size"].(int64),
-		},
-	}
-
-	if syncMode && syncInterval > 0 {
-		response.Server.SyncIntervalSeconds = int(syncInterval.Seconds())
-	}
-
-	if bundleCount := response.Bundles.Count; bundleCount > 0 {
-		firstBundle := indexStats["first_bundle"].(int)
-		lastBundle := indexStats["last_bundle"].(int)
-
-		response.Bundles.FirstBundle = firstBundle
-		response.Bundles.LastBundle = lastBundle
-		response.Bundles.StartTime = indexStats["start_time"].(time.Time)
-		response.Bundles.EndTime = indexStats["end_time"].(time.Time)
-
-		if firstMeta, err := index.GetBundle(firstBundle); err == nil {
-			response.Bundles.RootHash = firstMeta.Hash
+		response := StatusResponse{
+			Server: ServerStatus{
+				Version:          version,
+				UptimeSeconds:    int(time.Since(serverStartTime).Seconds()),
+				SyncMode:         syncMode,
+				WebSocketEnabled: wsEnabled,
+				Origin:           mgr.GetPLCOrigin(),
+			},
+			Bundles: BundleStatus{
+				Count:            indexStats["bundle_count"].(int),
+				TotalSize:        indexStats["total_size"].(int64),
+				UncompressedSize: indexStats["total_uncompressed_size"].(int64),
+			},
 		}
 
-		if lastMeta, err := index.GetBundle(lastBundle); err == nil {
-			response.Bundles.HeadHash = lastMeta.Hash
-			response.Bundles.HeadAgeSeconds = int(time.Since(lastMeta.EndTime).Seconds())
+		if syncMode && syncInterval > 0 {
+			response.Server.SyncIntervalSeconds = int(syncInterval.Seconds())
 		}
 
-		if gaps, ok := indexStats["gaps"].(int); ok {
-			response.Bundles.Gaps = gaps
-			response.Bundles.HasGaps = gaps > 0
-			if gaps > 0 {
-				response.Bundles.GapNumbers = index.FindGaps()
-			}
-		}
+		if bundleCount := response.Bundles.Count; bundleCount > 0 {
+			firstBundle := indexStats["first_bundle"].(int)
+			lastBundle := indexStats["last_bundle"].(int)
 
-		totalOps := bundleCount * bundle.BUNDLE_SIZE
-		response.Bundles.TotalOperations = totalOps
+			response.Bundles.FirstBundle = firstBundle
+			response.Bundles.LastBundle = lastBundle
+			response.Bundles.StartTime = indexStats["start_time"].(time.Time)
+			response.Bundles.EndTime = indexStats["end_time"].(time.Time)
 
-		duration := response.Bundles.EndTime.Sub(response.Bundles.StartTime)
-		if duration.Hours() > 0 {
-			response.Bundles.AvgOpsPerHour = int(float64(totalOps) / duration.Hours())
-		}
-	}
-
-	if syncMode {
-		mempoolStats := mgr.GetMempoolStats()
-
-		if count, ok := mempoolStats["count"].(int); ok {
-			mempool := &MempoolStatus{
-				Count:            count,
-				TargetBundle:     mempoolStats["target_bundle"].(int),
-				CanCreateBundle:  mempoolStats["can_create_bundle"].(bool),
-				MinTimestamp:     mempoolStats["min_timestamp"].(time.Time),
-				Validated:        mempoolStats["validated"].(bool),
-				ProgressPercent:  float64(count) / float64(bundle.BUNDLE_SIZE) * 100,
-				BundleSize:       bundle.BUNDLE_SIZE,
-				OperationsNeeded: bundle.BUNDLE_SIZE - count,
+			if firstMeta, err := index.GetBundle(firstBundle); err == nil {
+				response.Bundles.RootHash = firstMeta.Hash
 			}
 
-			if firstTime, ok := mempoolStats["first_time"].(time.Time); ok {
-				mempool.FirstTime = firstTime
-				mempool.TimespanSeconds = int(time.Since(firstTime).Seconds())
-			}
-			if lastTime, ok := mempoolStats["last_time"].(time.Time); ok {
-				mempool.LastTime = lastTime
-				mempool.LastOpAgeSeconds = int(time.Since(lastTime).Seconds())
+			if lastMeta, err := index.GetBundle(lastBundle); err == nil {
+				response.Bundles.HeadHash = lastMeta.Hash
+				response.Bundles.HeadAgeSeconds = int(time.Since(lastMeta.EndTime).Seconds())
 			}
 
-			if count > 100 && count < bundle.BUNDLE_SIZE {
-				if !mempool.FirstTime.IsZero() && !mempool.LastTime.IsZero() {
-					timespan := mempool.LastTime.Sub(mempool.FirstTime)
-					if timespan.Seconds() > 0 {
-						opsPerSec := float64(count) / timespan.Seconds()
-						remaining := bundle.BUNDLE_SIZE - count
-						mempool.EtaNextBundleSeconds = int(float64(remaining) / opsPerSec)
-					}
+			if gaps, ok := indexStats["gaps"].(int); ok {
+				response.Bundles.Gaps = gaps
+				response.Bundles.HasGaps = gaps > 0
+				if gaps > 0 {
+					response.Bundles.GapNumbers = index.FindGaps()
 				}
 			}
 
-			response.Mempool = mempool
-		}
-	}
+			totalOps := bundleCount * bundle.BUNDLE_SIZE
+			response.Bundles.TotalOperations = totalOps
 
-	return sendJSON(ctx, 200, response)
+			duration := response.Bundles.EndTime.Sub(response.Bundles.StartTime)
+			if duration.Hours() > 0 {
+				response.Bundles.AvgOpsPerHour = int(float64(totalOps) / duration.Hours())
+			}
+		}
+
+		if syncMode {
+			mempoolStats := mgr.GetMempoolStats()
+
+			if count, ok := mempoolStats["count"].(int); ok {
+				mempool := &MempoolStatus{
+					Count:            count,
+					TargetBundle:     mempoolStats["target_bundle"].(int),
+					CanCreateBundle:  mempoolStats["can_create_bundle"].(bool),
+					MinTimestamp:     mempoolStats["min_timestamp"].(time.Time),
+					Validated:        mempoolStats["validated"].(bool),
+					ProgressPercent:  float64(count) / float64(bundle.BUNDLE_SIZE) * 100,
+					BundleSize:       bundle.BUNDLE_SIZE,
+					OperationsNeeded: bundle.BUNDLE_SIZE - count,
+				}
+
+				if firstTime, ok := mempoolStats["first_time"].(time.Time); ok {
+					mempool.FirstTime = firstTime
+					mempool.TimespanSeconds = int(time.Since(firstTime).Seconds())
+				}
+				if lastTime, ok := mempoolStats["last_time"].(time.Time); ok {
+					mempool.LastTime = lastTime
+					mempool.LastOpAgeSeconds = int(time.Since(lastTime).Seconds())
+				}
+
+				if count > 100 && count < bundle.BUNDLE_SIZE {
+					if !mempool.FirstTime.IsZero() && !mempool.LastTime.IsZero() {
+						timespan := mempool.LastTime.Sub(mempool.FirstTime)
+						if timespan.Seconds() > 0 {
+							opsPerSec := float64(count) / timespan.Seconds()
+							remaining := bundle.BUNDLE_SIZE - count
+							mempool.EtaNextBundleSeconds = int(float64(remaining) / opsPerSec)
+						}
+					}
+				}
+
+				response.Mempool = mempool
+			}
+		}
+
+		sendJSON(w, 200, response)
+	}
 }
 
-func handleMempool(ctx web.Context, mgr *bundle.Manager) error {
-	ops, err := mgr.GetMempoolOperations()
-	if err != nil {
-		return sendJSON(ctx, 500, map[string]string{"error": err.Error()})
-	}
-
-	ctx.Response().SetHeader("Content-Type", "application/x-ndjson")
-
-	if len(ops) == 0 {
-		return nil
-	}
-
-	for _, op := range ops {
-		if len(op.RawJSON) > 0 {
-			ctx.Response().Write(op.RawJSON)
-		} else {
-			data, _ := json.Marshal(op)
-			ctx.Response().Write(data)
+func handleMempoolNative(mgr *bundle.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ops, err := mgr.GetMempoolOperations()
+		if err != nil {
+			sendJSON(w, 500, map[string]string{"error": err.Error()})
+			return
 		}
-		ctx.Response().Write([]byte("\n"))
-	}
 
-	return nil
+		w.Header().Set("Content-Type", "application/x-ndjson")
+
+		if len(ops) == 0 {
+			return
+		}
+
+		for _, op := range ops {
+			if len(op.RawJSON) > 0 {
+				w.Write(op.RawJSON)
+			} else {
+				data, _ := json.Marshal(op)
+				w.Write(data)
+			}
+			w.Write([]byte("\n"))
+		}
+	}
 }
 
-func handleDebugMemory(ctx web.Context, mgr *bundle.Manager) error {
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
+func handleDebugMemoryNative(mgr *bundle.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
 
-	didStats := mgr.GetDIDIndexStats()
+		didStats := mgr.GetDIDIndexStats()
 
-	beforeAlloc := m.Alloc / 1024 / 1024
+		beforeAlloc := m.Alloc / 1024 / 1024
 
-	runtime.GC()
-	runtime.ReadMemStats(&m)
-	afterAlloc := m.Alloc / 1024 / 1024
+		runtime.GC()
+		runtime.ReadMemStats(&m)
+		afterAlloc := m.Alloc / 1024 / 1024
 
-	return ctx.String(fmt.Sprintf(`Memory Stats:
+		response := fmt.Sprintf(`Memory Stats:
   Alloc:      %d MB
   TotalAlloc: %d MB
   Sys:        %d MB
@@ -604,158 +620,150 @@ DID Index:
 After GC:
   Alloc:      %d MB
 `,
-		beforeAlloc,
-		m.TotalAlloc/1024/1024,
-		m.Sys/1024/1024,
-		m.NumGC,
-		didStats["cached_shards"],
-		didStats["cache_limit"],
-		afterAlloc))
+			beforeAlloc,
+			m.TotalAlloc/1024/1024,
+			m.Sys/1024/1024,
+			m.NumGC,
+			didStats["cached_shards"],
+			didStats["cache_limit"],
+			afterAlloc)
+
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte(response))
+	}
 }
 
-func handleDIDDocumentLatest(ctx web.Context, mgr *bundle.Manager, did string) error {
-	op, err := mgr.GetLatestDIDOperation(context.Background(), did)
-	if err != nil {
-		return sendJSON(ctx, 500, map[string]string{"error": err.Error()})
-	}
+func handleWebSocketNative(mgr *bundle.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cursorStr := r.URL.Query().Get("cursor")
+		var cursor int
 
-	doc, err := plc.ResolveDIDDocument(did, []plc.PLCOperation{*op})
-	if err != nil {
-		if strings.Contains(err.Error(), "deactivated") {
-			return sendJSON(ctx, 410, map[string]string{"error": "DID has been deactivated"})
-		}
-		return sendJSON(ctx, 500, map[string]string{"error": fmt.Sprintf("Resolution failed: %v", err)})
-	}
-	ctx.Response().SetHeader("Content-Type", "application/did+ld+json")
-	return sendJSON(ctx, 200, doc)
-}
-
-func handleDIDData(ctx web.Context, mgr *bundle.Manager, did string) error {
-	if err := plc.ValidateDIDFormat(did); err != nil {
-		return sendJSON(ctx, 400, map[string]string{"error": "Invalid DID format"})
-	}
-
-	operations, err := mgr.GetDIDOperations(context.Background(), did, false)
-	if err != nil {
-		return sendJSON(ctx, 500, map[string]string{"error": err.Error()})
-	}
-
-	if len(operations) == 0 {
-		return sendJSON(ctx, 404, map[string]string{"error": "DID not found"})
-	}
-
-	state, err := plc.BuildDIDState(did, operations)
-	if err != nil {
-		if strings.Contains(err.Error(), "deactivated") {
-			return sendJSON(ctx, 410, map[string]string{"error": "DID has been deactivated"})
-		}
-		return sendJSON(ctx, 500, map[string]string{"error": err.Error()})
-	}
-
-	return sendJSON(ctx, 200, state)
-}
-
-func handleDIDAuditLog(ctx web.Context, mgr *bundle.Manager, did string) error {
-	if err := plc.ValidateDIDFormat(did); err != nil {
-		return sendJSON(ctx, 400, map[string]string{"error": "Invalid DID format"})
-	}
-
-	operations, err := mgr.GetDIDOperations(context.Background(), did, false)
-	if err != nil {
-		return sendJSON(ctx, 500, map[string]string{"error": err.Error()})
-	}
-
-	if len(operations) == 0 {
-		return sendJSON(ctx, 404, map[string]string{"error": "DID not found"})
-	}
-
-	auditLog := plc.FormatAuditLog(operations)
-	return sendJSON(ctx, 200, auditLog)
-}
-
-// WebSocket handler wrapper for web framework
-func handleWebSocketRaw(ctx web.Context, mgr *bundle.Manager) {
-	// The web framework doesn't expose ResponseWriter directly
-	// We need to use reflection or type assertion to get it
-	// For now, we'll implement a workaround by getting the underlying HTTP objects
-
-	cursorStr := ctx.Request().Query().Param("cursor")
-	var cursor int
-
-	if cursorStr == "" {
-		cursor = mgr.GetCurrentCursor()
-	} else {
-		var err error
-		cursor, err = strconv.Atoi(cursorStr)
-		if err != nil || cursor < 0 {
-			ctx.Status(400).String("Invalid cursor: must be non-negative integer")
-			return
-		}
-	}
-
-	// Access underlying ResponseWriter through interface assertion
-	type ResponseWriterGetter interface {
-		ResponseWriter() http.ResponseWriter
-	}
-
-	type RequestGetter interface {
-		HTTPRequest() *http.Request
-	}
-
-	var w http.ResponseWriter
-	var r *http.Request
-
-	// Try to get ResponseWriter (framework-specific)
-	if rwg, ok := ctx.(ResponseWriterGetter); ok {
-		w = rwg.ResponseWriter()
-	}
-
-	if rg, ok := ctx.(RequestGetter); ok {
-		r = rg.HTTPRequest()
-	}
-
-	// If we can't get them, we need to upgrade manually
-	// This is a limitation - WebSocket needs direct access
-	if w == nil || r == nil {
-		ctx.Status(500).String("WebSocket not supported")
-		return
-	}
-
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "WebSocket upgrade failed: %v\n", err)
-		return
-	}
-	defer conn.Close()
-
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		return nil
-	})
-
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		for {
-			_, _, err := conn.ReadMessage()
-			if err != nil {
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					fmt.Fprintf(os.Stderr, "WebSocket: client closed connection\n")
-				}
+		if cursorStr == "" {
+			cursor = mgr.GetCurrentCursor()
+		} else {
+			var err error
+			cursor, err = strconv.Atoi(cursorStr)
+			if err != nil || cursor < 0 {
+				http.Error(w, "Invalid cursor: must be non-negative integer", 400)
 				return
 			}
 		}
-	}()
 
-	bgCtx := context.Background()
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "WebSocket upgrade failed: %v\n", err)
+			return
+		}
+		defer conn.Close()
 
-	if err := streamLive(bgCtx, conn, mgr, cursor, done); err != nil {
-		fmt.Fprintf(os.Stderr, "WebSocket stream error: %v\n", err)
+		conn.SetPongHandler(func(string) error {
+			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+			return nil
+		})
+
+		done := make(chan struct{})
+
+		go func() {
+			defer close(done)
+			for {
+				_, _, err := conn.ReadMessage()
+				if err != nil {
+					if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+						fmt.Fprintf(os.Stderr, "WebSocket: client closed connection\n")
+					}
+					return
+				}
+			}
+		}()
+
+		bgCtx := context.Background()
+
+		if err := streamLive(bgCtx, conn, mgr, cursor, done); err != nil {
+			fmt.Fprintf(os.Stderr, "WebSocket stream error: %v\n", err)
+		}
 	}
 }
 
-// streamLive and other WebSocket functions remain unchanged
+func handleDIDDocumentLatestNative(mgr *bundle.Manager, did string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		op, err := mgr.GetLatestDIDOperation(context.Background(), did)
+		if err != nil {
+			sendJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+
+		doc, err := plc.ResolveDIDDocument(did, []plc.PLCOperation{*op})
+		if err != nil {
+			if strings.Contains(err.Error(), "deactivated") {
+				sendJSON(w, 410, map[string]string{"error": "DID has been deactivated"})
+			} else {
+				sendJSON(w, 500, map[string]string{"error": fmt.Sprintf("Resolution failed: %v", err)})
+			}
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/did+ld+json")
+		sendJSON(w, 200, doc)
+	}
+}
+
+func handleDIDDataNative(mgr *bundle.Manager, did string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := plc.ValidateDIDFormat(did); err != nil {
+			sendJSON(w, 400, map[string]string{"error": "Invalid DID format"})
+			return
+		}
+
+		operations, err := mgr.GetDIDOperations(context.Background(), did, false)
+		if err != nil {
+			sendJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+
+		if len(operations) == 0 {
+			sendJSON(w, 404, map[string]string{"error": "DID not found"})
+			return
+		}
+
+		state, err := plc.BuildDIDState(did, operations)
+		if err != nil {
+			if strings.Contains(err.Error(), "deactivated") {
+				sendJSON(w, 410, map[string]string{"error": "DID has been deactivated"})
+			} else {
+				sendJSON(w, 500, map[string]string{"error": err.Error()})
+			}
+			return
+		}
+
+		sendJSON(w, 200, state)
+	}
+}
+
+func handleDIDAuditLogNative(mgr *bundle.Manager, did string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := plc.ValidateDIDFormat(did); err != nil {
+			sendJSON(w, 400, map[string]string{"error": "Invalid DID format"})
+			return
+		}
+
+		operations, err := mgr.GetDIDOperations(context.Background(), did, false)
+		if err != nil {
+			sendJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+
+		if len(operations) == 0 {
+			sendJSON(w, 404, map[string]string{"error": "DID not found"})
+			return
+		}
+
+		auditLog := plc.FormatAuditLog(operations)
+		sendJSON(w, 200, auditLog)
+	}
+}
+
+// WebSocket streaming functions (unchanged from your original)
+
 func streamLive(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, startCursor int, done chan struct{}) error {
 	index := mgr.GetIndex()
 	bundles := index.GetBundles()
@@ -966,19 +974,19 @@ func getWSScheme(r *http.Request) string {
 	return "ws"
 }
 
-func getBaseURLFromContext(ctx web.Context) string {
-	// Get host from request
-	host := ctx.Request().Header("Host")
-	// Assume http since we're behind reverse proxy
-	return fmt.Sprintf("http://%s", host)
+func getBaseURL(r *http.Request) string {
+	scheme := getScheme(r)
+	host := r.Host
+	return fmt.Sprintf("%s://%s", scheme, host)
 }
 
-func getWSURLFromContext(ctx web.Context) string {
-	host := ctx.Request().Header("Host")
-	return fmt.Sprintf("ws://%s", host)
+func getWSURL(r *http.Request) string {
+	scheme := getWSScheme(r)
+	host := r.Host
+	return fmt.Sprintf("%s://%s", scheme, host)
 }
 
-// Response types
+// Response types (unchanged)
 
 type StatusResponse struct {
 	Bundles BundleStatus   `json:"bundles"`
@@ -1031,7 +1039,7 @@ type MempoolStatus struct {
 	EtaNextBundleSeconds int       `json:"eta_next_bundle_seconds,omitempty"`
 }
 
-// Background sync
+// Background sync (unchanged)
 
 func runSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration, verbose bool, resolverEnabled bool) {
 	syncBundles(ctx, mgr, verbose, resolverEnabled)

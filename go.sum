@@ -1,9 +1,3 @@
-git.urbach.dev/go/assert v0.0.0-20250606150337-559d3d3afcda h1:VN6ZQwtwLOm2xTms+v8IIeeNjvs55qyEBNArv3dPq9g=
-git.urbach.dev/go/assert v0.0.0-20250606150337-559d3d3afcda/go.mod h1:PNI/NSBOqvoeU58/7eBsIR09Yoq2S/qtSRiTrctkiq0=
-git.urbach.dev/go/router v0.0.0-20250721083733-8d04266bc544 h1:ChhCFmPVTDzj5rdzYsbQFJrDwzUldnZQMt2Bgc0gcwM=
-git.urbach.dev/go/router v0.0.0-20250721083733-8d04266bc544/go.mod h1:seUQ5raGaj6fDeZP6d7JdgnWQys8oTrtFdvBhAp1IZA=
-git.urbach.dev/go/web v0.0.0-20250827103423-e50f220853ff h1:bB+YedSwmEjgAFe9W6WMwKFi1T/b78z7072HyVPAcCw=
-git.urbach.dev/go/web v0.0.0-20250827103423-e50f220853ff/go.mod h1:ON84DswRfsjIgAloDGjbt9PWWhDcMVEek3LsCHuYnOg=
 github.com/DataDog/zstd v1.5.7 h1:ybO8RBeh29qrxIhCA9E8gKY6xfONU9T6G6aP9DTKfLE=
 github.com/DataDog/zstd v1.5.7/go.mod h1:g4AWEaM3yOg3HYfnJ3YIawPnVdXJh9QME85blwSAmyw=
 github.com/goccy/go-json v0.10.5 h1:Fq85nIqj+gXn/S5ahsiTlK3TmC85qgirsdTP/+DeaC4=
