@@ -1358,8 +1358,20 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 
 	if lastBundle != nil {
 		nextBundleNum = lastBundle.BundleNumber + 1
-		afterTime = lastBundle.EndTime.Format(time.RFC3339Nano)
 		prevBundleHash = lastBundle.Hash
+
+		// ✨ FIX: Use mempool's last operation time if available
+		// This prevents re-fetching operations already in mempool
+		mempoolLastTime := m.mempool.GetLastTime()
+		if mempoolLastTime != "" {
+			afterTime = mempoolLastTime
+			if !quiet {
+				m.logger.Printf("Using mempool cursor: %s", afterTime)
+			}
+		} else {
+			// No mempool operations yet, use last bundle
+			afterTime = lastBundle.EndTime.Format(time.RFC3339Nano)
+		}
 
 		prevBundle, err := m.LoadBundle(ctx, lastBundle.BundleNumber)
 		if err == nil {
@@ -1371,8 +1383,13 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		m.logger.Printf("Preparing bundle %06d (mempool: %d ops)...", nextBundleNum, m.mempool.Count())
 	}
 
-	// Fetch operations using syncer
-	for m.mempool.Count() < types.BUNDLE_SIZE {
+	// Fetch in a loop until we have enough OR hit end-of-data
+	maxAttempts := 10
+	attemptCount := 0
+
+	for m.mempool.Count() < types.BUNDLE_SIZE && attemptCount < maxAttempts {
+		attemptCount++
+
 		newOps, err := m.syncer.FetchToMempool(
 			ctx,
 			afterTime,
@@ -1394,18 +1411,23 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 			return nil, fmt.Errorf("chronological validation failed: %w", err)
 		}
 
-		if !quiet {
+		if !quiet && added > 0 {
 			m.logger.Printf("Added %d new operations (mempool now: %d)", added, m.mempool.Count())
 		}
 
-		if len(newOps) == 0 {
+		// ✨ Update cursor to last operation in mempool
+		afterTime = m.mempool.GetLastTime()
+
+		// If we got no new operations, we've caught up
+		if len(newOps) == 0 || added == 0 {
 			break
 		}
 	}
 
 	if m.mempool.Count() < types.BUNDLE_SIZE {
 		m.mempool.Save()
-		return nil, fmt.Errorf("insufficient operations: have %d, need %d", m.mempool.Count(), types.BUNDLE_SIZE)
+		return nil, fmt.Errorf("insufficient operations: have %d, need %d (reached latest data)",
+			m.mempool.Count(), types.BUNDLE_SIZE)
 	}
 
 	// Create bundle

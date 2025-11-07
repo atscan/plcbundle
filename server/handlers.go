@@ -1,166 +1,25 @@
-package main
+package server
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/goccy/go-json"
-	"github.com/gorilla/websocket"
-
-	"tangled.org/atscan.net/plcbundle/internal/bundle"
 	"tangled.org/atscan.net/plcbundle/internal/types"
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
-
-var serverStartTime time.Time
-var syncInterval time.Duration
-var verboseMode bool
-var resolverEnabled bool
-
-// newServerHandler creates HTTP handler with all routes
-func newServerHandler(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolverEnabled bool) http.Handler {
-	mux := http.NewServeMux()
-
-	// Specific routes first (highest priority)
-	mux.HandleFunc("GET /index.json", handleIndexJSONNative(mgr))
-	mux.HandleFunc("GET /bundle/{number}", handleBundleNative(mgr))
-	mux.HandleFunc("GET /data/{number}", handleBundleDataNative(mgr))
-	mux.HandleFunc("GET /jsonl/{number}", handleBundleJSONLNative(mgr))
-	mux.HandleFunc("GET /status", handleStatusNative(mgr, syncMode, wsEnabled))
-	mux.HandleFunc("GET /debug/memory", handleDebugMemoryNative(mgr))
-
-	// WebSocket endpoint
-	if wsEnabled {
-		mux.HandleFunc("GET /ws", handleWebSocketNative(mgr))
-	}
-
-	// Sync mode endpoints
-	if syncMode {
-		mux.HandleFunc("GET /mempool", handleMempoolNative(mgr))
-	}
-
-	// Combined root and DID resolver handler
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-
-		// Handle exact root
-		if path == "/" {
-			handleRootNative(mgr, syncMode, wsEnabled, resolverEnabled)(w, r)
-			return
-		}
-
-		// Handle DID routes if enabled
-		if resolverEnabled {
-			handleDIDRouting(w, r, mgr)
-			return
-		}
-
-		// 404 for everything else
-		sendJSON(w, 404, map[string]string{"error": "not found"})
-	})
-
-	// Wrap with CORS middleware
-	return corsMiddleware(mux)
-}
-
-// handleDIDRouting routes DID-related requests
-func handleDIDRouting(w http.ResponseWriter, r *http.Request, mgr *bundle.Manager) {
-	path := strings.TrimPrefix(r.URL.Path, "/")
-
-	// Parse DID and sub-path
-	parts := strings.SplitN(path, "/", 2)
-	did := parts[0]
-
-	// Validate it's a DID
-	if !strings.HasPrefix(did, "did:plc:") {
-		sendJSON(w, 404, map[string]string{"error": "not found"})
-		return
-	}
-
-	// Route based on sub-path
-	if len(parts) == 1 {
-		// /did:plc:xxx -> DID document
-		handleDIDDocumentLatestNative(mgr, did)(w, r)
-	} else if parts[1] == "data" {
-		// /did:plc:xxx/data -> PLC state
-		handleDIDDataNative(mgr, did)(w, r)
-	} else if parts[1] == "log/audit" {
-		// /did:plc:xxx/log/audit -> Audit log
-		handleDIDAuditLogNative(mgr, did)(w, r)
-	} else {
-		sendJSON(w, 404, map[string]string{"error": "not found"})
-	}
-}
-
-// corsMiddleware adds CORS headers (skips WebSocket upgrade requests)
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check if this is a WebSocket upgrade request
-		if r.Header.Get("Upgrade") == "websocket" {
-			// Skip CORS for WebSocket - pass through directly
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Normal CORS handling for non-WebSocket requests
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-
-		if requestedHeaders := r.Header.Get("Access-Control-Request-Headers"); requestedHeaders != "" {
-			w.Header().Set("Access-Control-Allow-Headers", requestedHeaders)
-		} else {
-			w.Header().Set("Access-Control-Allow-Headers", "*")
-		}
-
-		w.Header().Set("Access-Control-Max-Age", "86400")
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(204)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
-// sendJSON sends JSON response
-func sendJSON(w http.ResponseWriter, statusCode int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		w.WriteHeader(500)
-		w.Write([]byte(`{"error":"failed to marshal JSON"}`))
-		return
-	}
-
-	w.WriteHeader(statusCode)
-	w.Write(jsonData)
-}
-
-// Handler implementations
-
-func handleRootNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolverEnabled bool) http.HandlerFunc {
+func (s *Server) handleRoot() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
-		index := mgr.GetIndex()
+		index := s.manager.GetIndex()
 		stats := index.GetStats()
 		bundleCount := stats["bundle_count"].(int)
 
@@ -248,8 +107,8 @@ func handleRootNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 			}
 		}
 
-		if syncMode {
-			mempoolStats := mgr.GetMempoolStats()
+		if s.config.SyncMode {
+			mempoolStats := s.manager.GetMempoolStats()
 			count := mempoolStats["count"].(int)
 			targetBundle := mempoolStats["target_bundle"].(int)
 			canCreate := mempoolStats["can_create_bundle"].(bool)
@@ -283,7 +142,7 @@ func handleRootNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 			}
 		}
 
-		if didStats := mgr.GetDIDIndexStats(); didStats["exists"].(bool) {
+		if didStats := s.manager.GetDIDIndexStats(); didStats["exists"].(bool) {
 			sb.WriteString("\nDID Index\n")
 			sb.WriteString("━━━━━━━━━\n")
 			sb.WriteString("  Status:        enabled\n")
@@ -308,14 +167,14 @@ func handleRootNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 
 		sb.WriteString("Server Stats\n")
 		sb.WriteString("━━━━━━━━━━━━\n")
-		sb.WriteString(fmt.Sprintf("  Version:       %s\n", version))
-		if origin := mgr.GetPLCOrigin(); origin != "" {
+		sb.WriteString(fmt.Sprintf("  Version:       %s\n", s.config.Version))
+		if origin := s.manager.GetPLCOrigin(); origin != "" {
 			sb.WriteString(fmt.Sprintf("  Origin:        %s\n", origin))
 		}
-		sb.WriteString(fmt.Sprintf("  Sync mode:     %v\n", syncMode))
-		sb.WriteString(fmt.Sprintf("  WebSocket:     %v\n", wsEnabled))
-		sb.WriteString(fmt.Sprintf("  Resolver:      %v\n", resolverEnabled))
-		sb.WriteString(fmt.Sprintf("  Uptime:        %s\n", time.Since(serverStartTime).Round(time.Second)))
+		sb.WriteString(fmt.Sprintf("  Sync mode:     %v\n", s.config.SyncMode))
+		sb.WriteString(fmt.Sprintf("  WebSocket:     %v\n", s.config.EnableWebSocket))
+		sb.WriteString(fmt.Sprintf("  Resolver:      %v\n", s.config.EnableResolver))
+		sb.WriteString(fmt.Sprintf("  Uptime:        %s\n", time.Since(s.startTime).Round(time.Second)))
 
 		sb.WriteString("\n\nAPI Endpoints\n")
 		sb.WriteString("━━━━━━━━━━━━━\n")
@@ -327,14 +186,14 @@ func handleRootNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 		sb.WriteString("  GET  /status              Server status\n")
 		sb.WriteString("  GET  /mempool             Mempool operations (JSONL)\n")
 
-		if resolverEnabled {
+		if s.config.EnableResolver {
 			sb.WriteString("\nDID Resolution\n")
 			sb.WriteString("━━━━━━━━━━━━━━\n")
 			sb.WriteString("  GET  /:did                    DID Document (W3C format)\n")
 			sb.WriteString("  GET  /:did/data               PLC State (raw format)\n")
 			sb.WriteString("  GET  /:did/log/audit          Operation history\n")
 
-			didStats := mgr.GetDIDIndexStats()
+			didStats := s.manager.GetDIDIndexStats()
 			if didStats["exists"].(bool) {
 				sb.WriteString(fmt.Sprintf("\n  Index: %s DIDs indexed\n",
 					formatNumber(int(didStats["total_dids"].(int64)))))
@@ -344,7 +203,7 @@ func handleRootNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 			sb.WriteString("\n")
 		}
 
-		if wsEnabled {
+		if s.config.EnableWebSocket {
 			sb.WriteString("\nWebSocket Endpoints\n")
 			sb.WriteString("━━━━━━━━━━━━━━━━━━━\n")
 			sb.WriteString("  WS   /ws                      Live stream (new operations only)\n")
@@ -355,11 +214,11 @@ func handleRootNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 			sb.WriteString("  Example: 88410345 = bundle 8841, position 345\n")
 			sb.WriteString("  Default: starts from latest (skips all historical data)\n")
 
-			latestCursor := mgr.GetCurrentCursor()
+			latestCursor := s.manager.GetCurrentCursor()
 			bundledOps := len(index.GetBundles()) * types.BUNDLE_SIZE
 			mempoolOps := latestCursor - bundledOps
 
-			if syncMode && mempoolOps > 0 {
+			if s.config.SyncMode && mempoolOps > 0 {
 				sb.WriteString(fmt.Sprintf("  Current latest: %d (%d bundled + %d mempool)\n",
 					latestCursor, bundledOps, mempoolOps))
 			} else {
@@ -374,12 +233,12 @@ func handleRootNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 		sb.WriteString(fmt.Sprintf("  curl %s/data/42 -o 000042.jsonl.zst\n", baseURL))
 		sb.WriteString(fmt.Sprintf("  curl %s/jsonl/1\n", baseURL))
 
-		if wsEnabled {
+		if s.config.EnableWebSocket {
 			sb.WriteString(fmt.Sprintf("  websocat %s/ws\n", wsURL))
 			sb.WriteString(fmt.Sprintf("  websocat '%s/ws?cursor=0'\n", wsURL))
 		}
 
-		if syncMode {
+		if s.config.SyncMode {
 			sb.WriteString(fmt.Sprintf("  curl %s/status\n", baseURL))
 			sb.WriteString(fmt.Sprintf("  curl %s/mempool\n", baseURL))
 		}
@@ -391,14 +250,14 @@ func handleRootNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 	}
 }
 
-func handleIndexJSONNative(mgr *bundle.Manager) http.HandlerFunc {
+func (s *Server) handleIndexJSON() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		index := mgr.GetIndex()
+		index := s.manager.GetIndex()
 		sendJSON(w, 200, index)
 	}
 }
 
-func handleBundleNative(mgr *bundle.Manager) http.HandlerFunc {
+func (s *Server) handleBundle() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		bundleNum, err := strconv.Atoi(r.PathValue("number"))
 		if err != nil {
@@ -406,7 +265,7 @@ func handleBundleNative(mgr *bundle.Manager) http.HandlerFunc {
 			return
 		}
 
-		meta, err := mgr.GetIndex().GetBundle(bundleNum)
+		meta, err := s.manager.GetIndex().GetBundle(bundleNum)
 		if err != nil {
 			sendJSON(w, 404, map[string]string{"error": "Bundle not found"})
 			return
@@ -416,7 +275,7 @@ func handleBundleNative(mgr *bundle.Manager) http.HandlerFunc {
 	}
 }
 
-func handleBundleDataNative(mgr *bundle.Manager) http.HandlerFunc {
+func (s *Server) handleBundleData() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		bundleNum, err := strconv.Atoi(r.PathValue("number"))
 		if err != nil {
@@ -424,7 +283,7 @@ func handleBundleDataNative(mgr *bundle.Manager) http.HandlerFunc {
 			return
 		}
 
-		reader, err := mgr.StreamBundleRaw(context.Background(), bundleNum)
+		reader, err := s.manager.StreamBundleRaw(context.Background(), bundleNum)
 		if err != nil {
 			if strings.Contains(err.Error(), "not in index") || strings.Contains(err.Error(), "not found") {
 				sendJSON(w, 404, map[string]string{"error": "Bundle not found"})
@@ -442,7 +301,7 @@ func handleBundleDataNative(mgr *bundle.Manager) http.HandlerFunc {
 	}
 }
 
-func handleBundleJSONLNative(mgr *bundle.Manager) http.HandlerFunc {
+func (s *Server) handleBundleJSONL() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		bundleNum, err := strconv.Atoi(r.PathValue("number"))
 		if err != nil {
@@ -450,7 +309,7 @@ func handleBundleJSONLNative(mgr *bundle.Manager) http.HandlerFunc {
 			return
 		}
 
-		reader, err := mgr.StreamBundleDecompressed(context.Background(), bundleNum)
+		reader, err := s.manager.StreamBundleDecompressed(context.Background(), bundleNum)
 		if err != nil {
 			if strings.Contains(err.Error(), "not in index") || strings.Contains(err.Error(), "not found") {
 				sendJSON(w, 404, map[string]string{"error": "Bundle not found"})
@@ -468,28 +327,29 @@ func handleBundleJSONLNative(mgr *bundle.Manager) http.HandlerFunc {
 	}
 }
 
-func handleStatusNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http.HandlerFunc {
+func (s *Server) handleStatus() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		index := mgr.GetIndex()
+		index := s.manager.GetIndex()
 		indexStats := index.GetStats()
 
 		response := StatusResponse{
 			Server: ServerStatus{
-				Version:          version,
-				UptimeSeconds:    int(time.Since(serverStartTime).Seconds()),
-				SyncMode:         syncMode,
-				WebSocketEnabled: wsEnabled,
-				Origin:           mgr.GetPLCOrigin(),
+				Version:          s.config.Version,
+				UptimeSeconds:    int(time.Since(s.startTime).Seconds()),
+				SyncMode:         s.config.SyncMode,
+				WebSocketEnabled: s.config.EnableWebSocket,
+				Origin:           s.manager.GetPLCOrigin(),
 			},
 			Bundles: BundleStatus{
 				Count:            indexStats["bundle_count"].(int),
 				TotalSize:        indexStats["total_size"].(int64),
 				UncompressedSize: indexStats["total_uncompressed_size"].(int64),
+				UpdatedAt:        indexStats["updated_at"].(time.Time),
 			},
 		}
 
-		if syncMode && syncInterval > 0 {
-			response.Server.SyncIntervalSeconds = int(syncInterval.Seconds())
+		if s.config.SyncMode && s.config.SyncInterval > 0 {
+			response.Server.SyncIntervalSeconds = int(s.config.SyncInterval.Seconds())
 		}
 
 		if bundleCount := response.Bundles.Count; bundleCount > 0 {
@@ -527,8 +387,8 @@ func handleStatusNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http
 			}
 		}
 
-		if syncMode {
-			mempoolStats := mgr.GetMempoolStats()
+		if s.config.SyncMode {
+			mempoolStats := s.manager.GetMempoolStats()
 
 			if count, ok := mempoolStats["count"].(int); ok {
 				mempool := &MempoolStatus{
@@ -570,9 +430,9 @@ func handleStatusNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http
 	}
 }
 
-func handleMempoolNative(mgr *bundle.Manager) http.HandlerFunc {
+func (s *Server) handleMempool() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ops, err := mgr.GetMempoolOperations()
+		ops, err := s.manager.GetMempoolOperations()
 		if err != nil {
 			sendJSON(w, 500, map[string]string{"error": err.Error()})
 			return
@@ -596,12 +456,12 @@ func handleMempoolNative(mgr *bundle.Manager) http.HandlerFunc {
 	}
 }
 
-func handleDebugMemoryNative(mgr *bundle.Manager) http.HandlerFunc {
+func (s *Server) handleDebugMemory() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
 
-		didStats := mgr.GetDIDIndexStats()
+		didStats := s.manager.GetDIDIndexStats()
 
 		beforeAlloc := m.Alloc / 1024 / 1024
 
@@ -634,60 +494,31 @@ After GC:
 	}
 }
 
-func handleWebSocketNative(mgr *bundle.Manager) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		cursorStr := r.URL.Query().Get("cursor")
-		var cursor int
+func (s *Server) handleDIDRouting(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/")
 
-		if cursorStr == "" {
-			cursor = mgr.GetCurrentCursor()
-		} else {
-			var err error
-			cursor, err = strconv.Atoi(cursorStr)
-			if err != nil || cursor < 0 {
-				http.Error(w, "Invalid cursor: must be non-negative integer", 400)
-				return
-			}
-		}
+	parts := strings.SplitN(path, "/", 2)
+	did := parts[0]
 
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "WebSocket upgrade failed: %v\n", err)
-			return
-		}
-		defer conn.Close()
+	if !strings.HasPrefix(did, "did:plc:") {
+		sendJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
 
-		conn.SetPongHandler(func(string) error {
-			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-			return nil
-		})
-
-		done := make(chan struct{})
-
-		go func() {
-			defer close(done)
-			for {
-				_, _, err := conn.ReadMessage()
-				if err != nil {
-					if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-						fmt.Fprintf(os.Stderr, "WebSocket: client closed connection\n")
-					}
-					return
-				}
-			}
-		}()
-
-		bgCtx := context.Background()
-
-		if err := streamLive(bgCtx, conn, mgr, cursor, done); err != nil {
-			fmt.Fprintf(os.Stderr, "WebSocket stream error: %v\n", err)
-		}
+	if len(parts) == 1 {
+		s.handleDIDDocument(did)(w, r)
+	} else if parts[1] == "data" {
+		s.handleDIDData(did)(w, r)
+	} else if parts[1] == "log/audit" {
+		s.handleDIDAuditLog(did)(w, r)
+	} else {
+		sendJSON(w, 404, map[string]string{"error": "not found"})
 	}
 }
 
-func handleDIDDocumentLatestNative(mgr *bundle.Manager, did string) http.HandlerFunc {
+func (s *Server) handleDIDDocument(did string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		op, err := mgr.GetLatestDIDOperation(context.Background(), did)
+		op, err := s.manager.GetLatestDIDOperation(context.Background(), did)
 		if err != nil {
 			sendJSON(w, 500, map[string]string{"error": err.Error()})
 			return
@@ -708,14 +539,14 @@ func handleDIDDocumentLatestNative(mgr *bundle.Manager, did string) http.Handler
 	}
 }
 
-func handleDIDDataNative(mgr *bundle.Manager, did string) http.HandlerFunc {
+func (s *Server) handleDIDData(did string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := plcclient.ValidateDIDFormat(did); err != nil {
 			sendJSON(w, 400, map[string]string{"error": "Invalid DID format"})
 			return
 		}
 
-		operations, err := mgr.GetDIDOperations(context.Background(), did, false)
+		operations, err := s.manager.GetDIDOperations(context.Background(), did, false)
 		if err != nil {
 			sendJSON(w, 500, map[string]string{"error": err.Error()})
 			return
@@ -740,14 +571,14 @@ func handleDIDDataNative(mgr *bundle.Manager, did string) http.HandlerFunc {
 	}
 }
 
-func handleDIDAuditLogNative(mgr *bundle.Manager, did string) http.HandlerFunc {
+func (s *Server) handleDIDAuditLog(did string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := plcclient.ValidateDIDFormat(did); err != nil {
 			sendJSON(w, 400, map[string]string{"error": "Invalid DID format"})
 			return
 		}
 
-		operations, err := mgr.GetDIDOperations(context.Background(), did, false)
+		operations, err := s.manager.GetDIDOperations(context.Background(), did, false)
 		if err != nil {
 			sendJSON(w, 500, map[string]string{"error": err.Error()})
 			return
@@ -761,405 +592,4 @@ func handleDIDAuditLogNative(mgr *bundle.Manager, did string) http.HandlerFunc {
 		auditLog := plcclient.FormatAuditLog(operations)
 		sendJSON(w, 200, auditLog)
 	}
-}
-
-// WebSocket streaming functions (unchanged from your original)
-
-func streamLive(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, startCursor int, done chan struct{}) error {
-	index := mgr.GetIndex()
-	bundles := index.GetBundles()
-	currentRecord := startCursor
-
-	if len(bundles) > 0 {
-		startBundleIdx := startCursor / types.BUNDLE_SIZE
-		startPosition := startCursor % types.BUNDLE_SIZE
-
-		if startBundleIdx < len(bundles) {
-			for i := startBundleIdx; i < len(bundles); i++ {
-				skipUntil := 0
-				if i == startBundleIdx {
-					skipUntil = startPosition
-				}
-
-				newRecordCount, err := streamBundle(ctx, conn, mgr, bundles[i].BundleNumber, skipUntil, done)
-				if err != nil {
-					return err
-				}
-				currentRecord += newRecordCount
-			}
-		}
-	}
-
-	lastSeenMempoolCount := 0
-	if err := streamMempool(conn, mgr, startCursor, len(bundles)*types.BUNDLE_SIZE, &currentRecord, &lastSeenMempoolCount, done); err != nil {
-		return err
-	}
-
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	lastBundleCount := len(bundles)
-	if verboseMode {
-		fmt.Fprintf(os.Stderr, "WebSocket: entering live mode at cursor %d\n", currentRecord)
-	}
-
-	for {
-		select {
-		case <-done:
-			if verboseMode {
-				fmt.Fprintf(os.Stderr, "WebSocket: client disconnected, stopping stream\n")
-			}
-			return nil
-
-		case <-ticker.C:
-			index = mgr.GetIndex()
-			bundles = index.GetBundles()
-
-			if len(bundles) > lastBundleCount {
-				newBundleCount := len(bundles) - lastBundleCount
-
-				if verboseMode {
-					fmt.Fprintf(os.Stderr, "WebSocket: %d new bundle(s) created (operations already streamed from mempool)\n", newBundleCount)
-				}
-
-				currentRecord += newBundleCount * types.BUNDLE_SIZE
-				lastBundleCount = len(bundles)
-				lastSeenMempoolCount = 0
-			}
-
-			if err := streamMempool(conn, mgr, startCursor, len(bundles)*types.BUNDLE_SIZE, &currentRecord, &lastSeenMempoolCount, done); err != nil {
-				return err
-			}
-
-			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				return err
-			}
-		}
-	}
-}
-
-func streamBundle(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, bundleNumber int, skipUntil int, done chan struct{}) (int, error) {
-	reader, err := mgr.StreamBundleDecompressed(ctx, bundleNumber)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to stream bundle %d: %v\n", bundleNumber, err)
-		return 0, nil
-	}
-	defer reader.Close()
-
-	scanner := bufio.NewScanner(reader)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
-	position := 0
-	streamed := 0
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		if position < skipUntil {
-			position++
-			continue
-		}
-
-		select {
-		case <-done:
-			return streamed, nil
-		default:
-		}
-
-		if err := conn.WriteMessage(websocket.TextMessage, line); err != nil {
-			return streamed, err
-		}
-
-		position++
-		streamed++
-
-		if streamed%1000 == 0 {
-			conn.WriteMessage(websocket.PingMessage, nil)
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return streamed, fmt.Errorf("scanner error on bundle %d: %w", bundleNumber, err)
-	}
-
-	return streamed, nil
-}
-
-func streamMempool(conn *websocket.Conn, mgr *bundle.Manager, startCursor int, bundleRecordBase int, currentRecord *int, lastSeenCount *int, done chan struct{}) error {
-	mempoolOps, err := mgr.GetMempoolOperations()
-	if err != nil {
-		return nil
-	}
-
-	if len(mempoolOps) <= *lastSeenCount {
-		return nil
-	}
-
-	newOps := len(mempoolOps) - *lastSeenCount
-	if newOps > 0 && verboseMode {
-		fmt.Fprintf(os.Stderr, "WebSocket: streaming %d new mempool operation(s)\n", newOps)
-	}
-
-	for i := *lastSeenCount; i < len(mempoolOps); i++ {
-		recordNum := bundleRecordBase + i
-		if recordNum < startCursor {
-			continue
-		}
-
-		select {
-		case <-done:
-			return nil
-		default:
-		}
-
-		if err := sendOperation(conn, mempoolOps[i]); err != nil {
-			return err
-		}
-		*currentRecord++
-	}
-
-	*lastSeenCount = len(mempoolOps)
-	return nil
-}
-
-func sendOperation(conn *websocket.Conn, op plcclient.PLCOperation) error {
-	var data []byte
-	var err error
-
-	if len(op.RawJSON) > 0 {
-		data = op.RawJSON
-	} else {
-		data, err = json.Marshal(op)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to marshal operation: %v\n", err)
-			return nil
-		}
-	}
-
-	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-		if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-			fmt.Fprintf(os.Stderr, "WebSocket write error: %v\n", err)
-		}
-		return err
-	}
-
-	return nil
-}
-
-// Helper functions
-
-func getScheme(r *http.Request) string {
-	if r.TLS != nil {
-		return "https"
-	}
-
-	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-		return proto
-	}
-
-	if r.Header.Get("X-Forwarded-Ssl") == "on" {
-		return "https"
-	}
-
-	return "http"
-}
-
-func getWSScheme(r *http.Request) string {
-	if getScheme(r) == "https" {
-		return "wss"
-	}
-	return "ws"
-}
-
-func getBaseURL(r *http.Request) string {
-	scheme := getScheme(r)
-	host := r.Host
-	return fmt.Sprintf("%s://%s", scheme, host)
-}
-
-func getWSURL(r *http.Request) string {
-	scheme := getWSScheme(r)
-	host := r.Host
-	return fmt.Sprintf("%s://%s", scheme, host)
-}
-
-// Response types (unchanged)
-
-type StatusResponse struct {
-	Bundles BundleStatus   `json:"bundles"`
-	Mempool *MempoolStatus `json:"mempool,omitempty"`
-	Server  ServerStatus   `json:"server"`
-}
-
-type ServerStatus struct {
-	Version             string `json:"version"`
-	UptimeSeconds       int    `json:"uptime_seconds"`
-	SyncMode            bool   `json:"sync_mode"`
-	SyncIntervalSeconds int    `json:"sync_interval_seconds,omitempty"`
-	WebSocketEnabled    bool   `json:"websocket_enabled"`
-	Origin              string `json:"origin,omitempty"`
-}
-
-type BundleStatus struct {
-	Count            int       `json:"count"`
-	FirstBundle      int       `json:"first_bundle,omitempty"`
-	LastBundle       int       `json:"last_bundle,omitempty"`
-	TotalSize        int64     `json:"total_size"`
-	UncompressedSize int64     `json:"uncompressed_size,omitempty"`
-	CompressionRatio float64   `json:"compression_ratio,omitempty"`
-	TotalOperations  int       `json:"total_operations,omitempty"`
-	AvgOpsPerHour    int       `json:"avg_ops_per_hour,omitempty"`
-	StartTime        time.Time `json:"start_time,omitempty"`
-	EndTime          time.Time `json:"end_time,omitempty"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	HeadAgeSeconds   int       `json:"head_age_seconds,omitempty"`
-	RootHash         string    `json:"root_hash,omitempty"`
-	HeadHash         string    `json:"head_hash,omitempty"`
-	Gaps             int       `json:"gaps,omitempty"`
-	HasGaps          bool      `json:"has_gaps"`
-	GapNumbers       []int     `json:"gap_numbers,omitempty"`
-}
-
-type MempoolStatus struct {
-	Count                int       `json:"count"`
-	TargetBundle         int       `json:"target_bundle"`
-	CanCreateBundle      bool      `json:"can_create_bundle"`
-	MinTimestamp         time.Time `json:"min_timestamp"`
-	Validated            bool      `json:"validated"`
-	ProgressPercent      float64   `json:"progress_percent"`
-	BundleSize           int       `json:"bundle_size"`
-	OperationsNeeded     int       `json:"operations_needed"`
-	FirstTime            time.Time `json:"first_time,omitempty"`
-	LastTime             time.Time `json:"last_time,omitempty"`
-	TimespanSeconds      int       `json:"timespan_seconds,omitempty"`
-	LastOpAgeSeconds     int       `json:"last_op_age_seconds,omitempty"`
-	EtaNextBundleSeconds int       `json:"eta_next_bundle_seconds,omitempty"`
-}
-
-// Background sync (unchanged)
-
-func runSync(ctx context.Context, mgr *bundle.Manager, interval time.Duration, verbose bool, resolverEnabled bool) {
-	syncBundles(ctx, mgr, verbose, resolverEnabled)
-
-	fmt.Fprintf(os.Stderr, "[Sync] Starting sync loop (interval: %s)\n", interval)
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	saveTicker := time.NewTicker(5 * time.Minute)
-	defer saveTicker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			if err := mgr.SaveMempool(); err != nil {
-				fmt.Fprintf(os.Stderr, "[Sync] Failed to save mempool: %v\n", err)
-			}
-			fmt.Fprintf(os.Stderr, "[Sync] Stopped\n")
-			return
-
-		case <-ticker.C:
-			syncBundles(ctx, mgr, verbose, resolverEnabled)
-
-		case <-saveTicker.C:
-			stats := mgr.GetMempoolStats()
-			if stats["count"].(int) > 0 && verbose {
-				fmt.Fprintf(os.Stderr, "[Sync] Saving mempool (%d ops)\n", stats["count"])
-				mgr.SaveMempool()
-			}
-		}
-	}
-}
-
-func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool, resolverEnabled bool) {
-	cycleStart := time.Now()
-
-	index := mgr.GetIndex()
-	lastBundle := index.GetLastBundle()
-	startBundle := 1
-	if lastBundle != nil {
-		startBundle = lastBundle.BundleNumber + 1
-	}
-
-	isInitialSync := (lastBundle == nil || lastBundle.BundleNumber < 10)
-
-	if isInitialSync && !verbose {
-		fmt.Fprintf(os.Stderr, "[Sync] Initial sync - fast loading mode (bundle %06d → ...)\n", startBundle)
-	} else if verbose {
-		fmt.Fprintf(os.Stderr, "[Sync] Checking for new bundles (current: %06d)...\n", startBundle-1)
-	}
-
-	mempoolBefore := mgr.GetMempoolStats()["count"].(int)
-	fetchedCount := 0
-	consecutiveErrors := 0
-
-	for {
-		currentBundle := startBundle + fetchedCount
-
-		b, err := mgr.FetchNextBundle(ctx, !verbose)
-		if err != nil {
-			if isEndOfDataError(err) {
-				mempoolAfter := mgr.GetMempoolStats()["count"].(int)
-				addedOps := mempoolAfter - mempoolBefore
-				duration := time.Since(cycleStart)
-
-				if fetchedCount > 0 {
-					fmt.Fprintf(os.Stderr, "[Sync] ✓ Bundle %06d | Synced: %d | Mempool: %d (+%d) | %dms\n",
-						currentBundle-1, fetchedCount, mempoolAfter, addedOps, duration.Milliseconds())
-				} else if !isInitialSync {
-					fmt.Fprintf(os.Stderr, "[Sync] ✓ Bundle %06d | Up to date | Mempool: %d (+%d) | %dms\n",
-						startBundle-1, mempoolAfter, addedOps, duration.Milliseconds())
-				}
-				break
-			}
-
-			consecutiveErrors++
-			if verbose {
-				fmt.Fprintf(os.Stderr, "[Sync] Error fetching bundle %06d: %v\n", currentBundle, err)
-			}
-
-			if consecutiveErrors >= 3 {
-				fmt.Fprintf(os.Stderr, "[Sync] Too many errors, stopping\n")
-				break
-			}
-
-			time.Sleep(5 * time.Second)
-			continue
-		}
-
-		consecutiveErrors = 0
-
-		if err := mgr.SaveBundle(ctx, b, !verbose); err != nil {
-			fmt.Fprintf(os.Stderr, "[Sync] Error saving bundle %06d: %v\n", b.BundleNumber, err)
-			break
-		}
-
-		fetchedCount++
-
-		if !verbose {
-			fmt.Fprintf(os.Stderr, "[Sync] ✓ %06d | hash=%s | content=%s | %d ops, %d DIDs\n",
-				b.BundleNumber,
-				b.Hash[:16]+"...",
-				b.ContentHash[:16]+"...",
-				len(b.Operations),
-				b.DIDCount)
-		}
-
-		time.Sleep(500 * time.Millisecond)
-	}
-}
-
-func isEndOfDataError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	errMsg := err.Error()
-	return strings.Contains(errMsg, "insufficient operations") ||
-		strings.Contains(errMsg, "no more operations available") ||
-		strings.Contains(errMsg, "reached latest data")
 }

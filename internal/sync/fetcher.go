@@ -27,7 +27,6 @@ func NewFetcher(plcClient *plcclient.Client, operations *storage.Operations, log
 }
 
 // FetchToMempool fetches operations and returns them
-// Returns: operations, error
 func (f *Fetcher) FetchToMempool(
 	ctx context.Context,
 	afterTime string,
@@ -49,7 +48,6 @@ func (f *Fetcher) FetchToMempool(
 	var allNewOps []plcclient.PLCOperation
 
 	for fetchNum := 0; fetchNum < maxFetches; fetchNum++ {
-		// Calculate batch size
 		remaining := target - len(allNewOps)
 		if remaining <= 0 {
 			break
@@ -61,8 +59,7 @@ func (f *Fetcher) FetchToMempool(
 		}
 
 		if !quiet {
-			f.logger.Printf("  Fetch #%d: requesting %d operations",
-				fetchNum+1, batchSize)
+			f.logger.Printf("  Fetch #%d: requesting %d operations", fetchNum+1, batchSize)
 		}
 
 		batch, err := f.plcClient.Export(ctx, plcclient.ExportOptions{
@@ -77,13 +74,11 @@ func (f *Fetcher) FetchToMempool(
 			if !quiet {
 				f.logger.Printf("  No more operations available from PLC")
 			}
-			if len(allNewOps) > 0 {
-				return allNewOps, nil
-			}
-			return nil, fmt.Errorf("no operations available")
+			break
 		}
 
-		// Deduplicate
+		// Deduplicate against boundary CIDs only
+		// Mempool will handle deduplication of operations already in mempool
 		for _, op := range batch {
 			if !seenCIDs[op.CID] {
 				seenCIDs[op.CID] = true
@@ -96,7 +91,7 @@ func (f *Fetcher) FetchToMempool(
 			currentAfter = batch[len(batch)-1].CreatedAt.Format(time.RFC3339Nano)
 		}
 
-		// Stop if we got less than requested
+		// Stop if we got less than requested (caught up)
 		if len(batch) < batchSize {
 			if !quiet {
 				f.logger.Printf("  Received incomplete batch (%d/%d), caught up to latest", len(batch), batchSize)
@@ -112,5 +107,5 @@ func (f *Fetcher) FetchToMempool(
 		return allNewOps, nil
 	}
 
-	return nil, fmt.Errorf("no new operations added")
+	return nil, fmt.Errorf("no operations available (reached latest data)")
 }
