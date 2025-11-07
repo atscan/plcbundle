@@ -41,6 +41,9 @@ func (sb *ShardBuilder) add(identifier string, bundle uint16, position uint16, n
 
 // BuildIndexFromScratch builds index with controlled memory usage
 func (dim *DIDIndexManager) BuildIndexFromScratch(ctx context.Context, mgr *Manager, progressCallback func(current, total int)) error {
+	dim.indexMu.RLock()
+	defer dim.indexMu.RUnlock()
+
 	dim.logger.Printf("Building DID index from scratch (memory-efficient mode)...")
 
 	bundles := mgr.index.GetBundles()
@@ -224,6 +227,9 @@ func (dim *DIDIndexManager) consolidateShard(shardNum uint8) (int64, error) {
 
 // UpdateIndexForBundle adds operations from a new bundle (incremental + ATOMIC)
 func (dim *DIDIndexManager) UpdateIndexForBundle(ctx context.Context, bundle *Bundle) error {
+	dim.indexMu.RLock()
+	defer dim.indexMu.RUnlock()
+
 	// Group operations by shard
 	shardOps := make(map[uint8]map[string][]OpLocation)
 

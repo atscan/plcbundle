@@ -44,6 +44,8 @@ type DIDIndexManager struct {
 	config  *DIDIndexConfig
 	logger  Logger
 	verbose bool
+
+	indexMu sync.RWMutex
 }
 
 // mmapShard represents a memory-mapped shard file
@@ -124,6 +126,9 @@ func (dim *DIDIndexManager) SetVerbose(verbose bool) {
 
 // GetDIDLocations returns all bundle+position locations for a DID
 func (dim *DIDIndexManager) GetDIDLocations(did string) ([]OpLocation, error) {
+	dim.indexMu.RLock()
+	defer dim.indexMu.RUnlock()
+
 	// Validate and extract identifier
 	identifier, err := extractDIDIdentifier(did)
 	if err != nil {
