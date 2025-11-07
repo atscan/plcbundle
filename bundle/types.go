@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 	"tangled.org/atscan.net/plcbundle/internal/types"
-	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // Bundle represents a PLC bundle

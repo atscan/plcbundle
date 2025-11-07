@@ -10,8 +10,8 @@ import (
 	"tangled.org/atscan.net/plcbundle/bundle"
 	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/internal/didindex"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 	internalsync "tangled.org/atscan.net/plcbundle/internal/sync"
-	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // BundleManager interface (for testing/mocking)

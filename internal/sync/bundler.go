@@ -3,8 +3,8 @@ package sync
 import (
 	"time"
 
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 	"tangled.org/atscan.net/plcbundle/internal/storage"
-	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // CreateBundle creates a bundle structure from operations

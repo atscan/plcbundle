@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"tangled.org/atscan.net/plcbundle/plcclient"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 )
 
 // Detector represents a spam detection algorithm

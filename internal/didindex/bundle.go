@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"tangled.org/atscan.net/plcbundle/plcclient"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 )
 
 // BundleProvider is an interface to avoid circular dependencies

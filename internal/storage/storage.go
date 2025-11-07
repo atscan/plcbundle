@@ -13,7 +13,7 @@ import (
 
 	gozstd "github.com/DataDog/zstd"
 	"github.com/goccy/go-json"
-	"tangled.org/atscan.net/plcbundle/plcclient" // ONLY import plcclient, NOT bundle
+	"tangled.org/atscan.net/plcbundle/internal/plcclient" // ONLY import plcclient, NOT bundle
 )
 
 // Operations handles low-level bundle file operations

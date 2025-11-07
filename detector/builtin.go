@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"tangled.org/atscan.net/plcbundle/plcclient"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 )
 
 // NoOpDetector is an empty detector for speed testing

@@ -15,10 +15,10 @@ import (
 	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/internal/didindex"
 	"tangled.org/atscan.net/plcbundle/internal/mempool"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 	"tangled.org/atscan.net/plcbundle/internal/storage"
 	internalsync "tangled.org/atscan.net/plcbundle/internal/sync"
 	"tangled.org/atscan.net/plcbundle/internal/types"
-	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // defaultLogger is a simple logger implementation

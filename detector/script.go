@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
-	"tangled.org/atscan.net/plcbundle/plcclient"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 )
 
 // ScriptDetector runs a JavaScript detector via Unix socket

@@ -8,9 +8,9 @@ import (
 	"tangled.org/atscan.net/plcbundle/bundle"
 	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/internal/mempool"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 	"tangled.org/atscan.net/plcbundle/internal/storage"
 	"tangled.org/atscan.net/plcbundle/internal/types"
-	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // TestIndex tests index operations

@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 	"tangled.org/atscan.net/plcbundle/internal/types"
-	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 const MEMPOOL_FILE_PREFIX = "plc_mempool_"

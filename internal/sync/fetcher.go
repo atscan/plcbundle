@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 	"tangled.org/atscan.net/plcbundle/internal/storage"
 	"tangled.org/atscan.net/plcbundle/internal/types"
-	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 // Fetcher handles fetching operations from PLC directory

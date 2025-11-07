@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
-	"tangled.org/atscan.net/plcbundle/plcclient"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 )
 
 // CalculateBundleMetadata calculates complete metadata for a bundle

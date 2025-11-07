@@ -11,8 +11,8 @@ import (
 
 	"github.com/goccy/go-json"
 	"github.com/gorilla/websocket"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 	"tangled.org/atscan.net/plcbundle/internal/types"
-	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
 var upgrader = websocket.Upgrader{

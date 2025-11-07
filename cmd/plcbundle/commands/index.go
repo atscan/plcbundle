@@ -10,7 +10,7 @@ import (
 
 	"github.com/goccy/go-json"
 	"tangled.org/atscan.net/plcbundle/cmd/plcbundle/ui"
-	"tangled.org/atscan.net/plcbundle/plcclient"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 )
 
 // IndexCommand handles the index subcommand

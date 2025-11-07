@@ -3,7 +3,7 @@ package plcbundle
 import (
 	"time"
 
-	"tangled.org/atscan.net/plcbundle/plcclient"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 )
 
 // Bundle represents a PLC bundle (public version)
