@@ -288,7 +288,7 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 		mempool:      mempool,
 		didIndex:     didIndex, // Updated type
 		bundleCache:  make(map[int]*Bundle),
-		maxCacheSize: 2,
+		maxCacheSize: 10,
 		syncer:       fetcher,
 		cloner:       cloner,
 	}, nil
@@ -773,15 +773,15 @@ func (m *Manager) GetCurrentCursor() int {
 
 // LoadOperation loads a single operation from a bundle efficiently
 func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position int) (*plcclient.PLCOperation, error) {
+	// Validate position
+	if position < 0 || position >= types.BUNDLE_SIZE {
+		return nil, fmt.Errorf("invalid position: %d (must be 0-%d)", position, types.BUNDLE_SIZE-1)
+	}
+
 	// Validate bundle exists in index
 	_, err := m.index.GetBundle(bundleNumber)
 	if err != nil {
 		return nil, fmt.Errorf("bundle not in index: %w", err)
-	}
-
-	// Validate position
-	if position < 0 || position >= types.BUNDLE_SIZE {
-		return nil, fmt.Errorf("invalid position: %d (must be 0-%d)", position, types.BUNDLE_SIZE-1)
 	}
 
 	// Build file path
@@ -790,7 +790,7 @@ func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position 
 		return nil, fmt.Errorf("bundle file not found: %s", path)
 	}
 
-	// Load just the one operation
+	// Load just the one operation (optimized - decompresses only until position)
 	return m.operations.LoadOperationAtPosition(path, position)
 }
 
@@ -966,26 +966,14 @@ func (m *Manager) GetDIDOperations(ctx context.Context, did string, verbose bool
 	return allOps, nil
 }
 
-// getDIDOperationsFromMempool retrieves operations for a DID from mempool only
+// GetDIDOperationsFromMempool retrieves operations for a DID from mempool only
 func (m *Manager) GetDIDOperationsFromMempool(did string) ([]plcclient.PLCOperation, error) {
 	if m.mempool == nil {
 		return []plcclient.PLCOperation{}, nil
 	}
 
-	allMempoolOps, err := m.GetMempoolOperations()
-	if err != nil {
-		return nil, err
-	}
-
-	matchingOps := make([]plcclient.PLCOperation, 0, 16)
-
-	for _, op := range allMempoolOps {
-		if op.DID == did {
-			matchingOps = append(matchingOps, op)
-		}
-	}
-
-	return matchingOps, nil
+	// Use direct search - only copies matching operations
+	return m.mempool.FindDIDOperations(did), nil
 }
 
 // GetLatestDIDOperation returns only the most recent non-nullified operation
@@ -1220,4 +1208,95 @@ func (m *Manager) CloneFromRemote(ctx context.Context, opts internalsync.CloneOp
 
 	// Delegate to cloner with inline callback
 	return m.cloner.Clone(ctx, opts, m.index, updateIndexCallback)
+}
+
+// ResolveDID resolves a DID to its current document with detailed timing metrics
+func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult, error) {
+	if err := plcclient.ValidateDIDFormat(did); err != nil {
+		return nil, err
+	}
+
+	result := &ResolveDIDResult{}
+	totalStart := time.Now()
+
+	// STEP 1: Check mempool first (most recent data) - OPTIMIZED
+	mempoolStart := time.Now()
+
+	var latestMempoolOp *plcclient.PLCOperation
+	if m.mempool != nil {
+		// Fast backwards search with early exit
+		latestMempoolOp = m.mempool.FindLatestDIDOperation(did)
+	}
+	result.MempoolTime = time.Since(mempoolStart)
+
+	// Early return if found in mempool
+	if latestMempoolOp != nil {
+		doc, err := plcclient.ResolveDIDDocument(did, []plcclient.PLCOperation{*latestMempoolOp})
+		if err != nil {
+			return nil, fmt.Errorf("resolution failed: %w", err)
+		}
+
+		result.Document = doc
+		result.Source = "mempool"
+		result.TotalTime = time.Since(totalStart)
+		return result, nil
+	}
+
+	// STEP 2: Index lookup
+	if m.didIndex == nil || !m.didIndex.Exists() {
+		return nil, fmt.Errorf("DID index not available - run 'plcbundle index build' to enable DID resolution")
+	}
+
+	indexStart := time.Now()
+	locations, err := m.didIndex.GetDIDLocations(did)
+	result.IndexTime = time.Since(indexStart)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(locations) == 0 {
+		return nil, fmt.Errorf("DID not found")
+	}
+
+	// Find latest non-nullified location
+	var latestLoc *didindex.OpLocation
+	for i := range locations {
+		if locations[i].Nullified {
+			continue
+		}
+		if latestLoc == nil ||
+			locations[i].Bundle > latestLoc.Bundle ||
+			(locations[i].Bundle == latestLoc.Bundle && locations[i].Position > latestLoc.Position) {
+			latestLoc = &locations[i]
+		}
+	}
+
+	if latestLoc == nil {
+		return nil, fmt.Errorf("no valid operations (all nullified)")
+	}
+
+	// STEP 3: Load operation
+	opStart := time.Now()
+	op, err := m.LoadOperation(ctx, int(latestLoc.Bundle), int(latestLoc.Position))
+	result.LoadOpTime = time.Since(opStart)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to load operation: %w", err)
+	}
+
+	result.BundleNumber = int(latestLoc.Bundle)
+	result.Position = int(latestLoc.Position)
+
+	// STEP 4: Resolve document
+	doc, err := plcclient.ResolveDIDDocument(did, []plcclient.PLCOperation{*op})
+	if err != nil {
+		return nil, fmt.Errorf("resolution failed: %w", err)
+	}
+
+	result.Document = doc
+	result.Source = "bundle"
+	result.TotalTime = time.Since(totalStart)
+
+	return result, nil
 }

@@ -417,3 +417,43 @@ func (m *Mempool) Delete() error {
 func (m *Mempool) GetFilename() string {
 	return filepath.Base(m.file)
 }
+
+// FindDIDOperations searches for operations matching a DID (no full copy)
+func (m *Mempool) FindDIDOperations(did string) []plcclient.PLCOperation {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(m.operations) == 0 {
+		return []plcclient.PLCOperation{}
+	}
+
+	// Pre-allocate with small capacity (most DIDs have 1-5 ops)
+	matching := make([]plcclient.PLCOperation, 0, 4)
+
+	for _, op := range m.operations {
+		if op.DID == did {
+			matching = append(matching, op)
+		}
+	}
+
+	return matching
+}
+
+// FindLatestDIDOperation finds the most recent non-nullified operation for a DID
+// Returns nil if not found. Searches backwards for early exit.
+func (m *Mempool) FindLatestDIDOperation(did string) *plcclient.PLCOperation {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Search backwards from most recent
+	for i := len(m.operations) - 1; i >= 0; i-- {
+		if m.operations[i].DID == did {
+			if !m.operations[i].IsNullified() {
+				// Return pointer to avoid copy
+				return &m.operations[i]
+			}
+		}
+	}
+
+	return nil
+}

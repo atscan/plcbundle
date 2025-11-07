@@ -242,13 +242,14 @@ func indexLookup(args []string) error {
 
 func indexResolve(args []string) error {
 	fs := flag.NewFlagSet("index resolve", flag.ExitOnError)
+	verbose := fs.Bool("v", false, "verbose timing breakdown")
 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: plcbundle index resolve <did>")
+		return fmt.Errorf("usage: plcbundle index resolve <did> [-v]")
 	}
 
 	did := fs.Arg(0)
@@ -262,43 +263,38 @@ func indexResolve(args []string) error {
 	ctx := context.Background()
 	fmt.Fprintf(os.Stderr, "Resolving: %s\n", did)
 
-	start := time.Now()
+	// Use unified resolution method with metrics
+	result, err := mgr.ResolveDID(ctx, did)
+	if err != nil {
+		return err
+	}
 
-	// Check mempool first
-	mempoolOps, _ := mgr.GetDIDOperationsFromMempool(did)
-	if len(mempoolOps) > 0 {
-		for i := len(mempoolOps) - 1; i >= 0; i-- {
-			if !mempoolOps[i].IsNullified() {
-				doc, err := plcclient.ResolveDIDDocument(did, []plcclient.PLCOperation{mempoolOps[i]})
-				if err != nil {
-					return fmt.Errorf("resolution failed: %w", err)
-				}
+	// Display timing metrics
+	if result.Source == "mempool" {
+		fmt.Fprintf(os.Stderr, "Mempool check: %s (✓ found in mempool)\n", result.MempoolTime)
+		fmt.Fprintf(os.Stderr, "Total: %s (resolved from mempool)\n\n", result.TotalTime)
+	} else {
+		fmt.Fprintf(os.Stderr, "Mempool check: %s (not found)\n", result.MempoolTime)
+		fmt.Fprintf(os.Stderr, "Index lookup: %s (shard access)\n", result.IndexTime)
+		fmt.Fprintf(os.Stderr, "Operation load: %s (bundle %d, pos %d)\n",
+			result.LoadOpTime, result.BundleNumber, result.Position)
+		fmt.Fprintf(os.Stderr, "Total: %s\n", result.TotalTime)
 
-				totalTime := time.Since(start)
-				fmt.Fprintf(os.Stderr, "Total: %s (resolved from mempool)\n\n", totalTime)
-
-				data, _ := json.MarshalIndent(doc, "", "  ")
-				fmt.Println(string(data))
-				return nil
-			}
+		// Verbose timing breakdown
+		if *verbose {
+			fmt.Fprintf(os.Stderr, "\nTiming breakdown:\n")
+			fmt.Fprintf(os.Stderr, "  Mempool:   %6s (%5.1f%%)\n",
+				result.MempoolTime, float64(result.MempoolTime)/float64(result.TotalTime)*100)
+			fmt.Fprintf(os.Stderr, "  Index:     %6s (%5.1f%%)\n",
+				result.IndexTime, float64(result.IndexTime)/float64(result.TotalTime)*100)
+			fmt.Fprintf(os.Stderr, "  Load op:   %6s (%5.1f%%)\n",
+				result.LoadOpTime, float64(result.LoadOpTime)/float64(result.TotalTime)*100)
 		}
+		fmt.Fprintf(os.Stderr, "\n")
 	}
 
-	// Use index
-	op, err := mgr.GetLatestDIDOperation(ctx, did)
-	if err != nil {
-		return fmt.Errorf("failed to get latest operation: %w", err)
-	}
-
-	doc, err := plcclient.ResolveDIDDocument(did, []plcclient.PLCOperation{*op})
-	if err != nil {
-		return fmt.Errorf("resolution failed: %w", err)
-	}
-
-	totalTime := time.Since(start)
-	fmt.Fprintf(os.Stderr, "Total: %s\n\n", totalTime)
-
-	data, _ := json.MarshalIndent(doc, "", "  ")
+	// Output document to stdout
+	data, _ := json.MarshalIndent(result.Document, "", "  ")
 	fmt.Println(string(data))
 
 	return nil

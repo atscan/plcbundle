@@ -518,24 +518,32 @@ func (s *Server) handleDIDRouting(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDIDDocument(did string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		op, err := s.manager.GetLatestDIDOperation(context.Background(), did)
-		if err != nil {
-			sendJSON(w, 500, map[string]string{"error": err.Error()})
-			return
-		}
-
-		doc, err := plcclient.ResolveDIDDocument(did, []plcclient.PLCOperation{*op})
+		result, err := s.manager.ResolveDID(r.Context(), did)
 		if err != nil {
 			if strings.Contains(err.Error(), "deactivated") {
 				sendJSON(w, 410, map[string]string{"error": "DID has been deactivated"})
+			} else if strings.Contains(err.Error(), "not found") {
+				sendJSON(w, 404, map[string]string{"error": "DID not found"})
 			} else {
-				sendJSON(w, 500, map[string]string{"error": fmt.Sprintf("Resolution failed: %v", err)})
+				sendJSON(w, 500, map[string]string{"error": err.Error()})
 			}
 			return
 		}
 
+		// Add timing headers in MILLISECONDS (float for precision)
+		w.Header().Set("X-Resolution-Time-Ms", fmt.Sprintf("%.3f", float64(result.TotalTime.Microseconds())/1000.0))
+		w.Header().Set("X-Resolution-Source", result.Source)
+		w.Header().Set("X-Mempool-Time-Ms", fmt.Sprintf("%.3f", float64(result.MempoolTime.Microseconds())/1000.0))
+
+		if result.Source == "bundle" {
+			w.Header().Set("X-Bundle-Number", fmt.Sprintf("%d", result.BundleNumber))
+			w.Header().Set("X-Bundle-Position", fmt.Sprintf("%d", result.Position))
+			w.Header().Set("X-Index-Time-Ms", fmt.Sprintf("%.3f", float64(result.IndexTime.Microseconds())/1000.0))
+			w.Header().Set("X-Load-Time-Ms", fmt.Sprintf("%.3f", float64(result.LoadOpTime.Microseconds())/1000.0))
+		}
+
 		w.Header().Set("Content-Type", "application/did+ld+json")
-		sendJSON(w, 200, doc)
+		sendJSON(w, 200, result.Document)
 	}
 }
 
