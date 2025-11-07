@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"tangled.org/atscan.net/plcbundle/internal/bundle"
+	"tangled.org/atscan.net/plcbundle/bundle"
 )
 
 // Server serves bundle data over HTTP

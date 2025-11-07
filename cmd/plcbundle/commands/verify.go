@@ -5,7 +5,7 @@ import (
 	"flag"
 	"fmt"
 
-	"tangled.org/atscan.net/plcbundle/internal/bundle"
+	"tangled.org/atscan.net/plcbundle/bundle"
 )
 
 // VerifyCommand handles the verify subcommand

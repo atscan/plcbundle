@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 
-	"tangled.org/atscan.net/plcbundle/internal/bundle"
+	"tangled.org/atscan.net/plcbundle/bundle"
 )
 
 // Manager is the main entry point for plcbundle operations

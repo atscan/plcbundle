@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"time"
 
+	"tangled.org/atscan.net/plcbundle/bundle"
 	"tangled.org/atscan.net/plcbundle/cmd/plcbundle/ui"
-	"tangled.org/atscan.net/plcbundle/internal/bundle"
 	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 )
 
