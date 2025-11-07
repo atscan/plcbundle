@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"tangled.org/atscan.net/plcbundle/internal/bundle"
+	"tangled.org/atscan.net/plcbundle/bundle"
 	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/internal/mempool"
 	"tangled.org/atscan.net/plcbundle/internal/storage"
