@@ -15,7 +15,8 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/gorilla/websocket"
 
-	"tangled.org/atscan.net/plcbundle/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/types"
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
@@ -256,15 +257,15 @@ func handleRootNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 			sb.WriteString("\nMempool Stats\n")
 			sb.WriteString("━━━━━━━━━━━━━\n")
 			sb.WriteString(fmt.Sprintf("  Target bundle:     %d\n", targetBundle))
-			sb.WriteString(fmt.Sprintf("  Operations:        %d / %d\n", count, bundle.BUNDLE_SIZE))
+			sb.WriteString(fmt.Sprintf("  Operations:        %d / %d\n", count, types.BUNDLE_SIZE))
 			sb.WriteString(fmt.Sprintf("  Can create bundle: %v\n", canCreate))
 
 			if count > 0 {
-				progress := float64(count) / float64(bundle.BUNDLE_SIZE) * 100
+				progress := float64(count) / float64(types.BUNDLE_SIZE) * 100
 				sb.WriteString(fmt.Sprintf("  Progress:          %.1f%%\n", progress))
 
 				barWidth := 50
-				filled := int(float64(barWidth) * float64(count) / float64(bundle.BUNDLE_SIZE))
+				filled := int(float64(barWidth) * float64(count) / float64(types.BUNDLE_SIZE))
 				if filled > barWidth {
 					filled = barWidth
 				}
@@ -355,7 +356,7 @@ func handleRootNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool, resolv
 			sb.WriteString("  Default: starts from latest (skips all historical data)\n")
 
 			latestCursor := mgr.GetCurrentCursor()
-			bundledOps := len(index.GetBundles()) * bundle.BUNDLE_SIZE
+			bundledOps := len(index.GetBundles()) * types.BUNDLE_SIZE
 			mempoolOps := latestCursor - bundledOps
 
 			if syncMode && mempoolOps > 0 {
@@ -517,7 +518,7 @@ func handleStatusNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http
 				}
 			}
 
-			totalOps := bundleCount * bundle.BUNDLE_SIZE
+			totalOps := bundleCount * types.BUNDLE_SIZE
 			response.Bundles.TotalOperations = totalOps
 
 			duration := response.Bundles.EndTime.Sub(response.Bundles.StartTime)
@@ -536,9 +537,9 @@ func handleStatusNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http
 					CanCreateBundle:  mempoolStats["can_create_bundle"].(bool),
 					MinTimestamp:     mempoolStats["min_timestamp"].(time.Time),
 					Validated:        mempoolStats["validated"].(bool),
-					ProgressPercent:  float64(count) / float64(bundle.BUNDLE_SIZE) * 100,
-					BundleSize:       bundle.BUNDLE_SIZE,
-					OperationsNeeded: bundle.BUNDLE_SIZE - count,
+					ProgressPercent:  float64(count) / float64(types.BUNDLE_SIZE) * 100,
+					BundleSize:       types.BUNDLE_SIZE,
+					OperationsNeeded: types.BUNDLE_SIZE - count,
 				}
 
 				if firstTime, ok := mempoolStats["first_time"].(time.Time); ok {
@@ -550,12 +551,12 @@ func handleStatusNative(mgr *bundle.Manager, syncMode bool, wsEnabled bool) http
 					mempool.LastOpAgeSeconds = int(time.Since(lastTime).Seconds())
 				}
 
-				if count > 100 && count < bundle.BUNDLE_SIZE {
+				if count > 100 && count < types.BUNDLE_SIZE {
 					if !mempool.FirstTime.IsZero() && !mempool.LastTime.IsZero() {
 						timespan := mempool.LastTime.Sub(mempool.FirstTime)
 						if timespan.Seconds() > 0 {
 							opsPerSec := float64(count) / timespan.Seconds()
-							remaining := bundle.BUNDLE_SIZE - count
+							remaining := types.BUNDLE_SIZE - count
 							mempool.EtaNextBundleSeconds = int(float64(remaining) / opsPerSec)
 						}
 					}
@@ -770,8 +771,8 @@ func streamLive(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, 
 	currentRecord := startCursor
 
 	if len(bundles) > 0 {
-		startBundleIdx := startCursor / bundle.BUNDLE_SIZE
-		startPosition := startCursor % bundle.BUNDLE_SIZE
+		startBundleIdx := startCursor / types.BUNDLE_SIZE
+		startPosition := startCursor % types.BUNDLE_SIZE
 
 		if startBundleIdx < len(bundles) {
 			for i := startBundleIdx; i < len(bundles); i++ {
@@ -790,7 +791,7 @@ func streamLive(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, 
 	}
 
 	lastSeenMempoolCount := 0
-	if err := streamMempool(conn, mgr, startCursor, len(bundles)*bundle.BUNDLE_SIZE, &currentRecord, &lastSeenMempoolCount, done); err != nil {
+	if err := streamMempool(conn, mgr, startCursor, len(bundles)*types.BUNDLE_SIZE, &currentRecord, &lastSeenMempoolCount, done); err != nil {
 		return err
 	}
 
@@ -821,12 +822,12 @@ func streamLive(ctx context.Context, conn *websocket.Conn, mgr *bundle.Manager, 
 					fmt.Fprintf(os.Stderr, "WebSocket: %d new bundle(s) created (operations already streamed from mempool)\n", newBundleCount)
 				}
 
-				currentRecord += newBundleCount * bundle.BUNDLE_SIZE
+				currentRecord += newBundleCount * types.BUNDLE_SIZE
 				lastBundleCount = len(bundles)
 				lastSeenMempoolCount = 0
 			}
 
-			if err := streamMempool(conn, mgr, startCursor, len(bundles)*bundle.BUNDLE_SIZE, &currentRecord, &lastSeenMempoolCount, done); err != nil {
+			if err := streamMempool(conn, mgr, startCursor, len(bundles)*types.BUNDLE_SIZE, &currentRecord, &lastSeenMempoolCount, done); err != nil {
 				return err
 			}
 

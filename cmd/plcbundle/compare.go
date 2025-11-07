@@ -11,8 +11,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
-
-	"tangled.org/atscan.net/plcbundle/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/bundle"
 )
 
 // IndexComparison holds comparison results

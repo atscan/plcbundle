@@ -5,12 +5,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"tangled.org/atscan.net/plcbundle/internal/types"
 	"tangled.org/atscan.net/plcbundle/plcclient"
-)
-
-const (
-	// BUNDLE_SIZE is the standard number of operations per bundle
-	BUNDLE_SIZE = 10000
 )
 
 // Bundle represents a PLC bundle
@@ -49,7 +45,7 @@ func (b *Bundle) OperationCount() int {
 	if len(b.Operations) > 0 {
 		return len(b.Operations)
 	}
-	return BUNDLE_SIZE
+	return types.BUNDLE_SIZE
 }
 
 // CompressionRatio returns the compression ratio
@@ -65,8 +61,8 @@ func (b *Bundle) ValidateForSave() error {
 	if b.BundleNumber < 1 {
 		return fmt.Errorf("invalid bundle number: %d", b.BundleNumber)
 	}
-	if len(b.Operations) != BUNDLE_SIZE {
-		return fmt.Errorf("invalid operation count: expected %d, got %d", BUNDLE_SIZE, len(b.Operations))
+	if len(b.Operations) != types.BUNDLE_SIZE {
+		return fmt.Errorf("invalid operation count: expected %d, got %d", types.BUNDLE_SIZE, len(b.Operations))
 	}
 	if b.StartTime.After(b.EndTime) {
 		return fmt.Errorf("start_time is after end_time")
@@ -163,12 +159,6 @@ type DirectoryScanResult struct {
 	IndexUpdated      bool
 }
 
-// Logger interface for bundle operations
-type Logger interface {
-	Printf(format string, v ...interface{})
-	Println(v ...interface{})
-}
-
 // Config holds configuration for bundle operations
 type Config struct {
 	BundleDir       string
@@ -176,7 +166,7 @@ type Config struct {
 	AutoRebuild     bool
 	RebuildWorkers  int                      // Number of workers for parallel rebuild (0 = auto-detect)
 	RebuildProgress func(current, total int) // Progress callback for rebuild
-	Logger          Logger
+	Logger          types.Logger
 }
 
 // DefaultConfig returns default configuration
@@ -199,7 +189,7 @@ type CloneOptions struct {
 	ProgressFunc func(downloaded, total int, bytesDownloaded, bytesTotal int64)
 	SaveInterval time.Duration
 	Verbose      bool
-	Logger       Logger
+	Logger       types.Logger
 }
 
 // CloneResult contains cloning results

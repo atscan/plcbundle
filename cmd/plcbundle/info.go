@@ -9,7 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"tangled.org/atscan.net/plcbundle/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/types"
 )
 
 func showGeneralInfo(mgr *bundle.Manager, dir string, verbose bool, showBundles bool, verify bool, showTimeline bool) {
@@ -83,7 +84,7 @@ func showGeneralInfo(mgr *bundle.Manager, dir string, verbose bool, showBundles 
 	// Operations count (exact calculation)
 	mempoolStats := mgr.GetMempoolStats()
 	mempoolCount := mempoolStats["count"].(int)
-	bundleOpsCount := bundleCount * bundle.BUNDLE_SIZE
+	bundleOpsCount := bundleCount * types.BUNDLE_SIZE
 	totalOps := bundleOpsCount + mempoolCount
 
 	fmt.Printf("🔢 Operations\n")
@@ -146,15 +147,15 @@ func showGeneralInfo(mgr *bundle.Manager, dir string, verbose bool, showBundles 
 	if mempoolCount > 0 {
 		targetBundle := mempoolStats["target_bundle"].(int)
 		canCreate := mempoolStats["can_create_bundle"].(bool)
-		progress := float64(mempoolCount) / float64(bundle.BUNDLE_SIZE) * 100
+		progress := float64(mempoolCount) / float64(types.BUNDLE_SIZE) * 100
 
 		fmt.Printf("🔄 Mempool (next bundle: %06d)\n", targetBundle)
-		fmt.Printf("   Operations:    %s / %s\n", formatNumber(mempoolCount), formatNumber(bundle.BUNDLE_SIZE))
+		fmt.Printf("   Operations:    %s / %s\n", formatNumber(mempoolCount), formatNumber(types.BUNDLE_SIZE))
 		fmt.Printf("   Progress:      %.1f%%\n", progress)
 
 		// Progress bar
 		barWidth := 40
-		filled := int(float64(barWidth) * float64(mempoolCount) / float64(bundle.BUNDLE_SIZE))
+		filled := int(float64(barWidth) * float64(mempoolCount) / float64(types.BUNDLE_SIZE))
 		if filled > barWidth {
 			filled = barWidth
 		}
@@ -164,7 +165,7 @@ func showGeneralInfo(mgr *bundle.Manager, dir string, verbose bool, showBundles 
 		if canCreate {
 			fmt.Printf("   ✓ Ready to create bundle\n")
 		} else {
-			remaining := bundle.BUNDLE_SIZE - mempoolCount
+			remaining := types.BUNDLE_SIZE - mempoolCount
 			fmt.Printf("   Need %s more operations\n", formatNumber(remaining))
 		}
 		fmt.Printf("\n")

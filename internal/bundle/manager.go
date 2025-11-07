@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"tangled.org/atscan.net/plcbundle/internal/didindex"
+	"tangled.org/atscan.net/plcbundle/internal/mempool"
 	"tangled.org/atscan.net/plcbundle/internal/storage"
+	"tangled.org/atscan.net/plcbundle/internal/types"
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
@@ -37,8 +39,8 @@ type Manager struct {
 	index      *Index
 	indexPath  string
 	plcClient  *plcclient.Client
-	logger     Logger
-	mempool    *Mempool
+	logger     types.Logger
+	mempool    *mempool.Mempool
 	didIndex   *didindex.Manager // Updated type
 
 	bundleCache  map[int]*Bundle
@@ -261,7 +263,7 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 		minTimestamp = lastBundle.EndTime
 	}
 
-	mempool, err := NewMempool(config.BundleDir, nextBundleNum, minTimestamp, config.Logger)
+	mempool, err := mempool.NewMempool(config.BundleDir, nextBundleNum, minTimestamp, config.Logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize mempool: %w", err)
 	}
@@ -450,7 +452,7 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) er
 	nextBundle := bundle.BundleNumber + 1
 	minTimestamp := bundle.EndTime
 
-	newMempool, err := NewMempool(m.config.BundleDir, nextBundle, minTimestamp, m.logger)
+	newMempool, err := mempool.NewMempool(m.config.BundleDir, nextBundle, minTimestamp, m.logger)
 	if err != nil {
 		return fmt.Errorf("failed to create new mempool: %w", err)
 	}
@@ -494,30 +496,30 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		m.logger.Printf("Preparing bundle %06d (mempool: %d ops)...", nextBundleNum, m.mempool.Count())
 	}
 
-	for m.mempool.Count() < BUNDLE_SIZE {
+	for m.mempool.Count() < types.BUNDLE_SIZE {
 		if !quiet {
-			m.logger.Printf("Fetching more operations (have %d/%d)...", m.mempool.Count(), BUNDLE_SIZE)
+			m.logger.Printf("Fetching more operations (have %d/%d)...", m.mempool.Count(), types.BUNDLE_SIZE)
 		}
 
-		err := m.fetchToMempool(ctx, afterTime, prevBoundaryCIDs, BUNDLE_SIZE-m.mempool.Count(), quiet)
+		err := m.fetchToMempool(ctx, afterTime, prevBoundaryCIDs, types.BUNDLE_SIZE-m.mempool.Count(), quiet)
 		if err != nil {
-			if m.mempool.Count() >= BUNDLE_SIZE {
+			if m.mempool.Count() >= types.BUNDLE_SIZE {
 				break
 			}
 			m.mempool.Save()
-			return nil, fmt.Errorf("insufficient operations: have %d, need %d", m.mempool.Count(), BUNDLE_SIZE)
+			return nil, fmt.Errorf("insufficient operations: have %d, need %d", m.mempool.Count(), types.BUNDLE_SIZE)
 		}
 
-		if m.mempool.Count() < BUNDLE_SIZE {
+		if m.mempool.Count() < types.BUNDLE_SIZE {
 			m.mempool.Save()
-			return nil, fmt.Errorf("insufficient operations: have %d, need %d (no more available)", m.mempool.Count(), BUNDLE_SIZE)
+			return nil, fmt.Errorf("insufficient operations: have %d, need %d (no more available)", m.mempool.Count(), types.BUNDLE_SIZE)
 		}
 	}
 
 	if !quiet {
 		m.logger.Printf("Creating bundle %06d from mempool", nextBundleNum)
 	}
-	operations, err := m.mempool.Take(BUNDLE_SIZE)
+	operations, err := m.mempool.Take(types.BUNDLE_SIZE)
 	if err != nil {
 		m.mempool.Save()
 		return nil, fmt.Errorf("failed to take operations from mempool: %w", err)
@@ -1285,7 +1287,7 @@ func (m *Manager) RefreshIndex() error {
 }
 
 // GetMempool returns the current mempool
-func (m *Manager) GetMempool() *Mempool {
+func (m *Manager) GetMempool() *mempool.Mempool {
 	return m.mempool
 }
 
@@ -1309,7 +1311,7 @@ func (m *Manager) GetPLCOrigin() string {
 func (m *Manager) GetCurrentCursor() int {
 	index := m.GetIndex()
 	bundles := index.GetBundles()
-	cursor := len(bundles) * BUNDLE_SIZE
+	cursor := len(bundles) * types.BUNDLE_SIZE
 
 	// Add mempool operations
 	mempoolStats := m.GetMempoolStats()
@@ -1329,8 +1331,8 @@ func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position 
 	}
 
 	// Validate position
-	if position < 0 || position >= BUNDLE_SIZE {
-		return nil, fmt.Errorf("invalid position: %d (must be 0-%d)", position, BUNDLE_SIZE-1)
+	if position < 0 || position >= types.BUNDLE_SIZE {
+		return nil, fmt.Errorf("invalid position: %d (must be 0-%d)", position, types.BUNDLE_SIZE-1)
 	}
 
 	// Build file path

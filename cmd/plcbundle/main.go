@@ -18,8 +18,9 @@ import (
 
 	"github.com/goccy/go-json"
 
-	"tangled.org/atscan.net/plcbundle/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/bundle"
 	"tangled.org/atscan.net/plcbundle/internal/didindex"
+	"tangled.org/atscan.net/plcbundle/internal/types"
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
@@ -1165,7 +1166,7 @@ func cmdMempool() {
 	fmt.Printf("Mempool Status:\n")
 	fmt.Printf("  Target bundle: %06d\n", targetBundle)
 	fmt.Printf("  Operations: %d\n", count)
-	fmt.Printf("  Can create bundle: %v (need %d)\n", canCreate, bundle.BUNDLE_SIZE)
+	fmt.Printf("  Can create bundle: %v (need %d)\n", canCreate, types.BUNDLE_SIZE)
 	fmt.Printf("  Min timestamp: %s\n", minTimestamp.Format("2006-01-02 15:04:05"))
 
 	validationIcon := "✓"
@@ -1187,12 +1188,12 @@ func cmdMempool() {
 			fmt.Printf("  Last operation: %s\n", lastTime.Format("2006-01-02 15:04:05"))
 		}
 
-		progress := float64(count) / float64(bundle.BUNDLE_SIZE) * 100
-		fmt.Printf("  Progress: %.1f%% (%d/%d)\n", progress, count, bundle.BUNDLE_SIZE)
+		progress := float64(count) / float64(types.BUNDLE_SIZE) * 100
+		fmt.Printf("  Progress: %.1f%% (%d/%d)\n", progress, count, types.BUNDLE_SIZE)
 
 		// Show progress bar
 		barWidth := 40
-		filled := int(float64(barWidth) * float64(count) / float64(bundle.BUNDLE_SIZE))
+		filled := int(float64(barWidth) * float64(count) / float64(types.BUNDLE_SIZE))
 		if filled > barWidth {
 			filled = barWidth
 		}

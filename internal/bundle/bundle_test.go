@@ -5,8 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"tangled.org/atscan.net/plcbundle/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/mempool"
 	"tangled.org/atscan.net/plcbundle/internal/storage"
+	"tangled.org/atscan.net/plcbundle/internal/types"
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
@@ -17,8 +19,8 @@ func TestIndex(t *testing.T) {
 		if idx == nil {
 			t.Fatal("NewIndex returned nil")
 		}
-		if idx.Version != bundle.INDEX_VERSION {
-			t.Errorf("expected version %s, got %s", bundle.INDEX_VERSION, idx.Version)
+		if idx.Version != types.INDEX_VERSION {
+			t.Errorf("expected version %s, got %s", types.INDEX_VERSION, idx.Version)
 		}
 		if idx.Count() != 0 {
 			t.Errorf("expected empty index, got count %d", idx.Count())
@@ -31,7 +33,7 @@ func TestIndex(t *testing.T) {
 			BundleNumber:   1,
 			StartTime:      time.Now(),
 			EndTime:        time.Now().Add(time.Hour),
-			OperationCount: bundle.BUNDLE_SIZE,
+			OperationCount: types.BUNDLE_SIZE,
 			DIDCount:       1000,
 			Hash:           "abc123",
 			CompressedHash: "def456",
@@ -62,7 +64,7 @@ func TestIndex(t *testing.T) {
 			BundleNumber:   1,
 			StartTime:      time.Now(),
 			EndTime:        time.Now().Add(time.Hour),
-			OperationCount: bundle.BUNDLE_SIZE,
+			OperationCount: types.BUNDLE_SIZE,
 			Hash:           "test123",
 		})
 
@@ -88,7 +90,7 @@ func TestIndex(t *testing.T) {
 				BundleNumber:   i,
 				StartTime:      time.Now(),
 				EndTime:        time.Now().Add(time.Hour),
-				OperationCount: bundle.BUNDLE_SIZE,
+				OperationCount: types.BUNDLE_SIZE,
 			})
 		}
 
@@ -109,7 +111,7 @@ func TestIndex(t *testing.T) {
 				BundleNumber:   num,
 				StartTime:      time.Now(),
 				EndTime:        time.Now().Add(time.Hour),
-				OperationCount: bundle.BUNDLE_SIZE,
+				OperationCount: types.BUNDLE_SIZE,
 			})
 		}
 
@@ -137,7 +139,7 @@ func TestBundle(t *testing.T) {
 					BundleNumber: 1,
 					StartTime:    time.Now(),
 					EndTime:      time.Now().Add(time.Hour),
-					Operations:   makeTestOperations(bundle.BUNDLE_SIZE),
+					Operations:   makeTestOperations(types.BUNDLE_SIZE),
 				},
 				wantErr: false,
 			},
@@ -145,7 +147,7 @@ func TestBundle(t *testing.T) {
 				name: "invalid bundle number",
 				bundle: &bundle.Bundle{
 					BundleNumber: 0,
-					Operations:   makeTestOperations(bundle.BUNDLE_SIZE),
+					Operations:   makeTestOperations(types.BUNDLE_SIZE),
 				},
 				wantErr: true,
 			},
@@ -163,7 +165,7 @@ func TestBundle(t *testing.T) {
 					BundleNumber: 1,
 					StartTime:    time.Now().Add(time.Hour),
 					EndTime:      time.Now(),
-					Operations:   makeTestOperations(bundle.BUNDLE_SIZE),
+					Operations:   makeTestOperations(types.BUNDLE_SIZE),
 				},
 				wantErr: true,
 			},
@@ -198,7 +200,7 @@ func TestMempool(t *testing.T) {
 
 	t.Run("CreateAndAdd", func(t *testing.T) {
 		minTime := time.Now().Add(-time.Hour)
-		m, err := bundle.NewMempool(tmpDir, 1, minTime, logger)
+		m, err := mempool.NewMempool(tmpDir, 1, minTime, logger)
 		if err != nil {
 			t.Fatalf("NewMempool failed: %v", err)
 		}
@@ -218,7 +220,7 @@ func TestMempool(t *testing.T) {
 
 	t.Run("ChronologicalValidation", func(t *testing.T) {
 		minTime := time.Now().Add(-time.Hour)
-		m, err := bundle.NewMempool(tmpDir, 2, minTime, logger)
+		m, err := mempool.NewMempool(tmpDir, 2, minTime, logger)
 		if err != nil {
 			t.Fatalf("NewMempool failed: %v", err)
 		}
@@ -246,7 +248,7 @@ func TestMempool(t *testing.T) {
 
 	t.Run("TakeOperations", func(t *testing.T) {
 		minTime := time.Now().Add(-time.Hour)
-		m, err := bundle.NewMempool(tmpDir, 3, minTime, logger)
+		m, err := mempool.NewMempool(tmpDir, 3, minTime, logger)
 		if err != nil {
 			t.Fatalf("NewMempool failed: %v", err)
 		}
@@ -268,7 +270,7 @@ func TestMempool(t *testing.T) {
 
 	t.Run("SaveAndLoad", func(t *testing.T) {
 		minTime := time.Now().Add(-time.Hour)
-		m, err := bundle.NewMempool(tmpDir, 4, minTime, logger)
+		m, err := mempool.NewMempool(tmpDir, 4, minTime, logger)
 		if err != nil {
 			t.Fatalf("NewMempool failed: %v", err)
 		}
@@ -281,7 +283,7 @@ func TestMempool(t *testing.T) {
 		}
 
 		// Create new mempool and load
-		m2, err := bundle.NewMempool(tmpDir, 4, minTime, logger)
+		m2, err := mempool.NewMempool(tmpDir, 4, minTime, logger)
 		if err != nil {
 			t.Fatalf("NewMempool failed: %v", err)
 		}
@@ -293,7 +295,7 @@ func TestMempool(t *testing.T) {
 
 	t.Run("Validate", func(t *testing.T) {
 		minTime := time.Now().Add(-time.Hour)
-		m, err := bundle.NewMempool(tmpDir, 5, minTime, logger)
+		m, err := mempool.NewMempool(tmpDir, 5, minTime, logger)
 		if err != nil {
 			t.Fatalf("NewMempool failed: %v", err)
 		}
@@ -341,7 +343,7 @@ func TestOperations(t *testing.T) {
 	})
 
 	t.Run("SaveAndLoadBundle", func(t *testing.T) {
-		operations := makeTestOperations(bundle.BUNDLE_SIZE)
+		operations := makeTestOperations(types.BUNDLE_SIZE)
 		path := filepath.Join(tmpDir, "test_bundle.jsonl.zst")
 
 		// Save
