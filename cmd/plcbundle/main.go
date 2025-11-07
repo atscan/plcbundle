@@ -19,6 +19,7 @@ import (
 	"github.com/goccy/go-json"
 
 	"tangled.org/atscan.net/plcbundle/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/didindex"
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
@@ -1321,10 +1322,10 @@ func cmdServe() {
 				didIndex := mgr.GetDIDIndex()
 				if didIndex != nil {
 					config := didIndex.GetConfig()
-					if config.Version != bundle.DIDINDEX_VERSION {
+					if config.Version != didindex.DIDINDEX_VERSION {
 						needsBuild = true
 						reason = fmt.Sprintf("index version outdated (v%d, need v%d)",
-							config.Version, bundle.DIDINDEX_VERSION)
+							config.Version, didindex.DIDINDEX_VERSION)
 					} else {
 						// Check if index is behind bundles
 						lastBundle := index.GetLastBundle()

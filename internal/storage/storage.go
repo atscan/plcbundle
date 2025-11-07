@@ -13,17 +13,21 @@ import (
 
 	gozstd "github.com/DataDog/zstd"
 	"github.com/goccy/go-json"
-
-	"tangled.org/atscan.net/plcbundle/bundle"
-	"tangled.org/atscan.net/plcbundle/plcclient"
+	"tangled.org/atscan.net/plcbundle/plcclient" // ONLY import plcclient, NOT bundle
 )
 
 // Operations handles low-level bundle file operations
 type Operations struct {
-	logger bundle.Logger
+	logger Logger
 }
 
-func NewOperations(logger bundle.Logger) (*Operations, error) {
+// Logger interface
+type Logger interface {
+	Printf(format string, v ...interface{})
+	Println(v ...interface{})
+}
+
+func NewOperations(logger Logger) (*Operations, error) {
 	return &Operations{logger: logger}, nil
 }
 
@@ -36,16 +40,13 @@ func (op *Operations) Close() {
 // ========================================
 
 // SerializeJSONL serializes operations to newline-delimited JSON
-// This is the ONE method everyone should use for serialization
 func (op *Operations) SerializeJSONL(operations []plcclient.PLCOperation) []byte {
 	var buf bytes.Buffer
 
 	for _, operation := range operations {
-		// Use RawJSON if available (preserves exact format)
 		if len(operation.RawJSON) > 0 {
 			buf.Write(operation.RawJSON)
 		} else {
-			// Fallback to marshaling
 			data, _ := json.Marshal(operation)
 			buf.Write(data)
 		}
@@ -56,7 +57,6 @@ func (op *Operations) SerializeJSONL(operations []plcclient.PLCOperation) []byte
 }
 
 // ParseJSONL parses newline-delimited JSON into operations
-// This is the ONE method everyone should use for deserialization
 func (op *Operations) ParseJSONL(data []byte) ([]plcclient.PLCOperation, error) {
 	var operations []plcclient.PLCOperation
 	scanner := bufio.NewScanner(bytes.NewReader(data))
@@ -83,7 +83,7 @@ func (op *Operations) ParseJSONL(data []byte) ([]plcclient.PLCOperation, error) 
 }
 
 // ========================================
-// FILE OPERATIONS (uses JSONL + compression)
+// FILE OPERATIONS
 // ========================================
 
 // LoadBundle loads a compressed bundle
@@ -108,7 +108,6 @@ func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperatio
 	contentSize := int64(len(jsonlData))
 	contentHash := op.Hash(jsonlData)
 
-	// DataDog zstd.Compress returns ([]byte, error)
 	compressed, err := gozstd.Compress(nil, jsonlData)
 	if err != nil {
 		return "", "", 0, 0, fmt.Errorf("failed to compress: %w", err)
@@ -124,7 +123,7 @@ func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperatio
 	return contentHash, compressedHash, contentSize, compressedSize, nil
 }
 
-// Pool for scanner buffers (reuse across requests)
+// Pool for scanner buffers
 var scannerBufPool = sync.Pool{
 	New: func() interface{} {
 		buf := make([]byte, 64*1024)
@@ -132,8 +131,7 @@ var scannerBufPool = sync.Pool{
 	},
 }
 
-// LoadOperationAtPosition loads a single operation from a bundle without loading the entire bundle
-// This is much more efficient for single-operation lookups
+// LoadOperationAtPosition loads a single operation from a bundle
 func (op *Operations) LoadOperationAtPosition(path string, position int) (*plcclient.PLCOperation, error) {
 	if position < 0 {
 		return nil, fmt.Errorf("invalid position: %d", position)
@@ -148,9 +146,8 @@ func (op *Operations) LoadOperationAtPosition(path string, position int) (*plccl
 	reader := gozstd.NewReader(file)
 	defer reader.Close()
 
-	// ✨ Get buffer from pool
 	bufPtr := scannerBufPool.Get().(*[]byte)
-	defer scannerBufPool.Put(bufPtr) // Return to pool when done
+	defer scannerBufPool.Put(bufPtr)
 
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(*bufPtr, 512*1024)
@@ -165,7 +162,6 @@ func (op *Operations) LoadOperationAtPosition(path string, position int) (*plccl
 				return nil, fmt.Errorf("failed to parse operation at position %d: %w", position, err)
 			}
 
-			// Copy raw JSON
 			operation.RawJSON = make([]byte, len(line))
 			copy(operation.RawJSON, line)
 
@@ -201,10 +197,8 @@ func (op *Operations) StreamDecompressed(path string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("failed to open bundle: %w", err)
 	}
 
-	// Create zstd reader using DataDog's package
 	reader := gozstd.NewReader(file)
 
-	// Return a wrapper that closes both the reader and file
 	return &decompressedReader{
 		reader: reader,
 		file:   file,
@@ -240,10 +234,8 @@ func (op *Operations) Hash(data []byte) string {
 func (op *Operations) CalculateChainHash(parent string, contentHash string) string {
 	var data string
 	if parent == "" {
-		// Genesis bundle (first bundle)
 		data = "plcbundle:genesis:" + contentHash
 	} else {
-		// Subsequent bundles - chain parent hash with current content
 		data = parent + ":" + contentHash
 	}
 	return op.Hash([]byte(data))
@@ -257,17 +249,14 @@ func (op *Operations) CalculateFileHashes(path string) (compressedHash string, c
 		return "", 0, "", 0, fmt.Errorf("failed to read file: %w", err)
 	}
 
-	// Calculate compressed hash
 	compressedHash = op.Hash(compressedData)
 	compressedSize = int64(len(compressedData))
 
-	// Decompress with DataDog zstd
 	decompressed, err := gozstd.Decompress(nil, compressedData)
 	if err != nil {
 		return "", 0, "", 0, fmt.Errorf("failed to decompress: %w", err)
 	}
 
-	// Calculate content hash
 	contentHash = op.Hash(decompressed)
 	contentSize = int64(len(decompressed))
 
@@ -370,122 +359,4 @@ func (op *Operations) StripBoundaryDuplicates(operations []plcclient.PLCOperatio
 	}
 
 	return operations[startIdx:]
-}
-
-// CreateBundle creates a complete bundle structure from operations
-func (op *Operations) CreateBundle(bundleNumber int, operations []plcclient.PLCOperation, cursor string, parent string) *bundle.Bundle {
-	if len(operations) != bundle.BUNDLE_SIZE {
-		op.logger.Printf("Warning: bundle has %d operations, expected %d", len(operations), bundle.BUNDLE_SIZE)
-	}
-
-	dids := op.ExtractUniqueDIDs(operations)
-	_, boundaryCIDs := op.GetBoundaryCIDs(operations)
-
-	// Convert boundary CIDs map to slice
-	cidSlice := make([]string, 0, len(boundaryCIDs))
-	for cid := range boundaryCIDs {
-		cidSlice = append(cidSlice, cid)
-	}
-
-	bundle := &bundle.Bundle{
-		BundleNumber: bundleNumber,
-		StartTime:    operations[0].CreatedAt,
-		EndTime:      operations[len(operations)-1].CreatedAt,
-		Operations:   operations,
-		DIDCount:     len(dids),
-		Cursor:       cursor,
-		Parent:       parent,
-		BoundaryCIDs: cidSlice,
-		Compressed:   true,
-		CreatedAt:    time.Now().UTC(),
-	}
-
-	return bundle
-}
-
-// ========================================
-// METADATA CALCULATION
-// ========================================
-
-// CalculateBundleMetadata calculates complete metadata for a bundle
-// This is the ONE method everyone should use for metadata calculation
-func (op *Operations) CalculateBundleMetadata(bundleNumber int, path string, operations []plcclient.PLCOperation, parent string, cursor string) (*bundle.BundleMetadata, error) {
-	if len(operations) == 0 {
-		return nil, fmt.Errorf("bundle is empty")
-	}
-
-	// Get file info
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat file: %w", err)
-	}
-
-	// Extract unique DIDs
-	dids := op.ExtractUniqueDIDs(operations)
-
-	// Serialize to JSONL and calculate content hash
-	jsonlData := op.SerializeJSONL(operations)
-	contentSize := int64(len(jsonlData))
-	contentHash := op.Hash(jsonlData)
-
-	// Read compressed file and calculate compressed hash
-	compressedData, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read compressed file: %w", err)
-	}
-	compressedHash := op.Hash(compressedData)
-	compressedSize := info.Size()
-
-	// Calculate chain hash
-	chainHash := op.CalculateChainHash(parent, contentHash)
-
-	return &bundle.BundleMetadata{
-		BundleNumber:     bundleNumber,
-		StartTime:        operations[0].CreatedAt,
-		EndTime:          operations[len(operations)-1].CreatedAt,
-		OperationCount:   len(operations),
-		DIDCount:         len(dids),
-		Hash:             chainHash,   // Chain hash (primary)
-		ContentHash:      contentHash, // Content hash
-		Parent:           parent,      // Parent chain hash
-		CompressedHash:   compressedHash,
-		CompressedSize:   compressedSize,
-		UncompressedSize: contentSize,
-		Cursor:           cursor,
-		CreatedAt:        time.Now().UTC(),
-	}, nil
-}
-
-// CalculateBundleMetadataFast calculates metadata quickly without chain hash
-// Used during parallel scanning - chain hash calculated later sequentially
-func (op *Operations) CalculateBundleMetadataFast(bundleNumber int, path string, operations []plcclient.PLCOperation, cursor string) (*bundle.BundleMetadata, error) {
-	if len(operations) == 0 {
-		return nil, fmt.Errorf("bundle is empty")
-	}
-
-	// Calculate hashes efficiently (read file once)
-	compressedHash, compressedSize, contentHash, contentSize, err := op.CalculateFileHashes(path)
-	if err != nil {
-		return nil, err
-	}
-
-	// Extract unique DIDs
-	dids := op.ExtractUniqueDIDs(operations)
-
-	// Note: Hash, Parent, and Cursor are set to empty - will be calculated later sequentially
-	return &bundle.BundleMetadata{
-		BundleNumber:     bundleNumber,
-		StartTime:        operations[0].CreatedAt,
-		EndTime:          operations[len(operations)-1].CreatedAt,
-		OperationCount:   len(operations),
-		DIDCount:         len(dids),
-		Hash:             "",          // Chain hash - calculated later
-		ContentHash:      contentHash, // Content hash
-		Parent:           "",          // Parent - set later
-		CompressedHash:   compressedHash,
-		CompressedSize:   compressedSize,
-		UncompressedSize: contentSize,
-		Cursor:           cursor,
-		CreatedAt:        time.Now().UTC(),
-	}, nil
 }

@@ -1,4 +1,4 @@
-package bundle
+package didindex
 
 import (
 	"encoding/binary"
@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"sync"
 	"syscall"
 	"time"
 
@@ -15,66 +14,8 @@ import (
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
-const (
-	DID_INDEX_DIR      = ".plcbundle"
-	DID_INDEX_SHARDS   = "shards"
-	DID_INDEX_CONFIG   = "config.json"
-	DID_SHARD_COUNT    = 256
-	DID_PREFIX         = "did:plc:"
-	DID_IDENTIFIER_LEN = 24 // Without "did:plc:" prefix
-
-	// Binary format constants (renamed to avoid conflict)
-	DIDINDEX_MAGIC   = "PLCD"
-	DIDINDEX_VERSION = 2
-)
-
-// DIDIndexManager manages sharded DID position indexes with mmap
-type DIDIndexManager struct {
-	baseDir    string
-	indexDir   string
-	shardDir   string
-	configPath string
-
-	// LRU cache for hot shards
-	shardCache        map[uint8]*mmapShard
-	maxCache          int
-	cacheMu           sync.RWMutex
-	evictionThreshold int
-
-	config  *DIDIndexConfig
-	logger  Logger
-	verbose bool
-
-	indexMu sync.RWMutex
-}
-
-// mmapShard represents a memory-mapped shard file
-type mmapShard struct {
-	shardNum uint8
-	data     []byte
-	file     *os.File
-	lastUsed time.Time
-}
-
-// DIDIndexConfig stores index metadata
-type DIDIndexConfig struct {
-	Version    int       `json:"version"`
-	Format     string    `json:"format"`
-	ShardCount int       `json:"shard_count"`
-	TotalDIDs  int64     `json:"total_dids"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	LastBundle int       `json:"last_bundle"`
-}
-
-// OpLocation represents exact location of an operation
-type OpLocation struct {
-	Bundle    uint16
-	Position  uint16
-	Nullified bool
-}
-
-// NewDIDIndexManager creates a new DID index manager
-func NewDIDIndexManager(baseDir string, logger Logger) *DIDIndexManager {
+// NewManager creates a new DID index manager
+func NewManager(baseDir string, logger Logger) *Manager {
 	indexDir := filepath.Join(baseDir, DID_INDEX_DIR)
 	shardDir := filepath.Join(indexDir, DID_INDEX_SHARDS)
 	configPath := filepath.Join(indexDir, DID_INDEX_CONFIG)
@@ -85,7 +26,7 @@ func NewDIDIndexManager(baseDir string, logger Logger) *DIDIndexManager {
 	// Load or create config
 	config, _ := loadIndexConfig(configPath)
 	if config == nil {
-		config = &DIDIndexConfig{
+		config = &Config{
 			Version:    DIDINDEX_VERSION,
 			Format:     "binary_v1",
 			ShardCount: DID_SHARD_COUNT,
@@ -93,13 +34,13 @@ func NewDIDIndexManager(baseDir string, logger Logger) *DIDIndexManager {
 		}
 	}
 
-	return &DIDIndexManager{
+	return &Manager{
 		baseDir:           baseDir,
 		indexDir:          indexDir,
 		shardDir:          shardDir,
 		configPath:        configPath,
 		shardCache:        make(map[uint8]*mmapShard),
-		maxCache:          25, // Keep 20 hot shards in memory (~120 MB)
+		maxCache:          25,
 		evictionThreshold: 25,
 		config:            config,
 		logger:            logger,
@@ -107,7 +48,7 @@ func NewDIDIndexManager(baseDir string, logger Logger) *DIDIndexManager {
 }
 
 // Close unmaps all shards and cleans up
-func (dim *DIDIndexManager) Close() error {
+func (dim *Manager) Close() error {
 	dim.cacheMu.Lock()
 	defer dim.cacheMu.Unlock()
 
@@ -120,12 +61,12 @@ func (dim *DIDIndexManager) Close() error {
 	return nil
 }
 
-func (dim *DIDIndexManager) SetVerbose(verbose bool) {
+func (dim *Manager) SetVerbose(verbose bool) {
 	dim.verbose = verbose
 }
 
 // GetDIDLocations returns all bundle+position locations for a DID
-func (dim *DIDIndexManager) GetDIDLocations(did string) ([]OpLocation, error) {
+func (dim *Manager) GetDIDLocations(did string) ([]OpLocation, error) {
 	dim.indexMu.RLock()
 	defer dim.indexMu.RUnlock()
 
@@ -182,7 +123,7 @@ func (dim *DIDIndexManager) GetDIDLocations(did string) ([]OpLocation, error) {
 }
 
 // calculateShard determines which shard a DID belongs to
-func (dim *DIDIndexManager) calculateShard(identifier string) uint8 {
+func (dim *Manager) calculateShard(identifier string) uint8 {
 	h := fnv.New32a()
 	h.Write([]byte(identifier))
 	hash := h.Sum32()
@@ -190,7 +131,7 @@ func (dim *DIDIndexManager) calculateShard(identifier string) uint8 {
 }
 
 // loadShard loads a shard from cache or disk (with mmap)
-func (dim *DIDIndexManager) loadShard(shardNum uint8) (*mmapShard, error) {
+func (dim *Manager) loadShard(shardNum uint8) (*mmapShard, error) {
 	dim.cacheMu.Lock()
 	defer dim.cacheMu.Unlock()
 
@@ -205,7 +146,6 @@ func (dim *DIDIndexManager) loadShard(shardNum uint8) (*mmapShard, error) {
 
 	// Check if file exists
 	if _, err := os.Stat(shardPath); os.IsNotExist(err) {
-		// Shard doesn't exist yet (no DIDs in this shard)
 		return &mmapShard{
 			shardNum: shardNum,
 			data:     nil,
@@ -253,7 +193,7 @@ func (dim *DIDIndexManager) loadShard(shardNum uint8) (*mmapShard, error) {
 	// Add to cache
 	dim.shardCache[shardNum] = shard
 
-	// Lazy eviction: only evict when significantly over limit
+	// Lazy eviction
 	if len(dim.shardCache) > dim.evictionThreshold {
 		dim.evictMultiple(len(dim.shardCache) - dim.maxCache)
 	}
@@ -261,13 +201,12 @@ func (dim *DIDIndexManager) loadShard(shardNum uint8) (*mmapShard, error) {
 	return shard, nil
 }
 
-// Evict multiple shards at once to reduce eviction frequency
-func (dim *DIDIndexManager) evictMultiple(count int) {
+// evictMultiple evicts multiple shards at once
+func (dim *Manager) evictMultiple(count int) {
 	if count <= 0 {
 		return
 	}
 
-	// Build list of (shardNum, lastUsed) and sort
 	type entry struct {
 		num      uint8
 		lastUsed time.Time
@@ -293,7 +232,7 @@ func (dim *DIDIndexManager) evictMultiple(count int) {
 }
 
 // searchShard performs binary search in a memory-mapped shard
-func (dim *DIDIndexManager) searchShard(shard *mmapShard, identifier string) []OpLocation {
+func (dim *Manager) searchShard(shard *mmapShard, identifier string) []OpLocation {
 	if shard.data == nil || len(shard.data) < 32 {
 		return nil
 	}
@@ -323,7 +262,7 @@ func (dim *DIDIndexManager) searchShard(shard *mmapShard, identifier string) []O
 		attempts++
 		mid := (left + right) / 2
 
-		// ✨ O(1) offset lookup
+		// O(1) offset lookup
 		entryOffset := dim.getEntryOffset(data, mid)
 		if entryOffset < 0 {
 			if dim.verbose {
@@ -377,7 +316,7 @@ func (dim *DIDIndexManager) searchShard(shard *mmapShard, identifier string) []O
 }
 
 // getEntryOffset reads entry offset from offset table - O(1) lookup
-func (dim *DIDIndexManager) getEntryOffset(data []byte, entryIndex int) int {
+func (dim *Manager) getEntryOffset(data []byte, entryIndex int) int {
 	if len(data) < 32 {
 		return -1
 	}
@@ -404,7 +343,7 @@ func (dim *DIDIndexManager) getEntryOffset(data []byte, entryIndex int) int {
 }
 
 // readLocations reads location data at given offset
-func (dim *DIDIndexManager) readLocations(data []byte, offset int) []OpLocation {
+func (dim *Manager) readLocations(data []byte, offset int) []OpLocation {
 	// Skip identifier
 	offset += DID_IDENTIFIER_LEN
 
@@ -439,17 +378,19 @@ func (dim *DIDIndexManager) readLocations(data []byte, offset int) []OpLocation 
 }
 
 // unmapShard unmaps and closes a shard
-func (dim *DIDIndexManager) unmapShard(shard *mmapShard) {
+func (dim *Manager) unmapShard(shard *mmapShard) {
 	if shard.data != nil {
 		syscall.Munmap(shard.data)
 	}
 	if shard.file != nil {
-		shard.file.Close()
+		if f, ok := shard.file.(*os.File); ok {
+			f.Close()
+		}
 	}
 }
 
 // GetStats returns index statistics
-func (dim *DIDIndexManager) GetStats() map[string]interface{} {
+func (dim *Manager) GetStats() map[string]interface{} {
 	dim.cacheMu.RLock()
 	defer dim.cacheMu.RUnlock()
 
@@ -465,103 +406,19 @@ func (dim *DIDIndexManager) GetStats() map[string]interface{} {
 		"shard_count":   dim.config.ShardCount,
 		"cached_shards": len(dim.shardCache),
 		"cache_limit":   dim.maxCache,
-		"cache_order":   cachedShards, // Still works, just sorted differently
+		"cache_order":   cachedShards,
 		"updated_at":    dim.config.UpdatedAt,
 	}
 }
 
 // Exists checks if index exists
-func (dim *DIDIndexManager) Exists() bool {
+func (dim *Manager) Exists() bool {
 	_, err := os.Stat(dim.configPath)
 	return err == nil
 }
 
-// extractDIDIdentifier extracts the 24-char identifier from full DID
-func extractDIDIdentifier(did string) (string, error) {
-	if err := plcclient.ValidateDIDFormat(did); err != nil {
-		return "", err
-	}
-
-	// Remove "did:plc:" prefix
-	identifier := did[8:] // Skip "did:plc:"
-
-	if len(identifier) != DID_IDENTIFIER_LEN {
-		return "", fmt.Errorf("invalid identifier length: %d", len(identifier))
-	}
-
-	return identifier, nil
-}
-
-// loadIndexConfig loads index configuration
-func loadIndexConfig(path string) (*DIDIndexConfig, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var config DIDIndexConfig
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, err
-	}
-
-	return &config, nil
-}
-
-// saveIndexConfig saves index configuration
-func (dim *DIDIndexManager) saveIndexConfig() error {
-	dim.config.UpdatedAt = time.Now().UTC()
-
-	data, err := json.MarshalIndent(dim.config, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(dim.configPath, data, 0644)
-}
-
-// Add this debug command to verify shard integrity
-
-func (dim *DIDIndexManager) DebugShard(shardNum uint8) error {
-	shardPath := filepath.Join(dim.shardDir, fmt.Sprintf("%02x.idx", shardNum))
-	data, err := os.ReadFile(shardPath)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("Shard %02x debug:\n", shardNum)
-	fmt.Printf("  File size: %d bytes\n", len(data))
-	fmt.Printf("  Magic: %s\n", string(data[0:4]))
-	fmt.Printf("  Version: %d\n", binary.LittleEndian.Uint32(data[4:8]))
-	fmt.Printf("  Shard num: %d\n", data[8])
-
-	entryCount := binary.LittleEndian.Uint32(data[9:13])
-	fmt.Printf("  Entry count: %d\n", entryCount)
-
-	// Show offset table info
-	offsetTableSize := int(entryCount) * 4
-	dataStartOffset := 32 + offsetTableSize
-	fmt.Printf("  Offset table size: %d bytes\n", offsetTableSize)
-	fmt.Printf("  Data starts at: %d\n", dataStartOffset)
-
-	// Show first few entries using offset table
-	fmt.Printf("\n  First 5 entries:\n")
-
-	for i := 0; i < 5 && i < int(entryCount); i++ {
-		offset := dim.getEntryOffset(data, i)
-		if offset < 0 || offset+DID_IDENTIFIER_LEN+2 > len(data) {
-			break
-		}
-
-		identifier := string(data[offset : offset+DID_IDENTIFIER_LEN])
-		locCount := binary.LittleEndian.Uint16(data[offset+DID_IDENTIFIER_LEN : offset+DID_IDENTIFIER_LEN+2])
-
-		fmt.Printf("    %d. '%s' (%d locations) @ offset %d\n", i+1, identifier, locCount, offset)
-	}
-
-	return nil
-}
-
-func (dim *DIDIndexManager) TrimCache() {
+// TrimCache trims cache to keep only most recent shard
+func (dim *Manager) TrimCache() {
 	dim.cacheMu.Lock()
 	defer dim.cacheMu.Unlock()
 
@@ -588,7 +445,236 @@ func (dim *DIDIndexManager) TrimCache() {
 	}
 }
 
-// GetConfig returns the index configuration (for version checking)
-func (dim *DIDIndexManager) GetConfig() *DIDIndexConfig {
+// GetConfig returns the index configuration
+func (dim *Manager) GetConfig() *Config {
 	return dim.config
+}
+
+// DebugShard shows shard debugging information
+func (dim *Manager) DebugShard(shardNum uint8) error {
+	shardPath := filepath.Join(dim.shardDir, fmt.Sprintf("%02x.idx", shardNum))
+	data, err := os.ReadFile(shardPath)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Shard %02x debug:\n", shardNum)
+	fmt.Printf("  File size: %d bytes\n", len(data))
+	fmt.Printf("  Magic: %s\n", string(data[0:4]))
+	fmt.Printf("  Version: %d\n", binary.LittleEndian.Uint32(data[4:8]))
+	fmt.Printf("  Shard num: %d\n", data[8])
+
+	entryCount := binary.LittleEndian.Uint32(data[9:13])
+	fmt.Printf("  Entry count: %d\n", entryCount)
+
+	// Show offset table info
+	offsetTableSize := int(entryCount) * 4
+	dataStartOffset := 32 + offsetTableSize
+	fmt.Printf("  Offset table size: %d bytes\n", offsetTableSize)
+	fmt.Printf("  Data starts at: %d\n", dataStartOffset)
+
+	// Show first few entries
+	fmt.Printf("\n  First 5 entries:\n")
+
+	for i := 0; i < 5 && i < int(entryCount); i++ {
+		offset := dim.getEntryOffset(data, i)
+		if offset < 0 || offset+DID_IDENTIFIER_LEN+2 > len(data) {
+			break
+		}
+
+		identifier := string(data[offset : offset+DID_IDENTIFIER_LEN])
+		locCount := binary.LittleEndian.Uint16(data[offset+DID_IDENTIFIER_LEN : offset+DID_IDENTIFIER_LEN+2])
+
+		fmt.Printf("    %d. '%s' (%d locations) @ offset %d\n", i+1, identifier, locCount, offset)
+	}
+
+	return nil
+}
+
+// invalidateShard removes a shard from cache
+func (dim *Manager) invalidateShard(shardNum uint8) {
+	dim.cacheMu.Lock()
+	defer dim.cacheMu.Unlock()
+
+	if cached, exists := dim.shardCache[shardNum]; exists {
+		dim.unmapShard(cached)
+		delete(dim.shardCache, shardNum)
+	}
+}
+
+// writeShard writes a shard to disk in binary format with offset table
+func (dim *Manager) writeShard(shardNum uint8, builder *ShardBuilder) error {
+	// Write to temp file first
+	shardPath := filepath.Join(dim.shardDir, fmt.Sprintf("%02x.idx", shardNum))
+	tempPath := shardPath + ".tmp"
+
+	if err := dim.writeShardToPath(tempPath, shardNum, builder); err != nil {
+		return err
+	}
+
+	// Atomic rename
+	if err := os.Rename(tempPath, shardPath); err != nil {
+		os.Remove(tempPath)
+		return err
+	}
+
+	// Invalidate cache for this shard
+	dim.invalidateShard(shardNum)
+
+	return nil
+}
+
+// writeShardToPath writes shard to a specific path
+func (dim *Manager) writeShardToPath(path string, shardNum uint8, builder *ShardBuilder) error {
+	// Sort identifiers for binary search
+	identifiers := make([]string, 0, len(builder.entries))
+	for id := range builder.entries {
+		identifiers = append(identifiers, id)
+	}
+	sort.Strings(identifiers)
+
+	// Calculate entry offsets
+	offsetTable := make([]uint32, len(identifiers))
+	dataStartOffset := 32 + (len(identifiers) * 4)
+
+	currentOffset := dataStartOffset
+	for i, id := range identifiers {
+		offsetTable[i] = uint32(currentOffset)
+		locations := builder.entries[id]
+		entrySize := DID_IDENTIFIER_LEN + 2 + (len(locations) * 5)
+		currentOffset += entrySize
+	}
+
+	totalSize := currentOffset
+
+	// Allocate buffer
+	buf := make([]byte, totalSize)
+
+	// Write header (32 bytes)
+	copy(buf[0:4], DIDINDEX_MAGIC)
+	binary.LittleEndian.PutUint32(buf[4:8], DIDINDEX_VERSION)
+	buf[8] = shardNum
+	binary.LittleEndian.PutUint32(buf[9:13], uint32(len(identifiers)))
+
+	// Write offset table
+	offsetTableStart := 32
+	for i, offset := range offsetTable {
+		pos := offsetTableStart + (i * 4)
+		binary.LittleEndian.PutUint32(buf[pos:pos+4], offset)
+	}
+
+	// Write entries
+	for i, identifier := range identifiers {
+		offset := int(offsetTable[i])
+		locations := builder.entries[identifier]
+
+		copy(buf[offset:offset+DID_IDENTIFIER_LEN], identifier)
+		offset += DID_IDENTIFIER_LEN
+
+		binary.LittleEndian.PutUint16(buf[offset:offset+2], uint16(len(locations)))
+		offset += 2
+
+		for _, loc := range locations {
+			binary.LittleEndian.PutUint16(buf[offset:offset+2], loc.Bundle)
+			binary.LittleEndian.PutUint16(buf[offset+2:offset+4], loc.Position)
+
+			if loc.Nullified {
+				buf[offset+4] = 1
+			} else {
+				buf[offset+4] = 0
+			}
+
+			offset += 5
+		}
+	}
+
+	return os.WriteFile(path, buf, 0644)
+}
+
+// parseShardData parses binary shard data into builder
+func (dim *Manager) parseShardData(data []byte, builder *ShardBuilder) error {
+	if len(data) < 32 {
+		return nil
+	}
+
+	entryCount := binary.LittleEndian.Uint32(data[9:13])
+
+	// Skip offset table, start at first entry
+	offset := 32 + (int(entryCount) * 4)
+
+	for i := 0; i < int(entryCount); i++ {
+		if offset+DID_IDENTIFIER_LEN+2 > len(data) {
+			break
+		}
+
+		// Read identifier
+		identifier := string(data[offset : offset+DID_IDENTIFIER_LEN])
+		offset += DID_IDENTIFIER_LEN
+
+		// Read location count
+		locCount := binary.LittleEndian.Uint16(data[offset : offset+2])
+		offset += 2
+
+		// Read locations
+		locations := make([]OpLocation, locCount)
+		for j := 0; j < int(locCount); j++ {
+			if offset+5 > len(data) {
+				break
+			}
+
+			locations[j] = OpLocation{
+				Bundle:    binary.LittleEndian.Uint16(data[offset : offset+2]),
+				Position:  binary.LittleEndian.Uint16(data[offset+2 : offset+4]),
+				Nullified: data[offset+4] != 0,
+			}
+			offset += 5
+		}
+
+		builder.entries[identifier] = locations
+	}
+
+	return nil
+}
+
+// saveIndexConfig saves index configuration
+func (dim *Manager) saveIndexConfig() error {
+	dim.config.UpdatedAt = time.Now().UTC()
+
+	data, err := json.MarshalIndent(dim.config, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(dim.configPath, data, 0644)
+}
+
+// extractDIDIdentifier extracts the 24-char identifier from full DID
+func extractDIDIdentifier(did string) (string, error) {
+	if err := plcclient.ValidateDIDFormat(did); err != nil {
+		return "", err
+	}
+
+	// Remove "did:plc:" prefix
+	identifier := did[8:]
+
+	if len(identifier) != DID_IDENTIFIER_LEN {
+		return "", fmt.Errorf("invalid identifier length: %d", len(identifier))
+	}
+
+	return identifier, nil
+}
+
+// loadIndexConfig loads index configuration
+func loadIndexConfig(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var config Config
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
 }

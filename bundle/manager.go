@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"tangled.org/atscan.net/plcbundle/internal/didindex"
+	"tangled.org/atscan.net/plcbundle/internal/storage"
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
@@ -31,13 +33,13 @@ func (d defaultLogger) Println(v ...interface{}) {
 // Manager handles bundle operations
 type Manager struct {
 	config     *Config
-	operations *Operations
+	operations *storage.Operations
 	index      *Index
 	indexPath  string
 	plcClient  *plcclient.Client
 	logger     Logger
 	mempool    *Mempool
-	didIndex   *DIDIndexManager
+	didIndex   *didindex.Manager // Updated type
 
 	bundleCache  map[int]*Bundle
 	cacheMu      sync.RWMutex
@@ -60,7 +62,7 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 	}
 
 	// Initialize operations handler
-	ops, err := NewOperations(config.Logger)
+	ops, err := storage.NewOperations(config.Logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize operations: %w", err)
 	}
@@ -98,13 +100,13 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 		} else {
 			// No index and no bundles - create fresh index
 			config.Logger.Printf("Creating new index at %s", indexPath)
-			index = NewIndex(origin) // Pass origin
+			index = NewIndex(origin)
 			if err := index.Save(indexPath); err != nil {
 				return nil, fmt.Errorf("failed to save new index: %w", err)
 			}
 		}
 	} else {
-		// Index exists - auto-populate origin if missing (ONLY TIME THIS HAPPENS)
+		// Index exists - auto-populate origin if missing
 		if index.Origin == "" {
 			if origin != "" {
 				config.Logger.Printf("⚠️  Upgrading old index: setting origin to %s", origin)
@@ -265,7 +267,7 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 	}
 
 	// Initialize DID index manager
-	didIndex := NewDIDIndexManager(config.BundleDir, config.Logger)
+	didIndex := didindex.NewManager(config.BundleDir, config.Logger)
 
 	return &Manager{
 		config:       config,
@@ -275,9 +277,9 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 		plcClient:    plcClient,
 		logger:       config.Logger,
 		mempool:      mempool,
-		didIndex:     didIndex,
+		didIndex:     didIndex, // Updated type
 		bundleCache:  make(map[int]*Bundle),
-		maxCacheSize: 2, // Keep 10 recent bundles in memory (~50-100 MB)
+		maxCacheSize: 2,
 	}, nil
 }
 
@@ -342,7 +344,7 @@ func (m *Manager) LoadBundle(ctx context.Context, bundleNumber int) (*Bundle, er
 	return bundle, nil
 }
 
-// LoadBundle loads a bundle from disk
+// loadBundleFromDisk loads a bundle from disk
 func (m *Manager) loadBundleFromDisk(ctx context.Context, bundleNumber int) (*Bundle, error) {
 	// Get metadata from index
 	meta, err := m.index.GetBundle(bundleNumber)
@@ -380,9 +382,9 @@ func (m *Manager) loadBundleFromDisk(ctx context.Context, bundleNumber int) (*Bu
 		EndTime:          meta.EndTime,
 		Operations:       operations,
 		DIDCount:         meta.DIDCount,
-		Hash:             meta.Hash,        // Chain hash (primary)
-		ContentHash:      meta.ContentHash, // Content hash
-		Parent:           meta.Parent,      // Parent chain hash
+		Hash:             meta.Hash,
+		ContentHash:      meta.ContentHash,
+		Parent:           meta.Parent,
 		CompressedHash:   meta.CompressedHash,
 		CompressedSize:   meta.CompressedSize,
 		UncompressedSize: meta.UncompressedSize,
@@ -457,7 +459,7 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) er
 
 	// Update DID index if enabled (ONLY when bundle is created)
 	if m.didIndex != nil && m.didIndex.Exists() {
-		if err := m.UpdateDIDIndexForBundle(ctx, bundle); err != nil {
+		if err := m.updateDIDIndexForBundle(ctx, bundle); err != nil {
 			m.logger.Printf("Warning: failed to update DID index: %v", err)
 		}
 	}
@@ -521,7 +523,7 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		return nil, fmt.Errorf("failed to take operations from mempool: %w", err)
 	}
 
-	bundle := m.operations.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash)
+	bundle := m.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash)
 
 	if err := m.mempool.Save(); err != nil {
 		m.logger.Printf("Warning: failed to save mempool: %v", err)
@@ -535,7 +537,7 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 	return bundle, nil
 }
 
-// fetchToMempool fetches operations and adds them to mempool (returns error if no progress)
+// fetchToMempool fetches operations and adds them to mempool
 func (m *Manager) fetchToMempool(ctx context.Context, afterTime string, prevBoundaryCIDs map[string]bool, target int, quiet bool) error {
 	seenCIDs := make(map[string]bool)
 
@@ -651,7 +653,6 @@ func (m *Manager) GetMempoolOperations() ([]plcclient.PLCOperation, error) {
 		return nil, fmt.Errorf("mempool not initialized")
 	}
 
-	// Use Peek to get operations without removing them
 	count := m.mempool.Count()
 	if count == 0 {
 		return []plcclient.PLCOperation{}, nil
@@ -864,7 +865,7 @@ func (m *Manager) ScanDirectory() (*DirectoryScanResult, error) {
 		}
 
 		// Use the ONE method for metadata calculation
-		meta, err := m.operations.CalculateBundleMetadata(num, path, ops, parent, cursor)
+		meta, err := m.CalculateBundleMetadata(num, path, ops, parent, cursor)
 		if err != nil {
 			m.logger.Printf("Warning: failed to calculate metadata for bundle %d: %v", num, err)
 			continue
@@ -978,7 +979,7 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 				}
 
 				// Use the FAST method (cursor will be set later in sequential phase)
-				meta, err := m.operations.CalculateBundleMetadataFast(num, path, ops, "")
+				meta, err := m.CalculateBundleMetadataFast(num, path, ops, "")
 				if err != nil {
 					results <- bundleResult{index: num, err: err}
 					continue
@@ -1001,7 +1002,7 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 		close(results)
 	}()
 
-	// Collect results (in a map first, then sort)
+	// Collect results
 	metadataMap := make(map[int]*BundleMetadata)
 	var totalSize int64
 	var totalUncompressed int64
@@ -1028,12 +1029,12 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 
 	// Build ordered metadata slice and calculate chain hashes
 	var newMetadata []*BundleMetadata
-	var parent string // Parent chain hash
+	var parent string
 
 	for i, num := range bundleNumbers {
 		meta, ok := metadataMap[num]
 		if !ok {
-			continue // Skip failed bundles
+			continue
 		}
 
 		// Set cursor from previous bundle's EndTime
@@ -1042,12 +1043,12 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 			meta.Cursor = prevMeta.EndTime.Format(time.RFC3339Nano)
 		}
 
-		// Now calculate chain hash (must be done sequentially)
+		// Calculate chain hash (must be done sequentially)
 		meta.Hash = m.operations.CalculateChainHash(parent, meta.ContentHash)
 		meta.Parent = parent
 
 		newMetadata = append(newMetadata, meta)
-		parent = meta.Hash // Store for next iteration
+		parent = meta.Hash
 	}
 
 	result.TotalSize = totalSize
@@ -1150,7 +1151,7 @@ func (m *Manager) ScanBundle(path string, bundleNumber int) (*BundleMetadata, er
 	}
 
 	// Use the ONE method
-	return m.operations.CalculateBundleMetadata(bundleNumber, path, operations, parent, cursor)
+	return m.CalculateBundleMetadata(bundleNumber, path, operations, parent, cursor)
 }
 
 // ScanAndIndexBundle scans a bundle file and adds it to the index
@@ -1177,7 +1178,7 @@ func (m *Manager) IsBundleIndexed(bundleNumber int) bool {
 	return err == nil
 }
 
-// RefreshMempool reloads mempool from disk (useful for debugging)
+// RefreshMempool reloads mempool from disk
 func (m *Manager) RefreshMempool() error {
 	if m.mempool == nil {
 		return fmt.Errorf("mempool not initialized")
@@ -1193,13 +1194,10 @@ func (m *Manager) ClearMempool() error {
 
 	m.logger.Printf("Clearing mempool...")
 
-	// Get count before clearing
 	count := m.mempool.Count()
 
-	// Clear the mempool
 	m.mempool.Clear()
 
-	// Save the empty state (this will delete the file since it's empty)
 	if err := m.mempool.Save(); err != nil {
 		return fmt.Errorf("failed to save mempool: %w", err)
 	}
@@ -1209,7 +1207,7 @@ func (m *Manager) ClearMempool() error {
 	return nil
 }
 
-// Add validation method
+// ValidateMempool validates mempool
 func (m *Manager) ValidateMempool() error {
 	if m.mempool == nil {
 		return fmt.Errorf("mempool not initialized")
@@ -1286,21 +1284,7 @@ func (m *Manager) RefreshIndex() error {
 	return nil
 }
 
-// filterBundleFiles filters out files starting with . or _ (system/temp files)
-func filterBundleFiles(files []string) []string {
-	filtered := make([]string, 0, len(files))
-	for _, file := range files {
-		basename := filepath.Base(file)
-		// Skip files starting with . or _
-		if len(basename) > 0 && (basename[0] == '.' || basename[0] == '_') {
-			continue
-		}
-		filtered = append(filtered, file)
-	}
-	return filtered
-}
-
-// GetMempool returns the current mempool (for manual save operations)
+// GetMempool returns the current mempool
 func (m *Manager) GetMempool() *Mempool {
 	return m.mempool
 }
@@ -1313,7 +1297,7 @@ func (m *Manager) SaveMempool() error {
 	return m.mempool.Save()
 }
 
-// GetPLCOrigin returns the PLC directory origin URL (empty if not configured)
+// GetPLCOrigin returns the PLC directory origin URL
 func (m *Manager) GetPLCOrigin() string {
 	if m.plcClient == nil {
 		return ""
@@ -1322,13 +1306,12 @@ func (m *Manager) GetPLCOrigin() string {
 }
 
 // GetCurrentCursor returns the current latest cursor position (including mempool)
-// Cursor format: (bundleNumber × BUNDLE_SIZE) + position
 func (m *Manager) GetCurrentCursor() int {
 	index := m.GetIndex()
 	bundles := index.GetBundles()
 	cursor := len(bundles) * BUNDLE_SIZE
 
-	// Add mempool operations to get true latest position
+	// Add mempool operations
 	mempoolStats := m.GetMempoolStats()
 	if count, ok := mempoolStats["count"].(int); ok {
 		cursor += count
@@ -1337,15 +1320,8 @@ func (m *Manager) GetCurrentCursor() int {
 	return cursor
 }
 
-// GetDIDIndex returns the DID index manager
-func (m *Manager) GetDIDIndex() *DIDIndexManager {
-	return m.didIndex
-}
-
 // LoadOperation loads a single operation from a bundle efficiently
-// This is much faster than LoadBundle() when you only need one operation
 func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position int) (*plcclient.PLCOperation, error) {
-
 	// Validate bundle exists in index
 	_, err := m.index.GetBundle(bundleNumber)
 	if err != nil {
@@ -1363,6 +1339,506 @@ func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position 
 		return nil, fmt.Errorf("bundle file not found: %s", path)
 	}
 
-	// Load just the one operation (efficient!)
+	// Load just the one operation
 	return m.operations.LoadOperationAtPosition(path, position)
+}
+
+// filterBundleFiles filters out files starting with . or _
+func filterBundleFiles(files []string) []string {
+	filtered := make([]string, 0, len(files))
+	for _, file := range files {
+		basename := filepath.Base(file)
+		if len(basename) > 0 && (basename[0] == '.' || basename[0] == '_') {
+			continue
+		}
+		filtered = append(filtered, file)
+	}
+	return filtered
+}
+
+// ==========================================
+// DID INDEX INTEGRATION (adapter methods)
+// ==========================================
+
+// Implement BundleProvider interface for didindex
+func (m *Manager) LoadBundleForDIDIndex(ctx context.Context, bundleNumber int) (*didindex.BundleData, error) {
+	bundle, err := m.LoadBundle(ctx, bundleNumber)
+	if err != nil {
+		return nil, err
+	}
+
+	return &didindex.BundleData{
+		BundleNumber: bundle.BundleNumber,
+		Operations:   bundle.Operations,
+	}, nil
+}
+
+func (m *Manager) GetBundleIndex() didindex.BundleIndexProvider {
+	return &bundleIndexAdapter{index: m.index}
+}
+
+// bundleIndexAdapter adapts Index to BundleIndexProvider interface
+type bundleIndexAdapter struct {
+	index *Index
+}
+
+func (a *bundleIndexAdapter) GetBundles() []*didindex.BundleMetadata {
+	bundles := a.index.GetBundles()
+	result := make([]*didindex.BundleMetadata, len(bundles))
+	for i, b := range bundles {
+		result[i] = &didindex.BundleMetadata{
+			BundleNumber: b.BundleNumber,
+			StartTime:    b.StartTime,
+			EndTime:      b.EndTime,
+		}
+	}
+	return result
+}
+
+func (a *bundleIndexAdapter) GetBundle(bundleNumber int) (*didindex.BundleMetadata, error) {
+	meta, err := a.index.GetBundle(bundleNumber)
+	if err != nil {
+		return nil, err
+	}
+	return &didindex.BundleMetadata{
+		BundleNumber: meta.BundleNumber,
+		StartTime:    meta.StartTime,
+		EndTime:      meta.EndTime,
+	}, nil
+}
+
+func (a *bundleIndexAdapter) GetLastBundle() *didindex.BundleMetadata {
+	meta := a.index.GetLastBundle()
+	if meta == nil {
+		return nil
+	}
+	return &didindex.BundleMetadata{
+		BundleNumber: meta.BundleNumber,
+		StartTime:    meta.StartTime,
+		EndTime:      meta.EndTime,
+	}
+}
+
+// GetDIDIndex returns the DID index manager
+func (m *Manager) GetDIDIndex() *didindex.Manager {
+	return m.didIndex
+}
+
+// BuildDIDIndex builds the complete DID index
+func (m *Manager) BuildDIDIndex(ctx context.Context, progressCallback func(current, total int)) error {
+	if m.didIndex == nil {
+		m.didIndex = didindex.NewManager(m.config.BundleDir, m.logger)
+	}
+
+	return m.didIndex.BuildIndexFromScratch(ctx, m, progressCallback)
+}
+
+// updateDIDIndexForBundle updates index when a new bundle is added
+func (m *Manager) updateDIDIndexForBundle(ctx context.Context, bundle *Bundle) error {
+	if m.didIndex == nil {
+		return nil
+	}
+
+	// Convert to didindex.BundleData
+	bundleData := &didindex.BundleData{
+		BundleNumber: bundle.BundleNumber,
+		Operations:   bundle.Operations,
+	}
+
+	return m.didIndex.UpdateIndexForBundle(ctx, bundleData)
+}
+
+// GetDIDIndexStats returns DID index statistics
+func (m *Manager) GetDIDIndexStats() map[string]interface{} {
+	if m.didIndex == nil {
+		return map[string]interface{}{
+			"enabled": false,
+		}
+	}
+
+	stats := m.didIndex.GetStats()
+	stats["enabled"] = true
+	stats["exists"] = m.didIndex.Exists()
+
+	indexedDIDs := stats["total_dids"].(int64)
+
+	// Get unique DIDs from mempool
+	mempoolDIDCount := int64(0)
+	if m.mempool != nil {
+		mempoolStats := m.GetMempoolStats()
+		if didCount, ok := mempoolStats["did_count"].(int); ok {
+			mempoolDIDCount = int64(didCount)
+		}
+	}
+
+	stats["indexed_dids"] = indexedDIDs
+	stats["mempool_dids"] = mempoolDIDCount
+	stats["total_dids"] = indexedDIDs + mempoolDIDCount
+
+	return stats
+}
+
+// GetDIDOperations retrieves all operations for a DID (bundles + mempool combined)
+func (m *Manager) GetDIDOperations(ctx context.Context, did string, verbose bool) ([]plcclient.PLCOperation, error) {
+	if err := plcclient.ValidateDIDFormat(did); err != nil {
+		return nil, err
+	}
+
+	// Get bundled operations
+	bundledOps, err := m.getDIDOperationsBundledOnly(ctx, did, verbose)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get mempool operations
+	mempoolOps, err := m.GetDIDOperationsFromMempool(did)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(mempoolOps) > 0 && verbose {
+		m.logger.Printf("DEBUG: Found %d operations in mempool", len(mempoolOps))
+	}
+
+	// Combine and sort
+	allOps := append(bundledOps, mempoolOps...)
+
+	sort.Slice(allOps, func(i, j int) bool {
+		return allOps[i].CreatedAt.Before(allOps[j].CreatedAt)
+	})
+
+	return allOps, nil
+}
+
+// getDIDOperationsBundledOnly retrieves operations from bundles only (private helper)
+func (m *Manager) getDIDOperationsBundledOnly(ctx context.Context, did string, verbose bool) ([]plcclient.PLCOperation, error) {
+	// Set verbose mode on index
+	if m.didIndex != nil {
+		m.didIndex.SetVerbose(verbose)
+	}
+
+	// Use index if available
+	if m.didIndex != nil && m.didIndex.Exists() {
+		if verbose {
+			m.logger.Printf("DEBUG: Using DID index for lookup")
+		}
+
+		locations, err := m.didIndex.GetDIDLocations(did)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(locations) == 0 {
+			return []plcclient.PLCOperation{}, nil
+		}
+
+		// Filter nullified
+		var validLocations []didindex.OpLocation
+		for _, loc := range locations {
+			if !loc.Nullified {
+				validLocations = append(validLocations, loc)
+			}
+		}
+
+		if verbose {
+			m.logger.Printf("DEBUG: Filtered %d valid locations (from %d total)",
+				len(validLocations), len(locations))
+		}
+
+		// Group by bundle
+		bundleMap := make(map[uint16][]uint16)
+		for _, loc := range validLocations {
+			bundleMap[loc.Bundle] = append(bundleMap[loc.Bundle], loc.Position)
+		}
+
+		if verbose {
+			m.logger.Printf("DEBUG: Loading from %d bundle(s)", len(bundleMap))
+		}
+
+		// Load operations
+		var allOps []plcclient.PLCOperation
+		for bundleNum, positions := range bundleMap {
+			bundle, err := m.LoadBundle(ctx, int(bundleNum))
+			if err != nil {
+				m.logger.Printf("Warning: failed to load bundle %d: %v", bundleNum, err)
+				continue
+			}
+
+			for _, pos := range positions {
+				if int(pos) < len(bundle.Operations) {
+					allOps = append(allOps, bundle.Operations[pos])
+				}
+			}
+		}
+
+		if verbose {
+			m.logger.Printf("DEBUG: Loaded %d total operations", len(allOps))
+		}
+
+		sort.Slice(allOps, func(i, j int) bool {
+			return allOps[i].CreatedAt.Before(allOps[j].CreatedAt)
+		})
+
+		return allOps, nil
+	}
+
+	// Fallback to full scan
+	if verbose {
+		m.logger.Printf("DEBUG: DID index not available, using full scan")
+	}
+	m.logger.Printf("Warning: DID index not available, falling back to full scan")
+
+	return m.getDIDOperationsScan(ctx, did)
+}
+
+// getDIDOperationsFromMempool retrieves operations for a DID from mempool only
+func (m *Manager) GetDIDOperationsFromMempool(did string) ([]plcclient.PLCOperation, error) {
+	if m.mempool == nil {
+		return []plcclient.PLCOperation{}, nil
+	}
+
+	allMempoolOps, err := m.GetMempoolOperations()
+	if err != nil {
+		return nil, err
+	}
+
+	matchingOps := make([]plcclient.PLCOperation, 0, 16)
+
+	for _, op := range allMempoolOps {
+		if op.DID == did {
+			matchingOps = append(matchingOps, op)
+		}
+	}
+
+	return matchingOps, nil
+}
+
+// getDIDOperationsScan falls back to full scan (private helper)
+func (m *Manager) getDIDOperationsScan(ctx context.Context, did string) ([]plcclient.PLCOperation, error) {
+	var allOps []plcclient.PLCOperation
+	bundles := m.index.GetBundles()
+
+	for _, meta := range bundles {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		bundle, err := m.LoadBundle(ctx, meta.BundleNumber)
+		if err != nil {
+			m.logger.Printf("Warning: failed to load bundle %d: %v", meta.BundleNumber, err)
+			continue
+		}
+
+		for _, op := range bundle.Operations {
+			if op.DID == did {
+				allOps = append(allOps, op)
+			}
+		}
+	}
+
+	sort.Slice(allOps, func(i, j int) bool {
+		return allOps[i].CreatedAt.Before(allOps[j].CreatedAt)
+	})
+
+	return allOps, nil
+}
+
+// GetLatestDIDOperation returns only the most recent non-nullified operation
+func (m *Manager) GetLatestDIDOperation(ctx context.Context, did string) (*plcclient.PLCOperation, error) {
+	if err := plcclient.ValidateDIDFormat(did); err != nil {
+		return nil, err
+	}
+
+	// Check mempool first
+	mempoolOps, err := m.GetDIDOperationsFromMempool(did)
+	if err == nil && len(mempoolOps) > 0 {
+		// Find latest non-nullified in mempool
+		for i := len(mempoolOps) - 1; i >= 0; i-- {
+			if !mempoolOps[i].IsNullified() {
+				return &mempoolOps[i], nil
+			}
+		}
+	}
+
+	// Use index if available
+	if m.didIndex != nil && m.didIndex.Exists() {
+		locations, err := m.didIndex.GetDIDLocations(did)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(locations) == 0 {
+			return nil, fmt.Errorf("DID not found")
+		}
+
+		// Find latest non-nullified location
+		var latestLoc *didindex.OpLocation
+		for i := range locations {
+			if locations[i].Nullified {
+				continue
+			}
+
+			if latestLoc == nil {
+				latestLoc = &locations[i]
+			} else {
+				if locations[i].Bundle > latestLoc.Bundle ||
+					(locations[i].Bundle == latestLoc.Bundle && locations[i].Position > latestLoc.Position) {
+					latestLoc = &locations[i]
+				}
+			}
+		}
+
+		if latestLoc == nil {
+			return nil, fmt.Errorf("no valid operations found (all nullified)")
+		}
+
+		// Load operation
+		op, err := m.LoadOperation(ctx, int(latestLoc.Bundle), int(latestLoc.Position))
+		if err != nil {
+			return nil, fmt.Errorf("failed to load operation at bundle %d position %d: %w",
+				latestLoc.Bundle, latestLoc.Position, err)
+		}
+
+		return op, nil
+	}
+
+	// Fallback to full lookup
+	ops, err := m.getDIDOperationsBundledOnly(ctx, did, false)
+	if err != nil {
+		return nil, err
+	}
+
+	// Find latest non-nullified
+	for i := len(ops) - 1; i >= 0; i-- {
+		if !ops[i].IsNullified() {
+			return &ops[i], nil
+		}
+	}
+
+	return nil, fmt.Errorf("no valid operations found")
+}
+
+// GetDIDOperationsWithLocations returns operations along with their bundle/position info
+func (m *Manager) GetDIDOperationsWithLocations(ctx context.Context, did string, verbose bool) ([]PLCOperationWithLocation, error) {
+	if err := plcclient.ValidateDIDFormat(did); err != nil {
+		return nil, err
+	}
+
+	// Set verbose mode
+	if m.didIndex != nil {
+		m.didIndex.SetVerbose(verbose)
+	}
+
+	// Use index if available
+	if m.didIndex != nil && m.didIndex.Exists() {
+		if verbose {
+			m.logger.Printf("DEBUG: Using DID index for lookup with locations")
+		}
+		return m.getDIDOperationsWithLocationsIndexed(ctx, did, verbose)
+	}
+
+	// Fallback to scan
+	if verbose {
+		m.logger.Printf("DEBUG: Using full scan with locations")
+	}
+	return m.getDIDOperationsWithLocationsScan(ctx, did)
+}
+
+// getDIDOperationsWithLocationsIndexed uses index for fast lookup with locations
+func (m *Manager) getDIDOperationsWithLocationsIndexed(ctx context.Context, did string, verbose bool) ([]PLCOperationWithLocation, error) {
+	locations, err := m.didIndex.GetDIDLocations(did)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(locations) == 0 {
+		return []PLCOperationWithLocation{}, nil
+	}
+
+	if verbose {
+		m.logger.Printf("DEBUG: Found %d locations in index", len(locations))
+	}
+
+	// Load operations with their locations preserved
+	var results []PLCOperationWithLocation
+
+	// Group by bundle for efficient loading
+	bundleMap := make(map[uint16][]didindex.OpLocation)
+	for _, loc := range locations {
+		bundleMap[loc.Bundle] = append(bundleMap[loc.Bundle], loc)
+	}
+
+	if verbose {
+		m.logger.Printf("DEBUG: Loading from %d bundle(s)", len(bundleMap))
+	}
+
+	for bundleNum, locs := range bundleMap {
+		bundle, err := m.LoadBundle(ctx, int(bundleNum))
+		if err != nil {
+			m.logger.Printf("Warning: failed to load bundle %d: %v", bundleNum, err)
+			continue
+		}
+
+		for _, loc := range locs {
+			if int(loc.Position) >= len(bundle.Operations) {
+				continue
+			}
+
+			op := bundle.Operations[loc.Position]
+			results = append(results, PLCOperationWithLocation{
+				Operation: op,
+				Bundle:    int(loc.Bundle),
+				Position:  int(loc.Position),
+			})
+		}
+	}
+
+	// Sort by time
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Operation.CreatedAt.Before(results[j].Operation.CreatedAt)
+	})
+
+	if verbose {
+		m.logger.Printf("DEBUG: Loaded %d total operations", len(results))
+	}
+
+	return results, nil
+}
+
+// getDIDOperationsWithLocationsScan falls back to full scan with locations
+func (m *Manager) getDIDOperationsWithLocationsScan(ctx context.Context, did string) ([]PLCOperationWithLocation, error) {
+	var results []PLCOperationWithLocation
+	bundles := m.index.GetBundles()
+
+	for _, meta := range bundles {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		bundle, err := m.LoadBundle(ctx, meta.BundleNumber)
+		if err != nil {
+			m.logger.Printf("Warning: failed to load bundle %d: %v", meta.BundleNumber, err)
+			continue
+		}
+
+		for pos, op := range bundle.Operations {
+			if op.DID == did {
+				results = append(results, PLCOperationWithLocation{
+					Operation: op,
+					Bundle:    meta.BundleNumber,
+					Position:  pos,
+				})
+			}
+		}
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Operation.CreatedAt.Before(results[j].Operation.CreatedAt)
+	})
+
+	return results, nil
 }

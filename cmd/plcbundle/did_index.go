@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
-	"tangled.org/atscan.net/plcbundle/bundle"
+	"tangled.org/atscan.net/plcbundle/internal/didindex"
 	"tangled.org/atscan.net/plcbundle/plcclient"
 )
 
@@ -560,7 +560,7 @@ func cmdDIDIndexResolve() {
 	}
 
 	// Find latest non-nullified location
-	var latestLoc *bundle.OpLocation
+	var latestLoc *didindex.OpLocation
 	for i := range locations {
 		if locations[i].Nullified {
 			continue
