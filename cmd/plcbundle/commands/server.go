@@ -207,7 +207,8 @@ func setupGracefulShutdown(mgr *bundle.Manager) (context.Context, context.Cancel
 		fmt.Fprintf(os.Stderr, "\n\n⚠️  Shutdown signal received...\n")
 		fmt.Fprintf(os.Stderr, "  Saving mempool...\n")
 
-		if err := mgr.SaveMempool(); err != nil {
+		// Force save regardless of threshold
+		if err := mgr.GetMempool().Save(); err != nil { // Use Save() not SaveIfNeeded()
 			fmt.Fprintf(os.Stderr, "  ✗ Failed to save mempool: %v\n", err)
 		} else {
 			fmt.Fprintf(os.Stderr, "  ✓ Mempool saved\n")

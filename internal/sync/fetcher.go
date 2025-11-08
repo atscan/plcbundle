@@ -21,6 +21,7 @@ type Fetcher struct {
 type MempoolInterface interface {
 	Add(ops []plcclient.PLCOperation) (int, error)
 	Save() error
+	SaveIfNeeded() error
 	Count() int
 	GetLastTime() string
 }
@@ -141,19 +142,19 @@ func (f *Fetcher) FetchToMempool(
 		if uniqueAdded > 0 && mempool != nil {
 			added, addErr := mempool.Add(allNewOps[beforeDedup:])
 			if addErr != nil {
-				// Save before returning error
+				// Force save before returning error
 				mempool.Save()
 				return allNewOps, fetchesMade, fmt.Errorf("mempool add failed: %w", addErr)
 			}
 
-			// ✨ Auto-save after each successful add
-			if err := mempool.Save(); err != nil {
+			// ✨ Save only if threshold met
+			if err := mempool.SaveIfNeeded(); err != nil {
 				f.logger.Printf("  Warning: failed to save mempool: %v", err)
 			}
 
 			if !quiet && added > 0 {
 				cursor := mempool.GetLastTime()
-				f.logger.Printf("  Saved to mempool: %d ops (total: %d, cursor: %s)",
+				f.logger.Printf("  Added to mempool: %d ops (total: %d, cursor: %s)",
 					added, mempool.Count(), cursor[:19])
 			}
 		}

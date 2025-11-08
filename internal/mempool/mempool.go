@@ -20,13 +20,19 @@ const MEMPOOL_FILE_PREFIX = "plc_mempool_"
 // Operations must be strictly chronological
 type Mempool struct {
 	operations   []plcclient.PLCOperation
-	targetBundle int       // Which bundle number these operations are for
-	minTimestamp time.Time // Operations must be after this time
+	targetBundle int
+	minTimestamp time.Time
 	file         string
 	mu           sync.RWMutex
 	logger       types.Logger
-	validated    bool // Track if we've validated chronological order
-	dirty        bool // Track if mempool changed
+	validated    bool
+	dirty        bool
+
+	// Incremental save tracking
+	lastSavedLen  int           // How many ops are persisted
+	lastSaveTime  time.Time     // Last save timestamp
+	saveThreshold int           // Save after N new ops
+	saveInterval  time.Duration // Save after duration
 }
 
 // NewMempool creates a new mempool for a specific bundle number
@@ -34,17 +40,19 @@ func NewMempool(bundleDir string, targetBundle int, minTimestamp time.Time, logg
 	filename := fmt.Sprintf("%s%06d.jsonl", MEMPOOL_FILE_PREFIX, targetBundle)
 
 	m := &Mempool{
-		file:         filepath.Join(bundleDir, filename),
-		targetBundle: targetBundle,
-		minTimestamp: minTimestamp,
-		operations:   make([]plcclient.PLCOperation, 0),
-		logger:       logger,
-		validated:    false,
+		file:          filepath.Join(bundleDir, filename),
+		targetBundle:  targetBundle,
+		minTimestamp:  minTimestamp,
+		operations:    make([]plcclient.PLCOperation, 0),
+		logger:        logger,
+		validated:     false,
+		lastSavedLen:  0,
+		lastSaveTime:  time.Now(),
+		saveThreshold: 100,
+		saveInterval:  15 * time.Second,
 	}
 
-	// Load existing mempool from disk if it exists
 	if err := m.Load(); err != nil {
-		// If file doesn't exist, that's OK
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("failed to load mempool: %w", err)
 		}
@@ -241,7 +249,30 @@ func (m *Mempool) Clear() {
 	m.validated = false
 }
 
-// Save persists mempool to disk
+// ShouldSave checks if threshold/interval is met
+func (m *Mempool) ShouldSave() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if !m.dirty {
+		return false
+	}
+
+	newOps := len(m.operations) - m.lastSavedLen
+	timeSinceLastSave := time.Since(m.lastSaveTime)
+
+	return newOps >= m.saveThreshold || timeSinceLastSave >= m.saveInterval
+}
+
+// SaveIfNeeded saves only if threshold is met
+func (m *Mempool) SaveIfNeeded() error {
+	if !m.ShouldSave() {
+		return nil
+	}
+	return m.Save()
+}
+
+// Save - always append-only since mempool only grows
 func (m *Mempool) Save() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -251,8 +282,10 @@ func (m *Mempool) Save() error {
 	}
 
 	if len(m.operations) == 0 {
-		// Remove file if empty
 		os.Remove(m.file)
+		m.lastSavedLen = 0
+		m.lastSaveTime = time.Now()
+		m.dirty = false
 		return nil
 	}
 
@@ -261,30 +294,47 @@ func (m *Mempool) Save() error {
 		return fmt.Errorf("mempool validation failed, refusing to save: %w", err)
 	}
 
-	// Serialize to JSONL
-	var buf bytes.Buffer
-	for _, op := range m.operations {
+	// Get only new operations since last save
+	newOps := m.operations[m.lastSavedLen:]
+
+	if len(newOps) == 0 {
+		// Nothing new to save
+		m.dirty = false
+		return nil
+	}
+
+	// Open for append (or create if first save)
+	file, err := os.OpenFile(m.file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open mempool: %w", err)
+	}
+	defer file.Close()
+
+	// Write only new operations
+	writer := bufio.NewWriter(file)
+	for _, op := range newOps {
 		if len(op.RawJSON) > 0 {
-			buf.Write(op.RawJSON)
+			writer.Write(op.RawJSON)
 		} else {
 			data, _ := json.Marshal(op)
-			buf.Write(data)
+			writer.Write(data)
 		}
-		buf.WriteByte('\n')
+		writer.WriteByte('\n')
 	}
 
-	// Write atomically
-	tempFile := m.file + ".tmp"
-	if err := os.WriteFile(tempFile, buf.Bytes(), 0644); err != nil {
-		return fmt.Errorf("failed to write mempool: %w", err)
+	if err := writer.Flush(); err != nil {
+		return fmt.Errorf("failed to flush mempool: %w", err)
 	}
 
-	if err := os.Rename(tempFile, m.file); err != nil {
-		os.Remove(tempFile)
-		return fmt.Errorf("failed to rename mempool file: %w", err)
+	// Sync to disk for durability
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("failed to sync mempool: %w", err)
 	}
 
+	m.lastSavedLen = len(m.operations)
+	m.lastSaveTime = time.Now()
 	m.dirty = false
+
 	return nil
 }
 
@@ -326,10 +376,15 @@ func (m *Mempool) Load() error {
 		return fmt.Errorf("scanner error: %w", err)
 	}
 
-	// CRITICAL: Validate loaded data
+	// Validate loaded data
 	if err := m.validateLocked(); err != nil {
 		return fmt.Errorf("loaded mempool failed validation: %w", err)
 	}
+
+	// Mark as saved (just loaded from disk)
+	m.lastSavedLen = len(m.operations)
+	m.lastSaveTime = time.Now()
+	m.dirty = false
 
 	if len(m.operations) > 0 {
 		m.logger.Printf("Loaded %d operations from mempool for bundle %06d", len(m.operations), m.targetBundle)
