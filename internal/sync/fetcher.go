@@ -27,7 +27,6 @@ func NewFetcher(plcClient *plcclient.Client, operations *storage.Operations, log
 }
 
 // FetchToMempool fetches operations and returns them
-// Returns empty slice + nil error when caught up (incomplete batch received)
 func (f *Fetcher) FetchToMempool(
 	ctx context.Context,
 	afterTime string,
@@ -45,10 +44,16 @@ func (f *Fetcher) FetchToMempool(
 		seenCIDs[cid] = true
 	}
 
+	if !quiet && len(prevBoundaryCIDs) > 0 {
+		f.logger.Printf("  Tracking %d boundary CIDs from previous bundle", len(prevBoundaryCIDs))
+	}
+
 	currentAfter := afterTime
 	maxFetches := 20
 	var allNewOps []plcclient.PLCOperation
 	fetchesMade := 0
+	totalReceived := 0
+	totalDupes := 0
 
 	for fetchNum := 0; fetchNum < maxFetches; fetchNum++ {
 		fetchesMade++
@@ -57,11 +62,11 @@ func (f *Fetcher) FetchToMempool(
 			break
 		}
 
-		// ✨ SMART BATCH SIZING
+		// Smart batch sizing
 		var batchSize int
 		switch {
 		case remaining <= 50:
-			batchSize = 50 // Fetch exactly what we need (with small buffer)
+			batchSize = 50
 		case remaining <= 100:
 			batchSize = 100
 		case remaining <= 500:
@@ -73,8 +78,8 @@ func (f *Fetcher) FetchToMempool(
 		fetchStart := time.Now()
 
 		if !quiet {
-			f.logger.Printf("  Fetch #%d: requesting %d operations (need %d, after: %s)",
-				totalFetchesSoFar+fetchesMade, batchSize, remaining, currentAfter[:19])
+			f.logger.Printf("  Fetch #%d: requesting %d (need %d more, have %d/%d)",
+				totalFetchesSoFar+fetchesMade, batchSize, remaining, len(allNewOps), target)
 		}
 
 		batch, err := f.plcClient.Export(ctx, plcclient.ExportOptions{
@@ -90,10 +95,14 @@ func (f *Fetcher) FetchToMempool(
 
 		if len(batch) == 0 {
 			if !quiet {
-				f.logger.Printf("  No more operations available from PLC (in %s)", fetchDuration)
+				f.logger.Printf("  No more operations available (in %s)", fetchDuration)
 			}
 			return allNewOps, fetchesMade, nil
 		}
+
+		// Store counts for metrics
+		originalBatchSize := len(batch)
+		totalReceived += originalBatchSize
 
 		// Deduplicate
 		beforeDedup := len(allNewOps)
@@ -105,18 +114,19 @@ func (f *Fetcher) FetchToMempool(
 		}
 
 		uniqueAdded := len(allNewOps) - beforeDedup
-		deduped := len(batch) - uniqueAdded
+		dupesFiltered := originalBatchSize - uniqueAdded
+		totalDupes += dupesFiltered
 
-		// ✨ DETAILED METRICS
+		// ✨ Show fetch result with running totals
 		if !quiet {
-			opsPerSec := float64(len(batch)) / fetchDuration.Seconds()
+			opsPerSec := float64(originalBatchSize) / fetchDuration.Seconds()
 
-			if deduped > 0 {
-				f.logger.Printf("  Received %d ops (%d unique, %d dupes) in %s (%.0f ops/sec)",
-					len(batch), uniqueAdded, deduped, fetchDuration, opsPerSec)
+			if dupesFiltered > 0 {
+				f.logger.Printf("  → +%d unique (%d dupes) in %s • Running: %d/%d unique (%.0f ops/sec)",
+					uniqueAdded, dupesFiltered, fetchDuration, len(allNewOps), target, opsPerSec)
 			} else {
-				f.logger.Printf("  Received %d ops in %s (%.0f ops/sec)",
-					len(batch), fetchDuration, opsPerSec)
+				f.logger.Printf("  → +%d unique in %s • Running: %d/%d (%.0f ops/sec)",
+					uniqueAdded, fetchDuration, len(allNewOps), target, opsPerSec)
 			}
 		}
 
@@ -125,23 +135,25 @@ func (f *Fetcher) FetchToMempool(
 			currentAfter = batch[len(batch)-1].CreatedAt.Format(time.RFC3339Nano)
 		}
 
-		// Stop if we got incomplete batch (caught up!)
-		if len(batch) < batchSize {
+		// Check completeness using ORIGINAL batch size
+		if originalBatchSize < batchSize {
 			if !quiet {
-				f.logger.Printf("  Received incomplete batch (%d/%d) → caught up to latest",
-					len(batch), batchSize)
+				f.logger.Printf("  Incomplete batch (%d/%d) → caught up", originalBatchSize, batchSize)
 			}
 			return allNewOps, fetchesMade, nil
 		}
 
-		// If we have enough, stop
+		// If we have enough unique ops, stop
 		if len(allNewOps) >= target {
-			if !quiet {
-				f.logger.Printf("  ✓ Target reached (%d/%d unique ops collected)",
-					len(allNewOps), target)
-			}
 			break
 		}
+	}
+
+	// ✨ Summary at the end
+	if !quiet && fetchesMade > 0 {
+		dedupRate := float64(totalDupes) / float64(totalReceived) * 100
+		f.logger.Printf("  ✓ Fetched %d ops total, %d unique (%.1f%% dedup rate)",
+			totalReceived, len(allNewOps), dedupRate)
 	}
 
 	return allNewOps, fetchesMade, nil

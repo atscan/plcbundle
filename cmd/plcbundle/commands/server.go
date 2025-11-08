@@ -299,7 +299,7 @@ func runSyncLoop(ctx context.Context, mgr *bundle.Manager, interval time.Duratio
 	}
 }
 
-// syncBundles performs a sync cycle
+// syncBundles performs a sync cycle with detailed progress
 func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool, resolverEnabled bool) {
 	cycleStart := time.Now()
 
@@ -312,44 +312,84 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool, resolve
 
 	mempoolBefore := mgr.GetMempoolStats()["count"].(int)
 	fetchedCount := 0
+	totalOps := 0
+	totalDIDs := 0
 
-	// ✨ SIMPLIFIED: Just keep calling FetchNextBundle until it fails
+	fmt.Fprintf(os.Stderr, "[Sync] Starting from bundle %06d (mempool: %d ops)\n",
+		startBundle, mempoolBefore)
+
+	// Keep fetching until caught up
 	for {
+		bundleStart := time.Now()
+
 		b, err := mgr.FetchNextBundle(ctx, !verbose)
 		if err != nil {
 			if isEndOfDataError(err) {
+				// Caught up - show summary
 				mempoolAfter := mgr.GetMempoolStats()["count"].(int)
 				addedOps := mempoolAfter - mempoolBefore
 				duration := time.Since(cycleStart)
 
 				if fetchedCount > 0 {
-					fmt.Fprintf(os.Stderr, "[Sync] ✓ Bundle %06d | Synced: %d | Mempool: %d (+%d) | %dms\n",
-						startBundle+fetchedCount-1, fetchedCount, mempoolAfter, addedOps, duration.Milliseconds())
+					avgBundleTime := duration / time.Duration(fetchedCount)
+					opsPerSec := float64(totalOps) / duration.Seconds()
+
+					fmt.Fprintf(os.Stderr, "[Sync] ✓ Synced %d bundles in %s\n",
+						fetchedCount, duration.Round(time.Millisecond))
+					fmt.Fprintf(os.Stderr, "[Sync]   Range: %06d → %06d\n",
+						startBundle, startBundle+fetchedCount-1)
+					fmt.Fprintf(os.Stderr, "[Sync]   Total: %d ops, %d unique DIDs\n",
+						totalOps, totalDIDs)
+					fmt.Fprintf(os.Stderr, "[Sync]   Speed: %.1f bundles/sec, %.0f ops/sec\n",
+						float64(fetchedCount)/duration.Seconds(), opsPerSec)
+					fmt.Fprintf(os.Stderr, "[Sync]   Avg: %s per bundle\n",
+						avgBundleTime.Round(time.Millisecond))
+					fmt.Fprintf(os.Stderr, "[Sync]   Mempool: %d ops (+%d)\n",
+						mempoolAfter, addedOps)
 				} else {
-					fmt.Fprintf(os.Stderr, "[Sync] ✓ Bundle %06d | Up to date | Mempool: %d (+%d) | %dms\n",
-						startBundle-1, mempoolAfter, addedOps, duration.Milliseconds())
+					fmt.Fprintf(os.Stderr, "[Sync] ✓ Already up to date (mempool: %d, +%d ops in %s)\n",
+						mempoolAfter, addedOps, duration.Round(time.Millisecond))
 				}
 				break
 			}
 
 			// Real error
-			fmt.Fprintf(os.Stderr, "[Sync] Error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[Sync] ✗ Error: %v\n", err)
 			break
 		}
+
+		bundleDuration := time.Since(bundleStart)
 
 		// Save bundle
+		saveStart := time.Now()
 		if err := mgr.SaveBundle(ctx, b, !verbose); err != nil {
-			fmt.Fprintf(os.Stderr, "[Sync] Error saving bundle %06d: %v\n", b.BundleNumber, err)
+			fmt.Fprintf(os.Stderr, "[Sync] ✗ Error saving bundle %06d: %v\n", b.BundleNumber, err)
 			break
 		}
+		saveDuration := time.Since(saveStart)
 
 		fetchedCount++
+		totalOps += len(b.Operations)
+		totalDIDs += b.DIDCount
 
-		if !verbose {
-			fmt.Fprintf(os.Stderr, "[Sync] ✓ %06d | %d ops, %d DIDs\n",
-				b.BundleNumber, len(b.Operations), b.DIDCount)
+		// ✨ Enhanced progress log
+		totalElapsed := time.Since(cycleStart)
+		bundlesPerSec := float64(fetchedCount) / totalElapsed.Seconds()
+		opsPerSec := float64(totalOps) / totalElapsed.Seconds()
+
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[Sync] ✓ Bundle %06d | %d ops, %d DIDs | fetch: %s, save: %s, total: %s\n",
+				b.BundleNumber, len(b.Operations), b.DIDCount,
+				bundleDuration.Round(time.Millisecond),
+				saveDuration.Round(time.Millisecond),
+				totalElapsed.Round(time.Millisecond))
+		} else {
+			fmt.Fprintf(os.Stderr, "[Sync] ✓ %06d | %d ops, %d DIDs | %.1f b/s, %.0f ops/s | %s total\n",
+				b.BundleNumber, len(b.Operations), b.DIDCount,
+				bundlesPerSec, opsPerSec, totalElapsed.Round(time.Second))
 		}
 
+		// Small delay to prevent hammering
 		time.Sleep(500 * time.Millisecond)
 	}
 }

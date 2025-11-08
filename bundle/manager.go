@@ -1104,6 +1104,10 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		prevBundle, err := m.LoadBundle(ctx, lastBundle.BundleNumber)
 		if err == nil {
 			_, prevBoundaryCIDs = m.operations.GetBoundaryCIDs(prevBundle.Operations)
+			if !quiet {
+				m.logger.Printf("Previous bundle %06d has %d boundary CIDs at %s",
+					lastBundle.BundleNumber, len(prevBoundaryCIDs), lastBundle.EndTime.Format(time.RFC3339))
+			}
 		}
 	}
 
@@ -1111,19 +1115,19 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 	if m.mempool.Count() > 0 {
 		mempoolLastTime := m.mempool.GetLastTime()
 		if mempoolLastTime != "" {
-			afterTime = mempoolLastTime
 			if !quiet {
-				m.logger.Printf("Continuing from mempool cursor: %s (have %d ops)",
-					afterTime, m.mempool.Count())
+				m.logger.Printf("Mempool has %d ops, last at %s", m.mempool.Count(), mempoolLastTime)
 			}
+			afterTime = mempoolLastTime
 		}
 	}
 
 	if !quiet {
 		m.logger.Printf("Preparing bundle %06d (mempool: %d ops)...", nextBundleNum, m.mempool.Count())
+		m.logger.Printf("Starting cursor: %s", afterTime)
 	}
 
-	// Track total fetches across all attempts
+	// Track total fetches and timing
 	totalFetches := 0
 	maxAttempts := 50
 	attempt := 0
@@ -1135,7 +1139,8 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		needed := types.BUNDLE_SIZE - m.mempool.Count()
 
 		if !quiet && attempt > 1 {
-			m.logger.Printf("  Attempt %d: Need %d more ops...", attempt, needed)
+			m.logger.Printf("  Attempt %d: Need %d more ops, cursor: %s",
+				attempt, needed, afterTime[:19])
 		}
 
 		newOps, fetchCount, err := m.syncer.FetchToMempool(
@@ -1145,10 +1150,9 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 			needed,
 			quiet,
 			m.mempool.Count(),
-			totalFetches, // Pass current total
+			totalFetches,
 		)
 
-		// Update total fetch counter
 		totalFetches += fetchCount
 
 		// Check if we got an incomplete batch
@@ -1162,12 +1166,19 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 				return nil, fmt.Errorf("chronological validation failed: %w", addErr)
 			}
 
-			if !quiet && added > 0 {
-				m.logger.Printf("  Added %d new operations (mempool now: %d)", added, m.mempool.Count())
-			}
+			// ✨ ALWAYS update cursor from mempool (source of truth)
+			afterTime = m.mempool.GetLastTime()
 
-			// Update cursor for next fetch
-			afterTime = newOps[len(newOps)-1].CreatedAt.Format(time.RFC3339Nano)
+			if !quiet && added > 0 {
+				addRejected := len(newOps) - added
+				if addRejected > 0 {
+					m.logger.Printf("  Added %d ops (mempool: %d, rejected: %d dupes, cursor: %s)",
+						added, m.mempool.Count(), addRejected, afterTime[:19])
+				} else {
+					m.logger.Printf("  Added %d ops (mempool: %d, cursor: %s)",
+						added, m.mempool.Count(), afterTime[:19])
+				}
+			}
 		}
 
 		// Stop if caught up or error
@@ -1225,9 +1236,10 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 
 	if !quiet {
 		avgPerFetch := float64(types.BUNDLE_SIZE) / float64(totalFetches)
-		m.logger.Printf("✓ Bundle %06d ready (%d ops, %d DIDs) - %d fetches in %s (avg %.0f ops/fetch)",
+		throughput := float64(types.BUNDLE_SIZE) / totalDuration.Seconds()
+		m.logger.Printf("✓ Bundle %06d ready (%d ops, %d DIDs) - %d fetches in %s (avg %.0f unique/fetch, %.0f ops/sec)",
 			bundle.BundleNumber, len(bundle.Operations), bundle.DIDCount,
-			totalFetches, totalDuration.Round(time.Millisecond), avgPerFetch)
+			totalFetches, totalDuration.Round(time.Millisecond), avgPerFetch, throughput)
 	}
 
 	return bundle, nil
