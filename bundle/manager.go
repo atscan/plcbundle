@@ -1076,7 +1076,7 @@ func (m *Manager) VerifyChain(ctx context.Context) (*ChainVerificationResult, er
 	return result, nil
 }
 
-// FetchNextBundle delegates to sync.Fetcher
+// FetchNextBundle fetches operations and creates a bundle, looping until caught up
 func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, error) {
 	if m.plcClient == nil {
 		return nil, fmt.Errorf("PLC client not configured")
@@ -1115,13 +1115,25 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		m.logger.Printf("Preparing bundle %06d (mempool: %d ops)...", nextBundleNum, m.mempool.Count())
 	}
 
-	// ✨ Fetch operations if needed (FetchToMempool loops internally)
-	if m.mempool.Count() < types.BUNDLE_SIZE {
+	// ✨ NEW: Loop until we have enough OR catch up to latest
+	maxAttempts := 50 // Safety limit
+	attempt := 0
+	caughtUp := false
+
+	for m.mempool.Count() < types.BUNDLE_SIZE && attempt < maxAttempts {
+		attempt++
+
+		needed := types.BUNDLE_SIZE - m.mempool.Count()
+
+		if !quiet && attempt > 1 {
+			m.logger.Printf("  Attempt %d: Need %d more ops...", attempt, needed)
+		}
+
 		newOps, err := m.syncer.FetchToMempool(
 			ctx,
 			afterTime,
 			prevBoundaryCIDs,
-			types.BUNDLE_SIZE-m.mempool.Count(),
+			needed,
 			quiet,
 			m.mempool.Count(),
 		)
@@ -1135,35 +1147,62 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 			}
 
 			if !quiet && added > 0 {
-				m.logger.Printf("Added %d new operations (mempool now: %d)", added, m.mempool.Count())
+				m.logger.Printf("  Added %d new operations (mempool now: %d)", added, m.mempool.Count())
+			}
+
+			// Update cursor for next fetch
+			if len(newOps) > 0 {
+				afterTime = newOps[len(newOps)-1].CreatedAt.Format(time.RFC3339Nano)
 			}
 		}
 
-		// If fetch failed AND we don't have enough, return error
-		if err != nil && m.mempool.Count() < types.BUNDLE_SIZE {
-			m.mempool.Save()
-			return nil, err
+		// Check if we caught up (got incomplete batch)
+		if err != nil || len(newOps) == 0 {
+			caughtUp = true
+			if !quiet {
+				m.logger.Printf("  Caught up to latest PLC data")
+			}
+			break
+		}
+
+		// If we got a full batch but still need more, continue looping
+		if len(newOps) > 0 && m.mempool.Count() < types.BUNDLE_SIZE {
+			if !quiet {
+				m.logger.Printf("  Got full batch, fetching more...")
+			}
+			continue
+		}
+
+		// If we have enough, break
+		if m.mempool.Count() >= types.BUNDLE_SIZE {
+			break
 		}
 	}
 
+	// Save mempool state
+	m.mempool.Save()
+
 	// Check if we have enough for a bundle
 	if m.mempool.Count() < types.BUNDLE_SIZE {
-		m.mempool.Save()
-		return nil, fmt.Errorf("insufficient operations: have %d, need %d (no more available)",
-			m.mempool.Count(), types.BUNDLE_SIZE)
+		if caughtUp {
+			return nil, fmt.Errorf("insufficient operations: have %d, need %d (caught up to latest PLC data)",
+				m.mempool.Count(), types.BUNDLE_SIZE)
+		} else {
+			return nil, fmt.Errorf("insufficient operations: have %d, need %d (max attempts reached)",
+				m.mempool.Count(), types.BUNDLE_SIZE)
+		}
 	}
 
 	// Create bundle
 	operations, err := m.mempool.Take(types.BUNDLE_SIZE)
 	if err != nil {
-		m.mempool.Save()
 		return nil, err
 	}
 
-	// Create bundle structure directly
+	// Create bundle structure
 	syncBundle := internalsync.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash, m.operations)
 
-	// Convert from sync.Bundle to bundle.Bundle inline
+	// Convert to bundle.Bundle
 	bundle := &Bundle{
 		BundleNumber: syncBundle.BundleNumber,
 		StartTime:    syncBundle.StartTime,
@@ -1175,10 +1214,12 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		BoundaryCIDs: syncBundle.BoundaryCIDs,
 		Compressed:   syncBundle.Compressed,
 		CreatedAt:    syncBundle.CreatedAt,
-		// Note: Hash fields are empty here, will be calculated in SaveBundle
 	}
 
-	m.mempool.Save()
+	if !quiet {
+		m.logger.Printf("✓ Bundle %06d ready (%d ops, %d DIDs)",
+			bundle.BundleNumber, len(bundle.Operations), bundle.DIDCount)
+	}
 
 	return bundle, nil
 }

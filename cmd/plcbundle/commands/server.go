@@ -310,21 +310,11 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool, resolve
 		startBundle = lastBundle.BundleNumber + 1
 	}
 
-	isInitialSync := (lastBundle == nil || lastBundle.BundleNumber < 10)
-
-	if isInitialSync && !verbose {
-		fmt.Fprintf(os.Stderr, "[Sync] Initial sync - fast loading mode (bundle %06d → ...)\n", startBundle)
-	} else if verbose {
-		fmt.Fprintf(os.Stderr, "[Sync] Checking for new bundles (current: %06d)...\n", startBundle-1)
-	}
-
 	mempoolBefore := mgr.GetMempoolStats()["count"].(int)
 	fetchedCount := 0
-	consecutiveErrors := 0
 
+	// ✨ SIMPLIFIED: Just keep calling FetchNextBundle until it fails
 	for {
-		currentBundle := startBundle + fetchedCount
-
 		b, err := mgr.FetchNextBundle(ctx, !verbose)
 		if err != nil {
 			if isEndOfDataError(err) {
@@ -334,30 +324,20 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool, resolve
 
 				if fetchedCount > 0 {
 					fmt.Fprintf(os.Stderr, "[Sync] ✓ Bundle %06d | Synced: %d | Mempool: %d (+%d) | %dms\n",
-						currentBundle-1, fetchedCount, mempoolAfter, addedOps, duration.Milliseconds())
-				} else if !isInitialSync {
+						startBundle+fetchedCount-1, fetchedCount, mempoolAfter, addedOps, duration.Milliseconds())
+				} else {
 					fmt.Fprintf(os.Stderr, "[Sync] ✓ Bundle %06d | Up to date | Mempool: %d (+%d) | %dms\n",
 						startBundle-1, mempoolAfter, addedOps, duration.Milliseconds())
 				}
 				break
 			}
 
-			consecutiveErrors++
-			if verbose {
-				fmt.Fprintf(os.Stderr, "[Sync] Error fetching bundle %06d: %v\n", currentBundle, err)
-			}
-
-			if consecutiveErrors >= 3 {
-				fmt.Fprintf(os.Stderr, "[Sync] Too many errors, stopping\n")
-				break
-			}
-
-			time.Sleep(5 * time.Second)
-			continue
+			// Real error
+			fmt.Fprintf(os.Stderr, "[Sync] Error: %v\n", err)
+			break
 		}
 
-		consecutiveErrors = 0
-
+		// Save bundle
 		if err := mgr.SaveBundle(ctx, b, !verbose); err != nil {
 			fmt.Fprintf(os.Stderr, "[Sync] Error saving bundle %06d: %v\n", b.BundleNumber, err)
 			break
@@ -366,12 +346,8 @@ func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool, resolve
 		fetchedCount++
 
 		if !verbose {
-			fmt.Fprintf(os.Stderr, "[Sync] ✓ %06d | hash=%s | content=%s | %d ops, %d DIDs\n",
-				b.BundleNumber,
-				b.Hash[:16]+"...",
-				b.ContentHash[:16]+"...",
-				len(b.Operations),
-				b.DIDCount)
+			fmt.Fprintf(os.Stderr, "[Sync] ✓ %06d | %d ops, %d DIDs\n",
+				b.BundleNumber, len(b.Operations), b.DIDCount)
 		}
 
 		time.Sleep(500 * time.Millisecond)

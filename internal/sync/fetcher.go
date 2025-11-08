@@ -27,6 +27,7 @@ func NewFetcher(plcClient *plcclient.Client, operations *storage.Operations, log
 }
 
 // FetchToMempool fetches operations and returns them
+// Returns empty slice + nil error when caught up (incomplete batch received)
 func (f *Fetcher) FetchToMempool(
 	ctx context.Context,
 	afterTime string,
@@ -59,13 +60,15 @@ func (f *Fetcher) FetchToMempool(
 		}
 
 		if !quiet {
-			f.logger.Printf("  Fetch #%d: requesting %d operations", fetchNum+1, batchSize)
+			f.logger.Printf("  Fetch #%d: requesting %d operations (after: %s)",
+				fetchNum+1, batchSize, currentAfter[:19])
 		}
 
 		batch, err := f.plcClient.Export(ctx, plcclient.ExportOptions{
 			Count: batchSize,
 			After: currentAfter,
 		})
+
 		if err != nil {
 			return allNewOps, fmt.Errorf("export failed: %w", err)
 		}
@@ -74,15 +77,23 @@ func (f *Fetcher) FetchToMempool(
 			if !quiet {
 				f.logger.Printf("  No more operations available from PLC")
 			}
-			break
+			// Return what we have (might be incomplete)
+			return allNewOps, nil
 		}
 
-		// Deduplicate against boundary CIDs only
-		// Mempool will handle deduplication of operations already in mempool
+		// Deduplicate
+		beforeDedup := len(allNewOps)
 		for _, op := range batch {
 			if !seenCIDs[op.CID] {
 				seenCIDs[op.CID] = true
 				allNewOps = append(allNewOps, op)
+			}
+		}
+
+		if !quiet && len(batch) > 0 {
+			deduped := len(batch) - (len(allNewOps) - beforeDedup)
+			if deduped > 0 {
+				f.logger.Printf("  Received %d ops (%d duplicates filtered)", len(batch), deduped)
 			}
 		}
 
@@ -91,21 +102,20 @@ func (f *Fetcher) FetchToMempool(
 			currentAfter = batch[len(batch)-1].CreatedAt.Format(time.RFC3339Nano)
 		}
 
-		// Stop if we got less than requested (caught up)
+		// ✨ KEY: Stop if we got incomplete batch (caught up!)
 		if len(batch) < batchSize {
 			if !quiet {
-				f.logger.Printf("  Received incomplete batch (%d/%d), caught up to latest", len(batch), batchSize)
+				f.logger.Printf("  Received incomplete batch (%d/%d) → caught up to latest",
+					len(batch), batchSize)
 			}
+			return allNewOps, nil
+		}
+
+		// If we have enough, stop
+		if len(allNewOps) >= target {
 			break
 		}
 	}
 
-	if len(allNewOps) > 0 {
-		if !quiet {
-			f.logger.Printf("✓ Fetch complete: %d operations", len(allNewOps))
-		}
-		return allNewOps, nil
-	}
-
-	return nil, fmt.Errorf("no operations available (reached latest data)")
+	return allNewOps, nil
 }
