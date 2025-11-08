@@ -66,7 +66,7 @@ func BackfillCommand(args []string) error {
 				break
 			}
 
-			if err := mgr.SaveBundle(ctx, bundle, !*verbose); err != nil {
+			if _, err := mgr.SaveBundle(ctx, bundle, !*verbose); err != nil {
 				return fmt.Errorf("error saving: %w", err)
 			}
 

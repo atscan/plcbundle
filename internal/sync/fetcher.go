@@ -17,6 +17,14 @@ type Fetcher struct {
 	logger     types.Logger
 }
 
+// MempoolInterface defines what we need from mempool
+type MempoolInterface interface {
+	Add(ops []plcclient.PLCOperation) (int, error)
+	Save() error
+	Count() int
+	GetLastTime() string
+}
+
 // NewFetcher creates a new fetcher
 func NewFetcher(plcClient *plcclient.Client, operations *storage.Operations, logger types.Logger) *Fetcher {
 	return &Fetcher{
@@ -26,14 +34,14 @@ func NewFetcher(plcClient *plcclient.Client, operations *storage.Operations, log
 	}
 }
 
-// FetchToMempool fetches operations and returns them
+// FetchToMempool fetches operations and adds them to mempool (with auto-save)
 func (f *Fetcher) FetchToMempool(
 	ctx context.Context,
 	afterTime string,
 	prevBoundaryCIDs map[string]bool,
 	target int,
 	quiet bool,
-	currentMempoolCount int,
+	mempool MempoolInterface, // NEW: pass mempool directly
 	totalFetchesSoFar int,
 ) ([]plcclient.PLCOperation, int, error) {
 
@@ -100,7 +108,6 @@ func (f *Fetcher) FetchToMempool(
 			return allNewOps, fetchesMade, nil
 		}
 
-		// Store counts for metrics
 		originalBatchSize := len(batch)
 		totalReceived += originalBatchSize
 
@@ -117,16 +124,37 @@ func (f *Fetcher) FetchToMempool(
 		dupesFiltered := originalBatchSize - uniqueAdded
 		totalDupes += dupesFiltered
 
-		// ✨ Show fetch result with running totals
+		// Show fetch result with running totals
 		if !quiet {
 			opsPerSec := float64(originalBatchSize) / fetchDuration.Seconds()
 
 			if dupesFiltered > 0 {
-				f.logger.Printf("  → +%d unique (%d dupes) in %s • Running: %d/%d unique (%.0f ops/sec)",
+				f.logger.Printf("  → +%d unique (%d dupes) in %s • Running: %d/%d (%.0f ops/sec)",
 					uniqueAdded, dupesFiltered, fetchDuration, len(allNewOps), target, opsPerSec)
 			} else {
 				f.logger.Printf("  → +%d unique in %s • Running: %d/%d (%.0f ops/sec)",
 					uniqueAdded, fetchDuration, len(allNewOps), target, opsPerSec)
+			}
+		}
+
+		// ✨ ADD TO MEMPOOL AND SAVE after each fetch
+		if uniqueAdded > 0 && mempool != nil {
+			added, addErr := mempool.Add(allNewOps[beforeDedup:])
+			if addErr != nil {
+				// Save before returning error
+				mempool.Save()
+				return allNewOps, fetchesMade, fmt.Errorf("mempool add failed: %w", addErr)
+			}
+
+			// ✨ Auto-save after each successful add
+			if err := mempool.Save(); err != nil {
+				f.logger.Printf("  Warning: failed to save mempool: %v", err)
+			}
+
+			if !quiet && added > 0 {
+				cursor := mempool.GetLastTime()
+				f.logger.Printf("  Saved to mempool: %d ops (total: %d, cursor: %s)",
+					added, mempool.Count(), cursor[:19])
 			}
 		}
 
@@ -135,7 +163,7 @@ func (f *Fetcher) FetchToMempool(
 			currentAfter = batch[len(batch)-1].CreatedAt.Format(time.RFC3339Nano)
 		}
 
-		// Check completeness using ORIGINAL batch size
+		// Check completeness
 		if originalBatchSize < batchSize {
 			if !quiet {
 				f.logger.Printf("  Incomplete batch (%d/%d) → caught up", originalBatchSize, batchSize)
@@ -143,17 +171,19 @@ func (f *Fetcher) FetchToMempool(
 			return allNewOps, fetchesMade, nil
 		}
 
-		// If we have enough unique ops, stop
 		if len(allNewOps) >= target {
 			break
 		}
 	}
 
-	// ✨ Summary at the end
+	// Summary
 	if !quiet && fetchesMade > 0 {
-		dedupRate := float64(totalDupes) / float64(totalReceived) * 100
-		f.logger.Printf("  ✓ Fetched %d ops total, %d unique (%.1f%% dedup rate)",
-			totalReceived, len(allNewOps), dedupRate)
+		dedupRate := 0.0
+		if totalReceived > 0 {
+			dedupRate = float64(totalDupes) / float64(totalReceived) * 100
+		}
+		f.logger.Printf("  ✓ Collected %d unique ops from %d fetches (%.1f%% dedup)",
+			len(allNewOps), fetchesMade, dedupRate)
 	}
 
 	return allNewOps, fetchesMade, nil

@@ -408,9 +408,10 @@ func (m *Manager) loadBundleFromDisk(ctx context.Context, bundleNumber int) (*Bu
 }
 
 // SaveBundle saves a bundle to disk and updates the index
-func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) error {
+// Returns the DID index update duration
+func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (time.Duration, error) {
 	if err := bundle.ValidateForSave(); err != nil {
-		return fmt.Errorf("bundle validation failed: %w", err)
+		return 0, fmt.Errorf("bundle validation failed: %w", err)
 	}
 
 	path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", bundle.BundleNumber))
@@ -418,7 +419,7 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) er
 	// Save to disk
 	uncompressedHash, compressedHash, uncompressedSize, compressedSize, err := m.operations.SaveBundle(path, bundle.Operations)
 	if err != nil {
-		return fmt.Errorf("failed to save bundle: %w", err)
+		return 0, fmt.Errorf("failed to save bundle: %w", err)
 	}
 
 	bundle.ContentHash = uncompressedHash
@@ -448,10 +449,10 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) er
 
 	// Save index
 	if err := m.SaveIndex(); err != nil {
-		return fmt.Errorf("failed to save index: %w", err)
+		return 0, fmt.Errorf("failed to save index: %w", err)
 	}
 
-	// Clean up old mempool (silent unless verbose)
+	// Clean up old mempool
 	oldMempoolFile := m.mempool.GetFilename()
 	if err := m.mempool.Delete(); err != nil && !quiet {
 		m.logger.Printf("Warning: failed to delete old mempool %s: %v", oldMempoolFile, err)
@@ -463,19 +464,20 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) er
 
 	newMempool, err := mempool.NewMempool(m.config.BundleDir, nextBundle, minTimestamp, m.logger)
 	if err != nil {
-		return fmt.Errorf("failed to create new mempool: %w", err)
+		return 0, fmt.Errorf("failed to create new mempool: %w", err)
 	}
 
 	m.mempool = newMempool
 
-	// Update DID index if enabled (ONLY when bundle is created)
+	// ✨ Update DID index if enabled and track timing
+	var indexUpdateDuration time.Duration
 	if m.didIndex != nil && m.didIndex.Exists() {
 		indexUpdateStart := time.Now()
 
 		if err := m.updateDIDIndexForBundle(ctx, bundle); err != nil {
 			m.logger.Printf("Warning: failed to update DID index: %v", err)
 		} else {
-			indexUpdateDuration := time.Since(indexUpdateStart)
+			indexUpdateDuration = time.Since(indexUpdateStart)
 
 			if !quiet {
 				m.logger.Printf("  [DID Index] Updated in %s", indexUpdateDuration)
@@ -483,7 +485,7 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) er
 		}
 	}
 
-	return nil
+	return indexUpdateDuration, nil
 }
 
 // GetMempoolStats returns mempool statistics
@@ -1127,7 +1129,6 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		m.logger.Printf("Starting cursor: %s", afterTime)
 	}
 
-	// Track total fetches and timing
 	totalFetches := 0
 	maxAttempts := 50
 	attempt := 0
@@ -1149,7 +1150,7 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 			prevBoundaryCIDs,
 			needed,
 			quiet,
-			m.mempool.Count(),
+			m.mempool,
 			totalFetches,
 		)
 
@@ -1158,27 +1159,9 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		// Check if we got an incomplete batch
 		gotIncompleteBatch := len(newOps) > 0 && len(newOps) < needed && err == nil
 
-		// Add operations if we got any
-		if len(newOps) > 0 {
-			added, addErr := m.mempool.Add(newOps)
-			if addErr != nil {
-				m.mempool.Save()
-				return nil, fmt.Errorf("chronological validation failed: %w", addErr)
-			}
-
-			// ✨ ALWAYS update cursor from mempool (source of truth)
+		// Update cursor from mempool if we got new ops
+		if len(newOps) > 0 && m.mempool.Count() > 0 {
 			afterTime = m.mempool.GetLastTime()
-
-			if !quiet && added > 0 {
-				addRejected := len(newOps) - added
-				if addRejected > 0 {
-					m.logger.Printf("  Added %d ops (mempool: %d, rejected: %d dupes, cursor: %s)",
-						added, m.mempool.Count(), addRejected, afterTime[:19])
-				} else {
-					m.logger.Printf("  Added %d ops (mempool: %d, cursor: %s)",
-						added, m.mempool.Count(), afterTime[:19])
-				}
-			}
 		}
 
 		// Stop if caught up or error
@@ -1190,18 +1173,15 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 			break
 		}
 
-		// If we have enough, break
 		if m.mempool.Count() >= types.BUNDLE_SIZE {
 			break
 		}
 	}
 
-	// Save mempool state
-	m.mempool.Save()
+	// ✨ REMOVED: m.mempool.Save() - now handled by FetchToMempool
 
 	totalDuration := time.Since(attemptStart)
 
-	// Check if we have enough for a bundle
 	if m.mempool.Count() < types.BUNDLE_SIZE {
 		if caughtUp {
 			return nil, fmt.Errorf("insufficient operations: have %d, need %d (caught up to latest PLC data)",
@@ -1218,7 +1198,6 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		return nil, err
 	}
 
-	// Create bundle structure
 	syncBundle := internalsync.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash, m.operations)
 
 	bundle := &Bundle{
@@ -1237,7 +1216,7 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 	if !quiet {
 		avgPerFetch := float64(types.BUNDLE_SIZE) / float64(totalFetches)
 		throughput := float64(types.BUNDLE_SIZE) / totalDuration.Seconds()
-		m.logger.Printf("✓ Bundle %06d ready (%d ops, %d DIDs) - %d fetches in %s (avg %.0f unique/fetch, %.0f ops/sec)",
+		m.logger.Printf("✓ Bundle %06d ready (%d ops, %d DIDs) - %d fetches in %s (avg %.0f/fetch, %.0f ops/sec)",
 			bundle.BundleNumber, len(bundle.Operations), bundle.DIDCount,
 			totalFetches, totalDuration.Round(time.Millisecond), avgPerFetch, throughput)
 	}

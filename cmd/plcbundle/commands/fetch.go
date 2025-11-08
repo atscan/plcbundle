@@ -88,7 +88,8 @@ func FetchCommand(args []string) error {
 		// Reset error counter on success
 		consecutiveErrors = 0
 
-		if err := mgr.SaveBundle(ctx, b, !*verbose); err != nil {
+		_, err = mgr.SaveBundle(ctx, b, !*verbose)
+		if err != nil {
 			return fmt.Errorf("error saving bundle %06d: %w", b.BundleNumber, err)
 		}
 

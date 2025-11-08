@@ -28,7 +28,7 @@ type BundleManager interface {
 	RefreshMempool() error
 	ClearMempool() error
 	FetchNextBundle(ctx context.Context, quiet bool) (*bundle.Bundle, error)
-	SaveBundle(ctx context.Context, b *bundle.Bundle, quiet bool) error
+	SaveBundle(ctx context.Context, b *bundle.Bundle, quiet bool) (time.Duration, error) // ✨ Updated signature
 	GetDIDIndexStats() map[string]interface{}
 	GetDIDIndex() *didindex.Manager
 	BuildDIDIndex(ctx context.Context, progress func(int, int)) error
@@ -37,6 +37,7 @@ type BundleManager interface {
 	GetLatestDIDOperation(ctx context.Context, did string) (*plcclient.PLCOperation, error)
 	LoadOperation(ctx context.Context, bundleNum, position int) (*plcclient.PLCOperation, error)
 	CloneFromRemote(ctx context.Context, opts internalsync.CloneOptions) (*internalsync.CloneResult, error)
+	ResolveDID(ctx context.Context, did string) (*bundle.ResolveDIDResult, error)
 }
 
 // PLCOperationWithLocation wraps operation with location info
