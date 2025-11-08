@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"sync"
+	"time"
 )
 
 // newShardBuilder creates a new shard builder
@@ -214,12 +217,15 @@ func (dim *Manager) consolidateShard(shardNum uint8) (int64, error) {
 	return int64(len(builder.entries)), nil
 }
 
-// UpdateIndexForBundle adds operations from a new bundle (incremental + ATOMIC)
+// UpdateIndexForBundle adds operations from a new bundle (incremental + ATOMIC + PARALLEL)
 func (dim *Manager) UpdateIndexForBundle(ctx context.Context, bundle *BundleData) error {
 	dim.indexMu.Lock()
 	defer dim.indexMu.Unlock()
 
-	// Group operations by shard
+	totalStart := time.Now()
+
+	// STEP 1: Group operations by shard
+	groupStart := time.Now()
 	shardOps := make(map[uint8]map[string][]OpLocation)
 
 	for pos, op := range bundle.Operations {
@@ -241,24 +247,91 @@ func (dim *Manager) UpdateIndexForBundle(ctx context.Context, bundle *BundleData
 		})
 	}
 
-	// PHASE 1: Write ALL shards to .tmp files FIRST
+	groupDuration := time.Since(groupStart)
+	dim.logger.Printf("  [DID Index] Grouped operations into %d shards in %s",
+		len(shardOps), groupDuration)
+
+	// STEP 2: Write ALL shards to .tmp files FIRST (PARALLEL)
+	writeStart := time.Now()
+
 	tmpShards := make(map[uint8]string)
+	var tmpShardsMu sync.Mutex
 	var deltaCount int64
+	var deltaCountMu sync.Mutex
 
-	for shardNum, newOps := range shardOps {
-		tmpPath := filepath.Join(dim.shardDir, fmt.Sprintf("%02x.idx.tmp", shardNum))
+	// Error handling
+	errChan := make(chan error, len(shardOps))
 
-		addedCount, err := dim.updateShardToTemp(shardNum, newOps, tmpPath)
-		if err != nil {
-			dim.cleanupTempShards(tmpShards)
-			return fmt.Errorf("failed to prepare shard %02x: %w", shardNum, err)
-		}
-
-		tmpShards[shardNum] = tmpPath
-		deltaCount += addedCount
+	// Worker pool
+	workers := runtime.NumCPU()
+	if workers > len(shardOps) {
+		workers = len(shardOps)
+	}
+	if workers < 1 {
+		workers = 1
 	}
 
-	// PHASE 2: Atomically commit ALL shards
+	semaphore := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+
+	dim.logger.Printf("  [DID Index] Updating %d shards in parallel (%d workers)...",
+		len(shardOps), workers)
+
+	// Process each shard in parallel
+	for shardNum, newOps := range shardOps {
+		wg.Add(1)
+		go func(sNum uint8, ops map[string][]OpLocation) {
+			defer wg.Done()
+
+			// Acquire semaphore (limit concurrency)
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			shardStart := time.Now()
+			tmpPath := filepath.Join(dim.shardDir, fmt.Sprintf("%02x.idx.tmp", sNum))
+
+			addedCount, err := dim.updateShardToTemp(sNum, ops, tmpPath)
+			if err != nil {
+				errChan <- fmt.Errorf("shard %02x: %w", sNum, err)
+				return
+			}
+
+			shardDuration := time.Since(shardStart)
+
+			// Update shared state
+			tmpShardsMu.Lock()
+			tmpShards[sNum] = tmpPath
+			tmpShardsMu.Unlock()
+
+			deltaCountMu.Lock()
+			deltaCount += addedCount
+			deltaCountMu.Unlock()
+
+			// Debug log for each shard
+			if dim.verbose {
+				dim.logger.Printf("    Shard %02x: +%d DIDs in %s (%d ops)",
+					sNum, addedCount, shardDuration, len(ops))
+			}
+		}(shardNum, newOps)
+	}
+
+	// Wait for all workers
+	wg.Wait()
+	close(errChan)
+
+	writeDuration := time.Since(writeStart)
+	dim.logger.Printf("  [DID Index] Wrote %d temp files in %s (%.1f shards/sec)",
+		len(tmpShards), writeDuration, float64(len(tmpShards))/writeDuration.Seconds())
+
+	// Check for errors
+	if err := <-errChan; err != nil {
+		dim.cleanupTempShards(tmpShards)
+		return err
+	}
+
+	// STEP 3: Atomically commit ALL shards
+	commitStart := time.Now()
+
 	for shardNum, tmpPath := range tmpShards {
 		finalPath := filepath.Join(dim.shardDir, fmt.Sprintf("%02x.idx", shardNum))
 
@@ -271,11 +344,33 @@ func (dim *Manager) UpdateIndexForBundle(ctx context.Context, bundle *BundleData
 		dim.invalidateShard(shardNum)
 	}
 
-	// PHASE 3: Update config
+	commitDuration := time.Since(commitStart)
+
+	// STEP 4: Update config
+	configStart := time.Now()
+
 	dim.config.TotalDIDs += deltaCount
 	dim.config.LastBundle = bundle.BundleNumber
 
-	return dim.saveIndexConfig()
+	if err := dim.saveIndexConfig(); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	configDuration := time.Since(configStart)
+	totalDuration := time.Since(totalStart)
+
+	// Summary log
+	dim.logger.Printf("  [DID Index] ✓ Bundle %06d indexed: +%d DIDs, %d shards updated in %s",
+		bundle.BundleNumber, deltaCount, len(tmpShards), totalDuration)
+
+	if dim.verbose {
+		dim.logger.Printf("    Breakdown: group=%s write=%s commit=%s config=%s",
+			groupDuration, writeDuration, commitDuration, configDuration)
+		dim.logger.Printf("    Throughput: %.0f ops/sec",
+			float64(len(bundle.Operations))/totalDuration.Seconds())
+	}
+
+	return nil
 }
 
 // updateShardToTemp updates a shard and writes to temp file

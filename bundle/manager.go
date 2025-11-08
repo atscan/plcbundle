@@ -470,8 +470,16 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) er
 
 	// Update DID index if enabled (ONLY when bundle is created)
 	if m.didIndex != nil && m.didIndex.Exists() {
+		indexUpdateStart := time.Now()
+
 		if err := m.updateDIDIndexForBundle(ctx, bundle); err != nil {
 			m.logger.Printf("Warning: failed to update DID index: %v", err)
+		} else {
+			indexUpdateDuration := time.Since(indexUpdateStart)
+
+			if !quiet {
+				m.logger.Printf("  [DID Index] Updated in %s", indexUpdateDuration)
+			}
 		}
 	}
 
@@ -1099,7 +1107,7 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		}
 	}
 
-	// ✨ Use mempool's last time if available
+	// Use mempool's last time if available
 	if m.mempool.Count() > 0 {
 		mempoolLastTime := m.mempool.GetLastTime()
 		if mempoolLastTime != "" {
@@ -1115,28 +1123,36 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		m.logger.Printf("Preparing bundle %06d (mempool: %d ops)...", nextBundleNum, m.mempool.Count())
 	}
 
-	// ✨ NEW: Loop until we have enough OR catch up to latest
-	maxAttempts := 50 // Safety limit
+	// Track total fetches across all attempts
+	totalFetches := 0
+	maxAttempts := 50
 	attempt := 0
 	caughtUp := false
+	attemptStart := time.Now()
 
 	for m.mempool.Count() < types.BUNDLE_SIZE && attempt < maxAttempts {
 		attempt++
-
 		needed := types.BUNDLE_SIZE - m.mempool.Count()
 
 		if !quiet && attempt > 1 {
 			m.logger.Printf("  Attempt %d: Need %d more ops...", attempt, needed)
 		}
 
-		newOps, err := m.syncer.FetchToMempool(
+		newOps, fetchCount, err := m.syncer.FetchToMempool(
 			ctx,
 			afterTime,
 			prevBoundaryCIDs,
 			needed,
 			quiet,
 			m.mempool.Count(),
+			totalFetches, // Pass current total
 		)
+
+		// Update total fetch counter
+		totalFetches += fetchCount
+
+		// Check if we got an incomplete batch
+		gotIncompleteBatch := len(newOps) > 0 && len(newOps) < needed && err == nil
 
 		// Add operations if we got any
 		if len(newOps) > 0 {
@@ -1151,26 +1167,16 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 			}
 
 			// Update cursor for next fetch
-			if len(newOps) > 0 {
-				afterTime = newOps[len(newOps)-1].CreatedAt.Format(time.RFC3339Nano)
-			}
+			afterTime = newOps[len(newOps)-1].CreatedAt.Format(time.RFC3339Nano)
 		}
 
-		// Check if we caught up (got incomplete batch)
-		if err != nil || len(newOps) == 0 {
+		// Stop if caught up or error
+		if err != nil || len(newOps) == 0 || gotIncompleteBatch {
 			caughtUp = true
-			if !quiet {
+			if !quiet && totalFetches > 0 {
 				m.logger.Printf("  Caught up to latest PLC data")
 			}
 			break
-		}
-
-		// If we got a full batch but still need more, continue looping
-		if len(newOps) > 0 && m.mempool.Count() < types.BUNDLE_SIZE {
-			if !quiet {
-				m.logger.Printf("  Got full batch, fetching more...")
-			}
-			continue
 		}
 
 		// If we have enough, break
@@ -1181,6 +1187,8 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 
 	// Save mempool state
 	m.mempool.Save()
+
+	totalDuration := time.Since(attemptStart)
 
 	// Check if we have enough for a bundle
 	if m.mempool.Count() < types.BUNDLE_SIZE {
@@ -1202,7 +1210,6 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 	// Create bundle structure
 	syncBundle := internalsync.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash, m.operations)
 
-	// Convert to bundle.Bundle
 	bundle := &Bundle{
 		BundleNumber: syncBundle.BundleNumber,
 		StartTime:    syncBundle.StartTime,
@@ -1217,8 +1224,10 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 	}
 
 	if !quiet {
-		m.logger.Printf("✓ Bundle %06d ready (%d ops, %d DIDs)",
-			bundle.BundleNumber, len(bundle.Operations), bundle.DIDCount)
+		avgPerFetch := float64(types.BUNDLE_SIZE) / float64(totalFetches)
+		m.logger.Printf("✓ Bundle %06d ready (%d ops, %d DIDs) - %d fetches in %s (avg %.0f ops/fetch)",
+			bundle.BundleNumber, len(bundle.Operations), bundle.DIDCount,
+			totalFetches, totalDuration.Round(time.Millisecond), avgPerFetch)
 	}
 
 	return bundle, nil

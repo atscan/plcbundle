@@ -35,7 +35,8 @@ func (f *Fetcher) FetchToMempool(
 	target int,
 	quiet bool,
 	currentMempoolCount int,
-) ([]plcclient.PLCOperation, error) {
+	totalFetchesSoFar int,
+) ([]plcclient.PLCOperation, int, error) {
 
 	seenCIDs := make(map[string]bool)
 
@@ -47,21 +48,33 @@ func (f *Fetcher) FetchToMempool(
 	currentAfter := afterTime
 	maxFetches := 20
 	var allNewOps []plcclient.PLCOperation
+	fetchesMade := 0
 
 	for fetchNum := 0; fetchNum < maxFetches; fetchNum++ {
+		fetchesMade++
 		remaining := target - len(allNewOps)
 		if remaining <= 0 {
 			break
 		}
 
-		batchSize := 1000
-		if remaining < 500 {
+		// ✨ SMART BATCH SIZING
+		var batchSize int
+		switch {
+		case remaining <= 50:
+			batchSize = 50 // Fetch exactly what we need (with small buffer)
+		case remaining <= 100:
+			batchSize = 100
+		case remaining <= 500:
 			batchSize = 200
+		default:
+			batchSize = 1000
 		}
 
+		fetchStart := time.Now()
+
 		if !quiet {
-			f.logger.Printf("  Fetch #%d: requesting %d operations (after: %s)",
-				fetchNum+1, batchSize, currentAfter[:19])
+			f.logger.Printf("  Fetch #%d: requesting %d operations (need %d, after: %s)",
+				totalFetchesSoFar+fetchesMade, batchSize, remaining, currentAfter[:19])
 		}
 
 		batch, err := f.plcClient.Export(ctx, plcclient.ExportOptions{
@@ -69,16 +82,17 @@ func (f *Fetcher) FetchToMempool(
 			After: currentAfter,
 		})
 
+		fetchDuration := time.Since(fetchStart)
+
 		if err != nil {
-			return allNewOps, fmt.Errorf("export failed: %w", err)
+			return allNewOps, fetchesMade, fmt.Errorf("export failed: %w", err)
 		}
 
 		if len(batch) == 0 {
 			if !quiet {
-				f.logger.Printf("  No more operations available from PLC")
+				f.logger.Printf("  No more operations available from PLC (in %s)", fetchDuration)
 			}
-			// Return what we have (might be incomplete)
-			return allNewOps, nil
+			return allNewOps, fetchesMade, nil
 		}
 
 		// Deduplicate
@@ -90,10 +104,19 @@ func (f *Fetcher) FetchToMempool(
 			}
 		}
 
-		if !quiet && len(batch) > 0 {
-			deduped := len(batch) - (len(allNewOps) - beforeDedup)
+		uniqueAdded := len(allNewOps) - beforeDedup
+		deduped := len(batch) - uniqueAdded
+
+		// ✨ DETAILED METRICS
+		if !quiet {
+			opsPerSec := float64(len(batch)) / fetchDuration.Seconds()
+
 			if deduped > 0 {
-				f.logger.Printf("  Received %d ops (%d duplicates filtered)", len(batch), deduped)
+				f.logger.Printf("  Received %d ops (%d unique, %d dupes) in %s (%.0f ops/sec)",
+					len(batch), uniqueAdded, deduped, fetchDuration, opsPerSec)
+			} else {
+				f.logger.Printf("  Received %d ops in %s (%.0f ops/sec)",
+					len(batch), fetchDuration, opsPerSec)
 			}
 		}
 
@@ -102,20 +125,24 @@ func (f *Fetcher) FetchToMempool(
 			currentAfter = batch[len(batch)-1].CreatedAt.Format(time.RFC3339Nano)
 		}
 
-		// ✨ KEY: Stop if we got incomplete batch (caught up!)
+		// Stop if we got incomplete batch (caught up!)
 		if len(batch) < batchSize {
 			if !quiet {
 				f.logger.Printf("  Received incomplete batch (%d/%d) → caught up to latest",
 					len(batch), batchSize)
 			}
-			return allNewOps, nil
+			return allNewOps, fetchesMade, nil
 		}
 
 		// If we have enough, stop
 		if len(allNewOps) >= target {
+			if !quiet {
+				f.logger.Printf("  ✓ Target reached (%d/%d unique ops collected)",
+					len(allNewOps), target)
+			}
 			break
 		}
 	}
 
-	return allNewOps, nil
+	return allNewOps, fetchesMade, nil
 }
