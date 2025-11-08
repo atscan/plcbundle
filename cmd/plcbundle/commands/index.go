@@ -263,6 +263,10 @@ func indexResolve(args []string) error {
 	ctx := context.Background()
 	fmt.Fprintf(os.Stderr, "Resolving: %s\n", did)
 
+	if *verbose {
+		mgr.GetDIDIndex().SetVerbose(true)
+	}
+
 	// Use unified resolution method with metrics
 	result, err := mgr.ResolveDID(ctx, did)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"golang.org/x/sys/unix"
 	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 )
 
@@ -40,8 +41,8 @@ func NewManager(baseDir string, logger Logger) *Manager {
 		shardDir:          shardDir,
 		configPath:        configPath,
 		shardCache:        make(map[uint8]*mmapShard),
-		maxCache:          25,
-		evictionThreshold: 25,
+		maxCache:          5,
+		evictionThreshold: 5,
 		config:            config,
 		logger:            logger,
 	}
@@ -130,7 +131,7 @@ func (dim *Manager) calculateShard(identifier string) uint8 {
 	return uint8(hash % DID_SHARD_COUNT)
 }
 
-// loadShard loads a shard from cache or disk (with mmap)
+// loadShard loads a shard from cache or disk (with madvise optimization)
 func (dim *Manager) loadShard(shardNum uint8) (*mmapShard, error) {
 	dim.cacheMu.Lock()
 	defer dim.cacheMu.Unlock()
@@ -138,6 +139,7 @@ func (dim *Manager) loadShard(shardNum uint8) (*mmapShard, error) {
 	// Check cache
 	if shard, exists := dim.shardCache[shardNum]; exists {
 		shard.lastUsed = time.Now()
+		shard.accessCount++ // Track for eviction
 		return shard, nil
 	}
 
@@ -183,11 +185,19 @@ func (dim *Manager) loadShard(shardNum uint8) (*mmapShard, error) {
 		return nil, fmt.Errorf("mmap failed: %w", err)
 	}
 
+	// ✨ NEW: Apply madvise hints
+	if err := dim.applyMadviseHints(data, info.Size()); err != nil {
+		if dim.verbose {
+			dim.logger.Printf("DEBUG: madvise failed (non-fatal): %v", err)
+		}
+	}
+
 	shard := &mmapShard{
-		shardNum: shardNum,
-		data:     data,
-		file:     file,
-		lastUsed: time.Now(),
+		shardNum:    shardNum,
+		data:        data,
+		file:        file,
+		lastUsed:    time.Now(),
+		accessCount: 1,
 	}
 
 	// Add to cache
@@ -199,6 +209,35 @@ func (dim *Manager) loadShard(shardNum uint8) (*mmapShard, error) {
 	}
 
 	return shard, nil
+}
+
+// applyMadviseHints applies OS-level memory hints for optimal performance
+func (dim *Manager) applyMadviseHints(data []byte, fileSize int64) error {
+	const headerPrefetchSize = 16 * 1024 // 16 KB for header + prefix + start of offset table
+
+	// 1. Prefetch critical header section (prefix index + offset table start)
+	if len(data) >= headerPrefetchSize {
+		if err := unix.Madvise(data[:headerPrefetchSize], unix.MADV_WILLNEED); err != nil {
+			if dim.verbose {
+				dim.logger.Printf("DEBUG: [madvise] Header prefetch failed: %v", err)
+			}
+		} else if dim.verbose {
+			dim.logger.Printf("DEBUG: [madvise] Prefetching header (%d KB) + marking rest as RANDOM",
+				headerPrefetchSize/1024)
+		}
+	}
+
+	// 2. Mark rest as random access (tells OS not to do read-ahead)
+	if err := unix.Madvise(data, unix.MADV_RANDOM); err != nil {
+		return err
+	}
+
+	if dim.verbose {
+		dim.logger.Printf("DEBUG: [madvise] Shard size: %.1f MB → RANDOM access pattern",
+			float64(fileSize)/(1024*1024))
+	}
+
+	return nil
 }
 
 // evictMultiple evicts multiple shards at once
@@ -231,9 +270,9 @@ func (dim *Manager) evictMultiple(count int) {
 	}
 }
 
-// searchShard performs binary search in a memory-mapped shard
+// searchShard performs optimized binary search using prefix index
 func (dim *Manager) searchShard(shard *mmapShard, identifier string) []OpLocation {
-	if shard.data == nil || len(shard.data) < 32 {
+	if shard.data == nil || len(shard.data) < 1056 {
 		return nil
 	}
 
@@ -245,33 +284,77 @@ func (dim *Manager) searchShard(shard *mmapShard, identifier string) []OpLocatio
 		return nil
 	}
 
+	version := binary.LittleEndian.Uint32(data[4:8])
 	entryCount := binary.LittleEndian.Uint32(data[9:13])
+
 	if entryCount == 0 {
 		return nil
 	}
 
-	if dim.verbose {
-		dim.logger.Printf("DEBUG: Searching %d entries for '%s'", entryCount, identifier)
+	// Determine search range using prefix index
+	left, right := 0, int(entryCount)
+
+	// NEW: Use prefix index to narrow range (only for v3+)
+	if version >= 3 && len(identifier) > 0 {
+		prefixByte := identifier[0]
+		prefixIndexPos := 32 + (int(prefixByte) * 4)
+
+		if prefixIndexPos+4 <= len(data) {
+			startIdx := binary.LittleEndian.Uint32(data[prefixIndexPos : prefixIndexPos+4])
+
+			if startIdx != 0xFFFFFFFF {
+				left = int(startIdx)
+
+				// Find end of this prefix range
+				for nextPrefix := int(prefixByte) + 1; nextPrefix < 256; nextPrefix++ {
+					nextPos := 32 + (nextPrefix * 4)
+					if nextPos+4 > len(data) {
+						break
+					}
+					nextIdx := binary.LittleEndian.Uint32(data[nextPos : nextPos+4])
+					if nextIdx != 0xFFFFFFFF {
+						right = int(nextIdx)
+						break
+					}
+				}
+
+				if dim.verbose {
+					dim.logger.Printf("DEBUG: Prefix index narrowed search: %d entries → %d entries (%.1f%% reduction)",
+						entryCount, right-left, (1.0-float64(right-left)/float64(entryCount))*100)
+				}
+			} else {
+				// No entries with this prefix
+				if dim.verbose {
+					dim.logger.Printf("DEBUG: Prefix index: no entries with prefix 0x%02x", prefixByte)
+				}
+				return nil
+			}
+		}
 	}
 
-	// Binary search
-	left, right := 0, int(entryCount)
+	if dim.verbose {
+		dim.logger.Printf("DEBUG: Binary search range: [%d, %d) of %d entries", left, right, entryCount)
+	}
+
+	// Binary search within narrowed range
 	attempts := 0
+	offsetTableStart := 1056 // After header + prefix index
 
 	for left < right {
 		attempts++
 		mid := (left + right) / 2
 
-		// O(1) offset lookup
-		entryOffset := dim.getEntryOffset(data, mid)
-		if entryOffset < 0 {
+		// Get entry offset from offset table
+		offsetPos := offsetTableStart + (mid * 4)
+		if offsetPos+4 > len(data) {
 			if dim.verbose {
-				dim.logger.Printf("DEBUG: Invalid entry offset at mid=%d", mid)
+				dim.logger.Printf("DEBUG: Offset position out of bounds")
 			}
 			return nil
 		}
 
-		// Read identifier at this position
+		entryOffset := int(binary.LittleEndian.Uint32(data[offsetPos : offsetPos+4]))
+
 		if entryOffset+DID_IDENTIFIER_LEN > len(data) {
 			if dim.verbose {
 				dim.logger.Printf("DEBUG: Entry offset out of bounds: %d + %d > %d",
@@ -288,19 +371,13 @@ func (dim *Manager) searchShard(shard *mmapShard, identifier string) []OpLocatio
 		}
 
 		// Compare
-		cmp := 0
-		if identifier < entryID {
-			cmp = -1
-		} else if identifier > entryID {
-			cmp = 1
-		}
-
-		if cmp == 0 {
+		if identifier == entryID {
 			if dim.verbose {
-				dim.logger.Printf("DEBUG: FOUND at mid=%d after %d attempts", mid, attempts)
+				dim.logger.Printf("DEBUG: FOUND at mid=%d after %d attempts (vs ~%d without prefix index)",
+					mid, attempts, logBase2(int(entryCount)))
 			}
 			return dim.readLocations(data, entryOffset)
-		} else if cmp < 0 {
+		} else if identifier < entryID {
 			right = mid
 		} else {
 			left = mid + 1
@@ -308,16 +385,28 @@ func (dim *Manager) searchShard(shard *mmapShard, identifier string) []OpLocatio
 	}
 
 	if dim.verbose {
-		dim.logger.Printf("DEBUG: NOT FOUND after %d attempts (left=%d, right=%d)",
-			attempts, left, right)
+		dim.logger.Printf("DEBUG: NOT FOUND after %d attempts", attempts)
 	}
 
 	return nil
 }
 
+// Helper function
+func logBase2(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	count := 0
+	for n > 1 {
+		n >>= 1
+		count++
+	}
+	return count
+}
+
 // getEntryOffset reads entry offset from offset table - O(1) lookup
 func (dim *Manager) getEntryOffset(data []byte, entryIndex int) int {
-	if len(data) < 32 {
+	if len(data) < 1056 {
 		return -1
 	}
 
@@ -326,8 +415,9 @@ func (dim *Manager) getEntryOffset(data []byte, entryIndex int) int {
 		return -1
 	}
 
-	// Offset table: 4 bytes per entry, starts at byte 32
-	offsetPos := 32 + (entryIndex * 4)
+	// Offset table starts at 1056 (after header + prefix index)
+	offsetTableStart := 1056
+	offsetPos := offsetTableStart + (entryIndex * 4)
 
 	if offsetPos+4 > len(data) {
 		return -1
@@ -380,6 +470,8 @@ func (dim *Manager) readLocations(data []byte, offset int) []OpLocation {
 // unmapShard unmaps and closes a shard
 func (dim *Manager) unmapShard(shard *mmapShard) {
 	if shard.data != nil {
+		unix.Madvise(shard.data, unix.MADV_DONTNEED)
+
 		syscall.Munmap(shard.data)
 	}
 	if shard.file != nil {
@@ -524,7 +616,7 @@ func (dim *Manager) writeShard(shardNum uint8, builder *ShardBuilder) error {
 	return nil
 }
 
-// writeShardToPath writes shard to a specific path
+// writeShardToPath writes shard to a specific path with prefix index
 func (dim *Manager) writeShardToPath(path string, shardNum uint8, builder *ShardBuilder) error {
 	// Sort identifiers for binary search
 	identifiers := make([]string, 0, len(builder.entries))
@@ -533,11 +625,36 @@ func (dim *Manager) writeShardToPath(path string, shardNum uint8, builder *Shard
 	}
 	sort.Strings(identifiers)
 
-	// Calculate entry offsets
-	offsetTable := make([]uint32, len(identifiers))
-	dataStartOffset := 32 + (len(identifiers) * 4)
+	if len(identifiers) == 0 {
+		// Write empty shard
+		return os.WriteFile(path, make([]byte, 0), 0644)
+	}
 
+	// Build prefix index: map first byte → first entry index with that prefix
+	prefixIndex := make([]uint32, 256)
+	for i := range prefixIndex {
+		prefixIndex[i] = 0xFFFFFFFF // Marker for "no entries"
+	}
+
+	for i, identifier := range identifiers {
+		if len(identifier) == 0 {
+			continue
+		}
+		prefixByte := identifier[0]
+
+		// Set to first occurrence only
+		if prefixIndex[prefixByte] == 0xFFFFFFFF {
+			prefixIndex[prefixByte] = uint32(i)
+		}
+	}
+
+	// Calculate entry offsets
+	offsetTableStart := 1056 // After header (32) + prefix index (1024)
+	dataStartOffset := offsetTableStart + (len(identifiers) * 4)
+
+	offsetTable := make([]uint32, len(identifiers))
 	currentOffset := dataStartOffset
+
 	for i, id := range identifiers {
 		offsetTable[i] = uint32(currentOffset)
 		locations := builder.entries[id]
@@ -555,15 +672,21 @@ func (dim *Manager) writeShardToPath(path string, shardNum uint8, builder *Shard
 	binary.LittleEndian.PutUint32(buf[4:8], DIDINDEX_VERSION)
 	buf[8] = shardNum
 	binary.LittleEndian.PutUint32(buf[9:13], uint32(len(identifiers)))
+	// bytes 13-31: reserved (zeros)
 
-	// Write offset table
-	offsetTableStart := 32
+	// Write prefix index (32-1055: 256 × 4 bytes)
+	for i, entryIdx := range prefixIndex {
+		pos := 32 + (i * 4)
+		binary.LittleEndian.PutUint32(buf[pos:pos+4], entryIdx)
+	}
+
+	// Write offset table (1056+)
 	for i, offset := range offsetTable {
 		pos := offsetTableStart + (i * 4)
 		binary.LittleEndian.PutUint32(buf[pos:pos+4], offset)
 	}
 
-	// Write entries
+	// Write entries (same as before)
 	for i, identifier := range identifiers {
 		offset := int(offsetTable[i])
 		locations := builder.entries[identifier]
@@ -591,7 +714,7 @@ func (dim *Manager) writeShardToPath(path string, shardNum uint8, builder *Shard
 	return os.WriteFile(path, buf, 0644)
 }
 
-// parseShardData parses binary shard data into builder
+// parseShardData parses binary shard data into builder (supports v2 and v3)
 func (dim *Manager) parseShardData(data []byte, builder *ShardBuilder) error {
 	if len(data) < 32 {
 		return nil
@@ -599,8 +722,11 @@ func (dim *Manager) parseShardData(data []byte, builder *ShardBuilder) error {
 
 	entryCount := binary.LittleEndian.Uint32(data[9:13])
 
-	// Skip offset table, start at first entry
-	offset := 32 + (int(entryCount) * 4)
+	var offsetTableStart int
+	offsetTableStart = 1056
+
+	// Start reading entries after offset table
+	offset := offsetTableStart + (int(entryCount) * 4)
 
 	for i := 0; i < int(entryCount); i++ {
 		if offset+DID_IDENTIFIER_LEN+2 > len(data) {

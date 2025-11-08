@@ -17,9 +17,11 @@ const (
 
 	// Binary format constants
 	DIDINDEX_MAGIC   = "PLCD"
-	DIDINDEX_VERSION = 2
+	DIDINDEX_VERSION = 3
 
 	BUILD_BATCH_SIZE = 100 // Process 100 bundles at a time
+
+	PREFIX_INDEX_SIZE = 256 // Index first byte of identifier (0x00-0xFF)
 )
 
 // Manager manages sharded DID position indexes with mmap
@@ -44,10 +46,11 @@ type Manager struct {
 
 // mmapShard represents a memory-mapped shard file
 type mmapShard struct {
-	shardNum uint8
-	data     []byte
-	file     interface{} // *os.File (avoid import)
-	lastUsed time.Time
+	shardNum    uint8
+	data        []byte
+	file        interface{} // *os.File (avoid import)
+	lastUsed    time.Time
+	accessCount int64
 }
 
 // Config stores index metadata
