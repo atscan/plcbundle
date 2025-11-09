@@ -116,6 +116,13 @@ func getManager(opts *ManagerOptions) (*bundle.Manager, string, error) {
 	config := bundle.DefaultConfig(absDir)
 	config.AutoInit = opts.AutoInit
 
+	// Set verbose from command if available
+	if opts.Cmd != nil {
+		if verbose, err := opts.Cmd.Root().PersistentFlags().GetBool("verbose"); err == nil {
+			config.Verbose = verbose
+		}
+	}
+
 	// Create PLC client if URL provided
 	var client *plcclient.Client
 	if opts.PLCURL != "" {

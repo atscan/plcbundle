@@ -150,7 +150,9 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 			)
 		}
 
-		config.Logger.Printf("Loaded index with %d bundles (origin: %s)", index.Count(), index.Origin)
+		if config.Verbose {
+			config.Logger.Printf("Loaded index with %d bundles (origin: %s)", index.Count(), index.Origin)
+		}
 
 		// Check if there are bundle files not in the index
 		if hasBundleFiles && len(bundleFiles) > index.Count() {
@@ -283,7 +285,7 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 		minTimestamp = lastBundle.EndTime
 	}
 
-	mempool, err := mempool.NewMempool(config.BundleDir, nextBundleNum, minTimestamp, config.Logger)
+	mempool, err := mempool.NewMempool(config.BundleDir, nextBundleNum, minTimestamp, config.Logger, config.Verbose)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize mempool: %w", err)
 	}
@@ -299,7 +301,6 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 	var handleResolver *handleresolver.Client
 	if config.HandleResolverURL != "" {
 		handleResolver = handleresolver.NewClient(config.HandleResolverURL)
-		config.Logger.Printf("Handle resolver configured: %s", config.HandleResolverURL)
 	}
 
 	return &Manager{
@@ -487,7 +488,7 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (t
 	nextBundle := bundle.BundleNumber + 1
 	minTimestamp := bundle.EndTime
 
-	newMempool, err := mempool.NewMempool(m.config.BundleDir, nextBundle, minTimestamp, m.logger)
+	newMempool, err := mempool.NewMempool(m.config.BundleDir, nextBundle, minTimestamp, m.logger, m.config.Verbose)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create new mempool: %w", err)
 	}

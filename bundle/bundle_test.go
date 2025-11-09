@@ -201,7 +201,7 @@ func TestMempool(t *testing.T) {
 
 	t.Run("CreateAndAdd", func(t *testing.T) {
 		minTime := time.Now().Add(-time.Hour)
-		m, err := mempool.NewMempool(tmpDir, 1, minTime, logger)
+		m, err := mempool.NewMempool(tmpDir, 1, minTime, logger, false)
 		if err != nil {
 			t.Fatalf("NewMempool failed: %v", err)
 		}
@@ -221,7 +221,7 @@ func TestMempool(t *testing.T) {
 
 	t.Run("ChronologicalValidation", func(t *testing.T) {
 		minTime := time.Now().Add(-time.Hour)
-		m, err := mempool.NewMempool(tmpDir, 2, minTime, logger)
+		m, err := mempool.NewMempool(tmpDir, 2, minTime, logger, false)
 		if err != nil {
 			t.Fatalf("NewMempool failed: %v", err)
 		}
@@ -249,7 +249,7 @@ func TestMempool(t *testing.T) {
 
 	t.Run("TakeOperations", func(t *testing.T) {
 		minTime := time.Now().Add(-time.Hour)
-		m, err := mempool.NewMempool(tmpDir, 3, minTime, logger)
+		m, err := mempool.NewMempool(tmpDir, 3, minTime, logger, false)
 		if err != nil {
 			t.Fatalf("NewMempool failed: %v", err)
 		}
@@ -271,7 +271,7 @@ func TestMempool(t *testing.T) {
 
 	t.Run("SaveAndLoad", func(t *testing.T) {
 		minTime := time.Now().Add(-time.Hour)
-		m, err := mempool.NewMempool(tmpDir, 4, minTime, logger)
+		m, err := mempool.NewMempool(tmpDir, 4, minTime, logger, false)
 		if err != nil {
 			t.Fatalf("NewMempool failed: %v", err)
 		}
@@ -284,7 +284,7 @@ func TestMempool(t *testing.T) {
 		}
 
 		// Create new mempool and load
-		m2, err := mempool.NewMempool(tmpDir, 4, minTime, logger)
+		m2, err := mempool.NewMempool(tmpDir, 4, minTime, logger, false)
 		if err != nil {
 			t.Fatalf("NewMempool failed: %v", err)
 		}
@@ -296,7 +296,7 @@ func TestMempool(t *testing.T) {
 
 	t.Run("Validate", func(t *testing.T) {
 		minTime := time.Now().Add(-time.Hour)
-		m, err := mempool.NewMempool(tmpDir, 5, minTime, logger)
+		m, err := mempool.NewMempool(tmpDir, 5, minTime, logger, false)
 		if err != nil {
 			t.Fatalf("NewMempool failed: %v", err)
 		}

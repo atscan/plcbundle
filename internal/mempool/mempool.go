@@ -27,6 +27,7 @@ type Mempool struct {
 	logger       types.Logger
 	validated    bool
 	dirty        bool
+	verbose      bool
 
 	// Incremental save tracking
 	lastSavedLen  int           // How many ops are persisted
@@ -36,7 +37,7 @@ type Mempool struct {
 }
 
 // NewMempool creates a new mempool for a specific bundle number
-func NewMempool(bundleDir string, targetBundle int, minTimestamp time.Time, logger types.Logger) (*Mempool, error) {
+func NewMempool(bundleDir string, targetBundle int, minTimestamp time.Time, logger types.Logger, verbose bool) (*Mempool, error) {
 	filename := fmt.Sprintf("%s%06d.jsonl", MEMPOOL_FILE_PREFIX, targetBundle)
 
 	m := &Mempool{
@@ -46,6 +47,7 @@ func NewMempool(bundleDir string, targetBundle int, minTimestamp time.Time, logg
 		operations:    make([]plcclient.PLCOperation, 0),
 		logger:        logger,
 		validated:     false,
+		verbose:       verbose,
 		lastSavedLen:  0,
 		lastSaveTime:  time.Now(),
 		saveThreshold: 100,
@@ -386,7 +388,7 @@ func (m *Mempool) Load() error {
 	m.lastSaveTime = time.Now()
 	m.dirty = false
 
-	if len(m.operations) > 0 {
+	if m.verbose && len(m.operations) > 0 {
 		m.logger.Printf("Loaded %d operations from mempool for bundle %06d", len(m.operations), m.targetBundle)
 	}
 

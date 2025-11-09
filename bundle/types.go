@@ -127,6 +127,7 @@ type Config struct {
 	RebuildWorkers    int                      // Number of workers for parallel rebuild (0 = auto-detect)
 	RebuildProgress   func(current, total int) // Progress callback for rebuild
 	Logger            types.Logger
+	Verbose           bool
 }
 
 // DefaultConfig returns default configuration
@@ -140,6 +141,7 @@ func DefaultConfig(bundleDir string) *Config {
 		RebuildWorkers:    0,   // 0 means auto-detect CPU count
 		RebuildProgress:   nil, // No progress callback by default
 		Logger:            nil,
+		Verbose:           false,
 	}
 }
 
