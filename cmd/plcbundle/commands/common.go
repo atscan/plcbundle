@@ -81,6 +81,12 @@ type ManagerOptions struct {
 //	getManager(&ManagerOptions{AutoInit: true})              // Allow creating repo
 //	getManager(&ManagerOptions{Dir: "/path", AutoInit: true}) // Explicit dir + create
 func getManager(opts *ManagerOptions) (*bundle.Manager, string, error) {
+
+	// Silence usage for operational errors
+	if opts.Cmd != nil {
+		opts.Cmd.SilenceUsage = true
+	}
+
 	// Use defaults if nil
 	if opts == nil {
 		opts = &ManagerOptions{}
