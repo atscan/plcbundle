@@ -40,6 +40,8 @@ type BundleManager interface {
 	LoadOperation(ctx context.Context, bundleNum, position int) (*plcclient.PLCOperation, error)
 	CloneFromRemote(ctx context.Context, opts internalsync.CloneOptions) (*internalsync.CloneResult, error)
 	ResolveDID(ctx context.Context, did string) (*bundle.ResolveDIDResult, error)
+	RunSyncOnce(ctx context.Context, config *internalsync.SyncLoopConfig, verbose bool) (int, error)
+	RunSyncLoop(ctx context.Context, config *internalsync.SyncLoopConfig) error
 }
 
 // PLCOperationWithLocation wraps operation with location info
