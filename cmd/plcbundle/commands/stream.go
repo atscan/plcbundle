@@ -21,8 +21,9 @@ func NewStreamCommand() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "stream [flags]",
-		Short: "Stream operations to stdout (JSONL)",
+		Use:     "stream [flags]",
+		Aliases: []string{"backfill"},
+		Short:   "Stream operations to stdout (JSONL)",
 		Long: `Stream operations to stdout in JSONL format
 
 Outputs PLC operations as newline-delimited JSON to stdout.

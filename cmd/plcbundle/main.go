@@ -60,11 +60,11 @@ Documentation: https://tangled.org/@atscan.net/plcbundle`,
 	cmd.AddCommand(commands.NewVerifyCommand())
 	cmd.AddCommand(commands.NewDiffCommand())
 	/*cmd.AddCommand(commands.NewStatsCommand())
-	cmd.AddCommand(commands.NewInspectCommand())
+	cmd.AddCommand(commands.NewInspectCommand())*/
 
 	// Namespaced commands
 	cmd.AddCommand(commands.NewDIDCommand())
-	cmd.AddCommand(commands.NewIndexCommand())
+	/*cmd.AddCommand(commands.NewIndexCommand())
 	cmd.AddCommand(commands.NewMempoolCommand())
 	cmd.AddCommand(commands.NewDetectorCommand())
 

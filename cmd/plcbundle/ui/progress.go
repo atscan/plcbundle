@@ -102,25 +102,41 @@ func (pb *ProgressBar) print() {
 
 	remaining := pb.total - pb.current
 	var eta time.Duration
-	if speed > 0 {
+	if speed > 0 && remaining > 0 {
 		eta = time.Duration(float64(remaining)/speed) * time.Second
 	}
+
+	// ✨ FIX: Check if complete
+	isComplete := pb.current >= pb.total
 
 	if pb.showBytes && pb.currentBytes > 0 {
 		mbProcessed := float64(pb.currentBytes) / (1000 * 1000)
 		mbPerSec := mbProcessed / elapsed.Seconds()
 
-		fmt.Fprintf(os.Stderr, "\r  [%s] %6.2f%% | %d/%d | %.1f/s | %.1f MB/s | ETA: %s ",
-			bar, percent, pb.current, pb.total, speed, mbPerSec, formatETA(eta))
+		if isComplete {
+			// ✨ Don't show ETA when done
+			fmt.Fprintf(os.Stderr, "\r  [%s] %6.2f%% | %d/%d | %.1f/s | %.1f MB/s | Done    ",
+				bar, percent, pb.current, pb.total, speed, mbPerSec)
+		} else {
+			fmt.Fprintf(os.Stderr, "\r  [%s] %6.2f%% | %d/%d | %.1f/s | %.1f MB/s | ETA: %s ",
+				bar, percent, pb.current, pb.total, speed, mbPerSec, formatETA(eta))
+		}
 	} else {
-		fmt.Fprintf(os.Stderr, "\r  [%s] %6.2f%% | %d/%d | %.1f/s | ETA: %s ",
-			bar, percent, pb.current, pb.total, speed, formatETA(eta))
+		if isComplete {
+			// ✨ Don't show ETA when done
+			fmt.Fprintf(os.Stderr, "\r  [%s] %6.2f%% | %d/%d | %.1f/s | Done    ",
+				bar, percent, pb.current, pb.total, speed)
+		} else {
+			fmt.Fprintf(os.Stderr, "\r  [%s] %6.2f%% | %d/%d | %.1f/s | ETA: %s ",
+				bar, percent, pb.current, pb.total, speed, formatETA(eta))
+		}
 	}
 }
 
 func formatETA(d time.Duration) string {
+	// ✨ This should never be called with 0 now, but keep as fallback
 	if d == 0 {
-		return "calculating..."
+		return "0s"
 	}
 	if d < time.Minute {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
