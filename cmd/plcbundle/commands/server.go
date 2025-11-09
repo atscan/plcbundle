@@ -1,3 +1,4 @@
+// cmd/plcbundle/commands/server.go
 package commands
 
 import (
@@ -5,199 +6,177 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"runtime"
 	"syscall"
 	"time"
 
-	flag "github.com/spf13/pflag"
-
+	"github.com/spf13/cobra"
 	"tangled.org/atscan.net/plcbundle/bundle"
-	"tangled.org/atscan.net/plcbundle/cmd/plcbundle/ui"
-	"tangled.org/atscan.net/plcbundle/internal/didindex"
-	"tangled.org/atscan.net/plcbundle/internal/plcclient"
+	internalsync "tangled.org/atscan.net/plcbundle/internal/sync"
 	"tangled.org/atscan.net/plcbundle/server"
 )
 
-// ServerCommand handles the serve subcommand
-func ServerCommand(args []string) error {
-	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	port := fs.String("port", "8080", "HTTP server port")
-	host := fs.String("host", "127.0.0.1", "HTTP server host")
-	syncMode := fs.Bool("sync", false, "enable sync mode (auto-sync from PLC)")
-	plcURL := fs.String("plc", "https://plc.directory", "PLC directory URL (for sync mode)")
-	syncInterval := fs.Duration("sync-interval", 1*time.Minute, "sync interval for sync mode")
-	enableWebSocket := fs.Bool("websocket", false, "enable WebSocket endpoint for streaming")
-	enableResolver := fs.Bool("resolver", false, "enable DID resolution endpoints")
-	workers := fs.Int("workers", 0, "number of workers for auto-rebuild (0 = CPU count)")
-	verbose := fs.Bool("verbose", false, "verbose sync logging")
+func NewServerCommand() *cobra.Command {
+	var (
+		port            string
+		host            string
+		syncMode        bool
+		plcURL          string
+		syncInterval    time.Duration
+		enableWebSocket bool
+		enableResolver  bool
+		maxBundles      int
+	)
 
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	cmd := &cobra.Command{
+		Use:     "server",
+		Aliases: []string{"serve"},
+		Short:   "Start HTTP server",
+		Long: `Start HTTP server to serve bundles over HTTP
 
-	// Auto-detect CPU count
-	if *workers == 0 {
-		*workers = runtime.NumCPU()
-	}
+Serves bundle data over HTTP with optional live sync mode that continuously
+fetches new bundles from PLC directory.
 
-	// Get working directory
-	dir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get working directory: %w", err)
-	}
+The server provides:
+  - Bundle index (JSON)
+  - Individual bundle data (compressed or JSONL)
+  - WebSocket streaming (optional)
+  - DID resolution (optional)
+  - Live mempool (in sync mode)
 
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
+Sync mode (--sync) runs as a daemon, continuously fetching new bundles.
+For one-time sync, use 'plcbundle sync' command instead.`,
 
-	// Create manager config
-	config := bundle.DefaultConfig(dir)
-	config.RebuildWorkers = *workers
-	config.RebuildProgress = func(current, total int) {
-		if current%100 == 0 || current == total {
-			fmt.Printf("  Rebuild progress: %d/%d bundles (%.1f%%)    \r",
-				current, total, float64(current)/float64(total)*100)
-			if current == total {
-				fmt.Println()
-			}
-		}
-	}
+		Example: `  # Basic server (read-only, current directory)
+  plcbundle server
 
-	// Create PLC client if sync mode enabled
-	var client *plcclient.Client
-	if *syncMode {
-		client = plcclient.NewClient(*plcURL)
-	}
+  # Server with specific directory
+  plcbundle server --dir ./my-bundles
 
-	fmt.Printf("Starting plcbundle HTTP server...\n")
-	fmt.Printf("  Directory: %s\n", dir)
+  # Live syncing server (daemon mode)
+  plcbundle server --sync
+  plcbundle server -s
 
-	// Create manager
-	mgr, err := bundle.NewManager(config, client)
-	if err != nil {
-		return fmt.Errorf("failed to create manager: %w", err)
-	}
-	defer mgr.Close()
+  # Using alias
+  plcbundle serve -s
 
-	// Build/verify DID index if resolver enabled
-	if *enableResolver {
-		if err := ensureDIDIndex(mgr, *verbose); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  DID index warning: %v\n\n", err)
-		}
-	}
+  # Custom port and host
+  plcbundle server --port 3000 --host 0.0.0.0
 
-	addr := fmt.Sprintf("%s:%s", *host, *port)
+  # Full featured server
+  plcbundle server -s --websocket --resolver
 
-	// Display server info
-	displayServerInfo(mgr, addr, *syncMode, *enableWebSocket, *enableResolver, *plcURL, *syncInterval)
+  # Fast sync interval
+  plcbundle server -s --interval 30s
 
-	// Setup graceful shutdown
-	ctx, cancel := setupGracefulShutdown(mgr)
-	defer cancel()
+  # Sync with limit (stop after 1000 bundles)
+  plcbundle server -s --max-bundles 1000
 
-	// Start sync loop if enabled
-	if *syncMode {
-		go runSyncLoop(ctx, mgr, *syncInterval, *verbose, *enableResolver)
-	}
+  # Public server with all features
+  plcbundle serve -s --websocket --resolver --host 0.0.0.0 --port 80`,
 
-	// Create and start HTTP server
-	serverConfig := &server.Config{
-		Addr:            addr,
-		SyncMode:        *syncMode,
-		SyncInterval:    *syncInterval,
-		EnableWebSocket: *enableWebSocket,
-		EnableResolver:  *enableResolver,
-		Version:         GetVersion(), // Pass version
-	}
+		RunE: func(cmd *cobra.Command, args []string) error {
+			verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 
-	srv := server.New(mgr, serverConfig)
+			// Get manager from command (uses --dir flag)
+			var mgr *bundle.Manager
+			var dir string
+			var err error
 
-	if err := srv.ListenAndServe(); err != nil {
-		return fmt.Errorf("server error: %w", err)
-	}
-
-	return nil
-}
-
-// ensureDIDIndex builds DID index if needed
-func ensureDIDIndex(mgr *bundle.Manager, verbose bool) error {
-	index := mgr.GetIndex()
-	bundleCount := index.Count()
-	didStats := mgr.GetDIDIndexStats()
-
-	if bundleCount == 0 {
-		return nil
-	}
-
-	needsBuild := false
-	reason := ""
-
-	if !didStats["exists"].(bool) {
-		needsBuild = true
-		reason = "index does not exist"
-	} else {
-		// Check version
-		didIndex := mgr.GetDIDIndex()
-		if didIndex != nil {
-			config := didIndex.GetConfig()
-			if config.Version != didindex.DIDINDEX_VERSION {
-				needsBuild = true
-				reason = fmt.Sprintf("index version outdated (v%d, need v%d)",
-					config.Version, didindex.DIDINDEX_VERSION)
+			if syncMode {
+				mgr, dir, err = getManagerFromCommand(cmd, plcURL)
 			} else {
-				// Check if index is behind bundles
-				lastBundle := index.GetLastBundle()
-				if lastBundle != nil && config.LastBundle < lastBundle.BundleNumber {
-					needsBuild = true
-					reason = fmt.Sprintf("index is behind (bundle %d, need %d)",
-						config.LastBundle, lastBundle.BundleNumber)
+				mgr, dir, err = getManagerFromCommand(cmd, "")
+			}
+
+			if err != nil {
+				return err
+			}
+			defer mgr.Close()
+
+			fmt.Printf("Starting plcbundle HTTP server...\n")
+			fmt.Printf("  Directory: %s\n", dir)
+
+			// Build/verify DID index if resolver enabled
+			if enableResolver {
+				ctx := context.Background()
+
+				built, err := mgr.EnsureDIDIndex(ctx, func(current, total int) {
+					if current%100 == 0 || current == total {
+						fmt.Printf("  Building DID index: %d/%d (%.1f%%)    \r",
+							current, total, float64(current)/float64(total)*100)
+						if current == total {
+							fmt.Println()
+						}
+					}
+				})
+
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "⚠️  DID index error: %v\n", err)
+					fmt.Fprintf(os.Stderr, "    DID resolution will not be available\n\n")
+				} else if built {
+					stats := mgr.GetDIDIndexStats()
+					fmt.Printf("  ✓ DID index ready (%s DIDs)\n\n",
+						formatNumber(int(stats["total_dids"].(int64))))
+				} else {
+					stats := mgr.GetDIDIndexStats()
+					fmt.Printf("  DID Index: ready (%s DIDs)\n\n",
+						formatNumber(int(stats["total_dids"].(int64))))
 				}
 			}
-		}
+
+			addr := fmt.Sprintf("%s:%s", host, port)
+
+			// Display server info
+			displayServerInfo(mgr, addr, syncMode, enableWebSocket, enableResolver, plcURL, syncInterval, maxBundles)
+
+			// Setup graceful shutdown
+			ctx, cancel := setupServerShutdown(mgr)
+			defer cancel()
+
+			// Start sync loop if enabled (always continuous for server)
+			if syncMode {
+				go runServerSyncLoop(ctx, mgr, syncInterval, maxBundles, verbose)
+			}
+
+			// Create and start HTTP server
+			serverConfig := &server.Config{
+				Addr:            addr,
+				SyncMode:        syncMode,
+				SyncInterval:    syncInterval,
+				EnableWebSocket: enableWebSocket,
+				EnableResolver:  enableResolver,
+				Version:         GetVersion(),
+			}
+
+			srv := server.New(mgr, serverConfig)
+
+			if err := srv.ListenAndServe(); err != nil {
+				return fmt.Errorf("server error: %w", err)
+			}
+
+			return nil
+		},
 	}
 
-	if needsBuild {
-		fmt.Printf("  DID Index: BUILDING (%s)\n", reason)
-		fmt.Printf("             This may take several minutes...\n\n")
+	// Server flags
+	cmd.Flags().StringVar(&port, "port", "8080", "HTTP server port")
+	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "HTTP server host (use 0.0.0.0 for all interfaces)")
 
-		buildStart := time.Now()
-		ctx := context.Background()
+	// Sync mode flag (consolidated - always means daemon)
+	cmd.Flags().BoolVarP(&syncMode, "sync", "s", false, "Enable sync mode (run as daemon, continuously fetch from PLC)")
+	cmd.Flags().StringVar(&plcURL, "plc", "https://plc.directory", "PLC directory URL (for sync mode)")
+	cmd.Flags().DurationVar(&syncInterval, "interval", 1*time.Minute, "Sync interval (how often to check for new bundles)")
+	cmd.Flags().IntVar(&maxBundles, "max-bundles", 0, "Maximum bundles to fetch (0 = unlimited)")
 
-		progress := ui.NewProgressBar(bundleCount)
-		err := mgr.BuildDIDIndex(ctx, func(current, total int) {
-			progress.Set(current)
-		})
-		progress.Finish()
+	// Feature flags
+	cmd.Flags().BoolVar(&enableWebSocket, "websocket", false, "Enable WebSocket endpoint for streaming")
+	cmd.Flags().BoolVar(&enableResolver, "resolver", false, "Enable DID resolution endpoints")
 
-		if err != nil {
-			return fmt.Errorf("failed to build DID index: %w", err)
-		}
-
-		buildTime := time.Since(buildStart)
-		updatedStats := mgr.GetDIDIndexStats()
-		fmt.Printf("\n✓ DID index built in %s\n", buildTime.Round(time.Millisecond))
-		fmt.Printf("  Total DIDs: %s\n\n", formatNumber(int(updatedStats["total_dids"].(int64))))
-	} else {
-		fmt.Printf("  DID Index: ready (%s DIDs)\n",
-			formatNumber(int(didStats["total_dids"].(int64))))
-	}
-
-	// Verify index consistency
-	if didStats["exists"].(bool) {
-		fmt.Printf("  Verifying index consistency...\n")
-
-		ctx := context.Background()
-		if err := mgr.GetDIDIndex().VerifyAndRepairIndex(ctx, mgr); err != nil {
-			return fmt.Errorf("index verification/repair failed: %w", err)
-		}
-		fmt.Printf("  ✓ Index verified\n")
-	}
-
-	return nil
+	return cmd
 }
 
-// setupGracefulShutdown sets up signal handling for graceful shutdown
-func setupGracefulShutdown(mgr *bundle.Manager) (context.Context, context.CancelFunc) {
+// setupServerShutdown sets up signal handling for server
+func setupServerShutdown(mgr *bundle.Manager) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	sigChan := make(chan os.Signal, 1)
@@ -208,8 +187,7 @@ func setupGracefulShutdown(mgr *bundle.Manager) (context.Context, context.Cancel
 		fmt.Fprintf(os.Stderr, "\n\n⚠️  Shutdown signal received...\n")
 		fmt.Fprintf(os.Stderr, "  Saving mempool...\n")
 
-		// Force save regardless of threshold
-		if err := mgr.GetMempool().Save(); err != nil { // Use Save() not SaveIfNeeded()
+		if err := mgr.GetMempool().Save(); err != nil {
 			fmt.Fprintf(os.Stderr, "  ✗ Failed to save mempool: %v\n", err)
 		} else {
 			fmt.Fprintf(os.Stderr, "  ✓ Mempool saved\n")
@@ -231,167 +209,70 @@ func setupGracefulShutdown(mgr *bundle.Manager) (context.Context, context.Cancel
 	return ctx, cancel
 }
 
+// runServerSyncLoop runs the sync loop for server (always continuous)
+func runServerSyncLoop(ctx context.Context, mgr *bundle.Manager, interval time.Duration, maxBundles int, verbose bool) {
+	logger := &serverLogger{}
+
+	config := &internalsync.SyncLoopConfig{
+		Interval:   interval,
+		MaxBundles: maxBundles,
+		Verbose:    verbose,
+		Logger:     logger,
+	}
+
+	// Server always runs continuous sync loop
+	if err := mgr.RunSyncLoop(ctx, config); err != nil {
+		if err != context.Canceled {
+			fmt.Fprintf(os.Stderr, "[Sync] Error: %v\n", err)
+		}
+	}
+}
+
 // displayServerInfo shows server configuration
-func displayServerInfo(mgr *bundle.Manager, addr string, syncMode, wsEnabled, resolverEnabled bool, plcURL string, syncInterval time.Duration) {
+func displayServerInfo(mgr *bundle.Manager, addr string, syncMode, wsEnabled, resolverEnabled bool, plcURL string, syncInterval time.Duration, maxBundles int) {
 	fmt.Printf("  Listening: http://%s\n", addr)
 
 	if syncMode {
-		fmt.Printf("  Sync mode: ENABLED\n")
-		fmt.Printf("  PLC URL: %s\n", plcURL)
-		fmt.Printf("  Sync interval: %s\n", syncInterval)
+		fmt.Printf("  Sync: ENABLED (daemon mode)\n")
+		fmt.Printf("    PLC URL: %s\n", plcURL)
+		fmt.Printf("    Interval: %s\n", syncInterval)
+		if maxBundles > 0 {
+			fmt.Printf("    Max bundles: %d\n", maxBundles)
+		}
 	} else {
-		fmt.Printf("  Sync mode: disabled\n")
+		fmt.Printf("  Sync: disabled (read-only archive)\n")
+		fmt.Printf("    Tip: Use --sync to enable live syncing\n")
 	}
 
 	if wsEnabled {
-		wsScheme := "ws"
-		fmt.Printf("  WebSocket: ENABLED (%s://%s/ws)\n", wsScheme, addr)
+		fmt.Printf("  WebSocket: ENABLED (ws://%s/ws)\n", addr)
 	} else {
-		fmt.Printf("  WebSocket: disabled (use --websocket to enable)\n")
+		fmt.Printf("  WebSocket: disabled\n")
 	}
 
 	if resolverEnabled {
 		fmt.Printf("  Resolver: ENABLED (/<did> endpoints)\n")
+		stats := mgr.GetDIDIndexStats()
+		if stats["exists"].(bool) {
+			fmt.Printf("    Index: %s DIDs\n", formatNumber(int(stats["total_dids"].(int64))))
+		}
 	} else {
-		fmt.Printf("  Resolver: disabled (use --resolver to enable)\n")
+		fmt.Printf("  Resolver: disabled\n")
 	}
 
 	bundleCount := mgr.GetIndex().Count()
-	if bundleCount > 0 {
-		fmt.Printf("  Bundles available: %d\n", bundleCount)
-	} else {
-		fmt.Printf("  Bundles available: 0\n")
-	}
+	fmt.Printf("  Bundles: %d available\n", bundleCount)
 
 	fmt.Printf("\nPress Ctrl+C to stop\n\n")
 }
 
-// runSyncLoop runs the background sync loop
-func runSyncLoop(ctx context.Context, mgr *bundle.Manager, interval time.Duration, verbose bool, resolverEnabled bool) {
-	// ✨ Initial sync - ALWAYS show detailed progress
-	fmt.Fprintf(os.Stderr, "[Sync] Initial sync starting...\n")
-	syncBundles(ctx, mgr, true, resolverEnabled) // Force verbose=true for initial sync
+// serverLogger adapter
+type serverLogger struct{}
 
-	fmt.Fprintf(os.Stderr, "[Sync] Loop started (interval: %s)\n", interval)
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			if err := mgr.SaveMempool(); err != nil {
-				fmt.Fprintf(os.Stderr, "[Sync] Failed to save mempool: %v\n", err)
-			}
-			fmt.Fprintf(os.Stderr, "[Sync] Stopped\n")
-			return
-
-		case <-ticker.C:
-			// ✨ Loop iterations - respect user's verbose flag
-			syncBundles(ctx, mgr, verbose, resolverEnabled)
-		}
-	}
+func (l *serverLogger) Printf(format string, v ...interface{}) {
+	fmt.Fprintf(os.Stderr, format+"\n", v...)
 }
 
-// syncBundles performs a sync cycle
-func syncBundles(ctx context.Context, mgr *bundle.Manager, verbose bool, resolverEnabled bool) {
-	cycleStart := time.Now()
-
-	index := mgr.GetIndex()
-	lastBundle := index.GetLastBundle()
-	startBundle := 1
-	if lastBundle != nil {
-		startBundle = lastBundle.BundleNumber + 1
-	}
-
-	mempoolBefore := mgr.GetMempoolStats()["count"].(int)
-	fetchedCount := 0
-	var totalIndexTime time.Duration
-
-	// Keep fetching until caught up
-	for {
-		// quiet = !verbose (show details only if verbose)
-		b, err := mgr.FetchNextBundle(ctx, !verbose)
-		if err != nil {
-			if isEndOfDataError(err) {
-				break
-			}
-			fmt.Fprintf(os.Stderr, "[Sync] ✗ Error: %v\n", err)
-			break
-		}
-
-		// Save bundle and track index update time
-		indexTime, err := mgr.SaveBundle(ctx, b, !verbose)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[Sync] ✗ Error saving bundle %06d: %v\n", b.BundleNumber, err)
-			break
-		}
-
-		fetchedCount++
-		totalIndexTime += indexTime
-
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	// ✨ ONE LINE SUMMARY with optional index timing
-	mempoolAfter := mgr.GetMempoolStats()["count"].(int)
-	addedOps := mempoolAfter - mempoolBefore
-	duration := time.Since(cycleStart)
-
-	currentBundle := startBundle + fetchedCount - 1
-	if fetchedCount == 0 {
-		currentBundle = startBundle - 1
-	}
-
-	if fetchedCount > 0 {
-		// Show index time if it was significant (>10ms)
-		if totalIndexTime > 10*time.Millisecond {
-			fmt.Fprintf(os.Stderr, "[Sync] ✓ Bundle %06d | Synced: %d | Mempool: %d (+%d) | %s (index: %s)\n",
-				currentBundle, fetchedCount, mempoolAfter, addedOps,
-				duration.Round(time.Millisecond), totalIndexTime.Round(time.Millisecond))
-		} else {
-			fmt.Fprintf(os.Stderr, "[Sync] ✓ Bundle %06d | Synced: %d | Mempool: %d (+%d) | %s\n",
-				currentBundle, fetchedCount, mempoolAfter, addedOps, duration.Round(time.Millisecond))
-		}
-	} else {
-		fmt.Fprintf(os.Stderr, "[Sync] ✓ Bundle %06d | Up to date | Mempool: %d (+%d) | %s\n",
-			currentBundle, mempoolAfter, addedOps, duration.Round(time.Millisecond))
-	}
-}
-
-// isEndOfDataError checks if error indicates end of available data
-func isEndOfDataError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	errMsg := err.Error()
-	return containsAny(errMsg,
-		"insufficient operations",
-		"no more operations available",
-		"reached latest data")
-}
-
-// Helper functions
-
-func containsAny(s string, substrs ...string) bool {
-	for _, substr := range substrs {
-		if contains(s, substr) {
-			return true
-		}
-	}
-	return false
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && indexOf(s, substr) >= 0
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
+func (l *serverLogger) Println(v ...interface{}) {
+	fmt.Fprintln(os.Stderr, v...)
 }

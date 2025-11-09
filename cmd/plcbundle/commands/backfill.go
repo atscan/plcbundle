@@ -109,3 +109,40 @@ func BackfillCommand(args []string) error {
 
 	return nil
 }
+
+// isEndOfDataError checks if error indicates end of available data
+func isEndOfDataError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errMsg := err.Error()
+	return containsAny(errMsg,
+		"insufficient operations",
+		"no more operations available",
+		"reached latest data")
+}
+
+// Helper functions
+
+func containsAny(s string, substrs ...string) bool {
+	for _, substr := range substrs {
+		if contains(s, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && indexOf(s, substr) >= 0
+}
+
+func indexOf(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
+}

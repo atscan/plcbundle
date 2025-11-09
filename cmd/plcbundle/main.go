@@ -3,94 +3,165 @@ package main
 import (
 	"fmt"
 	"os"
-	"runtime/debug"
 
+	"github.com/spf13/cobra"
 	"tangled.org/atscan.net/plcbundle/cmd/plcbundle/commands"
 )
 
 func main() {
-	debug.SetGCPercent(400)
+	//debug.SetGCPercent(400)
 
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
-	}
+	rootCmd := newRootCommand()
 
-	command := os.Args[1]
-
-	var err error
-	switch command {
-	case "fetch":
-		err = commands.FetchCommand(os.Args[2:])
-	case "clone":
-		err = commands.CloneCommand(os.Args[2:])
-	case "rollback":
-		err = commands.RollbackCommand(os.Args[2:])
-	case "rebuild":
-		err = commands.RebuildCommand(os.Args[2:])
-	case "verify":
-		err = commands.VerifyCommand(os.Args[2:])
-	case "info":
-		err = commands.InfoCommand(os.Args[2:])
-	case "export":
-		err = commands.ExportCommand(os.Args[2:])
-	case "backfill":
-		err = commands.BackfillCommand(os.Args[2:])
-	case "mempool":
-		err = commands.MempoolCommand(os.Args[2:])
-	case "serve":
-		err = commands.ServerCommand(os.Args[2:])
-	case "compare":
-		err = commands.CompareCommand(os.Args[2:])
-	case "detector":
-		err = commands.DetectorCommand(os.Args[2:])
-	case "index":
-		err = commands.IndexCommand(os.Args[2:])
-	case "get-op":
-		err = commands.GetOpCommand(os.Args[2:])
-	case "version":
-		err = commands.VersionCommand(os.Args[2:])
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", command)
-		printUsage()
-		os.Exit(1)
-	}
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
-func printUsage() {
-	fmt.Printf(`plcbundle %s - DID PLC Bundle Management Tool
+func newRootCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "plcbundle",
+		Short: "DID PLC Bundle Management Tool",
+		Long: `plcbundle - DID PLC Bundle Management Tool
 
-Usage:
-  plcbundle <command> [options]
+plcbundle archives AT Protocol's DID PLC Directory operations
+into immutable, cryptographically-chained bundles of 10,000
+operations each.
 
-Commands:
-  fetch      Fetch next bundle(s) from PLC directory
-  clone      Clone bundles from remote HTTP endpoint
-  rollback   Rollback to previous bundle state 
-  rebuild    Rebuild index from existing bundle files
-  verify     Verify bundle integrity
-  info       Show bundle information
-  export     Export operations from bundles
-  backfill   Fetch/load all bundles and stream to stdout
-  mempool    Show mempool status and operations
-  serve      Start HTTP server to serve bundle data
-  compare    Compare local index with target index
-  detector   Run spam detectors
-  index      Manage DID position index
-  get-op     Get specific operation by bundle and position
-  version    Show version
+Documentation: https://tangled.org/@atscan.net/plcbundle`,
 
-Examples:
-  plcbundle fetch
+		Version: GetVersion(),
+
+		Run: func(cmd *cobra.Command, args []string) {
+			printRootHelp()
+		},
+	}
+
+	// GLOBAL FLAGS (available to all commands)
+	cmd.PersistentFlags().StringP("dir", "C", "", "Repository directory (default: current directory)")
+	cmd.PersistentFlags().BoolP("verbose", "v", false, "Show detailed output and progress")
+	cmd.PersistentFlags().BoolP("quiet", "q", false, "Suppress non-error output")
+	cmd.PersistentFlags().Bool("json", false, "Output as JSON (where applicable)")
+
+	// Bundle operations (root level - most common)
+	cmd.AddCommand(commands.NewSyncCommand())
+	cmd.AddCommand(commands.NewCloneCommand())
+	/*cmd.AddCommand(commands.NewPullCommand())
+	cmd.AddCommand(commands.NewExportCommand())
+	cmd.AddCommand(commands.NewStreamCommand())
+	cmd.AddCommand(commands.NewGetCommand())
+	cmd.AddCommand(commands.NewRollbackCommand())
+
+	// Status & info (root level)
+	cmd.AddCommand(commands.NewStatusCommand())
+	cmd.AddCommand(commands.NewLogCommand())
+	cmd.AddCommand(commands.NewGapsCommand())
+	cmd.AddCommand(commands.NewVerifyCommand())
+	cmd.AddCommand(commands.NewDiffCommand())
+	cmd.AddCommand(commands.NewStatsCommand())
+	cmd.AddCommand(commands.NewInspectCommand())
+
+	// Namespaced commands
+	cmd.AddCommand(commands.NewDIDCommand())
+	cmd.AddCommand(commands.NewIndexCommand())
+	cmd.AddCommand(commands.NewMempoolCommand())
+	cmd.AddCommand(commands.NewDetectorCommand())
+
+	// Monitoring & maintenance
+	cmd.AddCommand(commands.NewWatchCommand())
+	cmd.AddCommand(commands.NewHealCommand())
+	cmd.AddCommand(commands.NewCleanCommand())*/
+
+	// Server
+	cmd.AddCommand(commands.NewServerCommand())
+
+	// Utilities
+	cmd.AddCommand(newVersionCommand())
+	cmd.AddCommand(newCompletionCommand())
+
+	return cmd
+}
+
+func newVersionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Show version information",
+		Run: func(cmd *cobra.Command, args []string) {
+			cmd.Printf("plcbundle version %s\n", GetVersion())
+			cmd.Printf("  commit: %s\n", getGitCommit())
+			cmd.Printf("  built:  %s\n", getBuildDate())
+		},
+	}
+}
+
+func newCompletionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "completion [bash|zsh|fish|powershell]",
+		Short: "Generate shell completion script",
+		Long: `Generate shell completion script for your shell.
+
+To load completions:
+
+Bash:
+  $ source <(plcbundle completion bash)
+  
+  # To load automatically:
+  $ plcbundle completion bash > /etc/bash_completion.d/plcbundle
+
+Zsh:
+  $ plcbundle completion zsh > ~/.zsh/completion/_plcbundle
+  
+  # Add to ~/.zshrc:
+  fpath=(~/.zsh/completion $fpath)
+
+Fish:
+  $ plcbundle completion fish > ~/.config/fish/completions/plcbundle.fish`,
+
+		Args:                  cobra.ExactArgs(1),
+		ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
+		DisableFlagsInUseLine: true,
+
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch args[0] {
+			case "bash":
+				return cmd.Root().GenBashCompletion(os.Stdout)
+			case "zsh":
+				return cmd.Root().GenZshCompletion(os.Stdout)
+			case "fish":
+				return cmd.Root().GenFishCompletion(os.Stdout, true)
+			case "powershell":
+				return cmd.Root().GenPowerShellCompletion(os.Stdout)
+			}
+			return nil
+		},
+	}
+}
+
+func printRootHelp() {
+	fmt.Print(`plcbundle ` + GetVersion() + ` - DID PLC Bundle Management
+
+Usage: plcbundle <command> [options]
+
+Main Commands:
+  sync                 Fetch new bundles from PLC
+  clone <url>          Clone from remote repository
+  status               Show repository status
+  did resolve <did>    Resolve DID document
+  server               Start HTTP server
+
+Command Groups:
+  Bundle:   clone, sync, pull, export, stream, get, rollback
+  Status:   status, log, gaps, verify, diff, stats, inspect
+  DID:      did <lookup|resolve|history|batch|search|stats>
+  Index:    index <build|repair|stats|verify>
+  Tools:    watch, heal, clean, mempool, detector
+
+Getting Started:
   plcbundle clone https://plc.example.com
-  plcbundle info --bundles
-  plcbundle serve --sync --websocket
-  plcbundle detector run invalid_handle --bundles 1-100
+  plcbundle sync
+  plcbundle status
 
-`, commands.GetVersion())
+Run 'plcbundle help' for full documentation
+Run 'plcbundle <command> --help' for command help
+`)
 }

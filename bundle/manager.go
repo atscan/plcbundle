@@ -507,6 +507,11 @@ func (m *Manager) GetMempoolOperations() ([]plcclient.PLCOperation, error) {
 	return m.mempool.Peek(count), nil
 }
 
+// Add to Bundle type to implement BundleData interface
+func (b *Bundle) GetBundleNumber() int {
+	return b.BundleNumber
+}
+
 // VerifyBundle verifies a bundle's integrity
 func (m *Manager) VerifyBundle(ctx context.Context, bundleNumber int) (*VerificationResult, error) {
 	result := &VerificationResult{
@@ -1340,4 +1345,131 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 	result.TotalTime = time.Since(totalStart)
 
 	return result, nil
+}
+
+// GetLastBundleNumber returns the last bundle number (0 if no bundles)
+func (m *Manager) GetLastBundleNumber() int {
+	lastBundle := m.index.GetLastBundle()
+	if lastBundle == nil {
+		return 0
+	}
+	return lastBundle.BundleNumber
+}
+
+// GetMempoolCount returns the number of operations in mempool
+func (m *Manager) GetMempoolCount() int {
+	return m.mempool.Count()
+}
+
+// FetchAndSaveNextBundle fetches and saves next bundle, returns bundle number and index time
+func (m *Manager) FetchAndSaveNextBundle(ctx context.Context, quiet bool) (int, time.Duration, error) {
+	bundle, err := m.FetchNextBundle(ctx, quiet)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	indexTime, err := m.SaveBundle(ctx, bundle, quiet)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return bundle.BundleNumber, indexTime, nil
+}
+
+// RunSyncLoop runs continuous sync loop (delegates to internal/sync)
+func (m *Manager) RunSyncLoop(ctx context.Context, config *internalsync.SyncLoopConfig) error {
+	adapter := &syncManagerAdapter{mgr: m}
+	return internalsync.RunSyncLoop(ctx, adapter, config)
+}
+
+// RunSyncOnce performs a single sync cycle
+func (m *Manager) RunSyncOnce(ctx context.Context, config *internalsync.SyncLoopConfig, verbose bool) (int, error) {
+	adapter := &syncManagerAdapter{mgr: m}
+	return internalsync.SyncOnce(ctx, adapter, config, verbose)
+}
+
+// syncManagerAdapter adapts Manager to sync.SyncManager interface
+type syncManagerAdapter struct {
+	mgr *Manager
+}
+
+func (a *syncManagerAdapter) GetLastBundleNumber() int {
+	return a.mgr.GetLastBundleNumber()
+}
+
+func (a *syncManagerAdapter) GetMempoolCount() int {
+	return a.mgr.GetMempoolCount()
+}
+
+func (a *syncManagerAdapter) FetchNextBundle(ctx context.Context, quiet bool) (int, error) {
+	bundleNum, _, err := a.mgr.FetchAndSaveNextBundle(ctx, quiet)
+	return bundleNum, err
+}
+
+func (a *syncManagerAdapter) SaveBundle(ctx context.Context, bundleNum int, quiet bool) (time.Duration, error) {
+	// Already saved in FetchAndSaveNextBundle
+	return 0, nil
+}
+
+func (a *syncManagerAdapter) SaveMempool() error {
+	return a.mgr.SaveMempool()
+}
+
+// bundle/manager.go
+
+// EnsureDIDIndex ensures DID index is built and up-to-date
+// Returns true if index was built/rebuilt, false if already up-to-date
+func (m *Manager) EnsureDIDIndex(ctx context.Context, progressCallback func(current, total int)) (bool, error) {
+	bundleCount := m.index.Count()
+	didStats := m.GetDIDIndexStats()
+
+	if bundleCount == 0 {
+		return false, nil
+	}
+
+	needsBuild := false
+	reason := ""
+
+	if !didStats["exists"].(bool) {
+		needsBuild = true
+		reason = "index does not exist"
+	} else {
+		// Check version
+		if m.didIndex != nil {
+			config := m.didIndex.GetConfig()
+			if config.Version != didindex.DIDINDEX_VERSION {
+				needsBuild = true
+				reason = fmt.Sprintf("index version outdated (v%d, need v%d)",
+					config.Version, didindex.DIDINDEX_VERSION)
+			} else {
+				// Check if index is behind bundles
+				lastBundle := m.index.GetLastBundle()
+				if lastBundle != nil && config.LastBundle < lastBundle.BundleNumber {
+					needsBuild = true
+					reason = fmt.Sprintf("index is behind (bundle %d, need %d)",
+						config.LastBundle, lastBundle.BundleNumber)
+				}
+			}
+		}
+	}
+
+	if !needsBuild {
+		return false, nil
+	}
+
+	// Build index
+	m.logger.Printf("Building DID index (%s)", reason)
+	m.logger.Printf("This may take several minutes...")
+
+	if err := m.BuildDIDIndex(ctx, progressCallback); err != nil {
+		return false, fmt.Errorf("failed to build DID index: %w", err)
+	}
+
+	// Verify index consistency
+	m.logger.Printf("Verifying index consistency...")
+	if err := m.didIndex.VerifyAndRepairIndex(ctx, m); err != nil {
+		return false, fmt.Errorf("index verification/repair failed: %w", err)
+	}
+
+	return true, nil
 }

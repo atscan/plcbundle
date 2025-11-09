@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
 	"tangled.org/atscan.net/plcbundle/bundle"
 	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/internal/didindex"
@@ -67,6 +69,49 @@ func getManager(plcURL string) (*bundle.Manager, string, error) {
 	}
 
 	return mgr, dir, nil
+}
+
+// getManagerInDirectory creates manager in specific directory
+func getManagerInDirectory(dir string, plcURL string) (*bundle.Manager, string, error) {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, "", fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	config := bundle.DefaultConfig(dir)
+
+	var client *plcclient.Client
+	if plcURL != "" {
+		client = plcclient.NewClient(plcURL)
+	}
+
+	mgr, err := bundle.NewManager(config, client)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return mgr, dir, nil
+}
+
+// getManagerFromCommand creates manager using command flags
+func getManagerFromCommand(cmd *cobra.Command, plcURL string) (*bundle.Manager, string, error) {
+	// Get --dir flag from root command
+	dir, _ := cmd.Root().PersistentFlags().GetString("dir")
+
+	if dir == "" {
+		var err error
+		dir, err = os.Getwd()
+		if err != nil {
+			return nil, "", err
+		}
+	}
+
+	// Convert to absolute path
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid directory path: %w", err)
+	}
+
+	return getManagerInDirectory(absDir, plcURL)
 }
 
 // parseBundleRange parses bundle range string
@@ -147,4 +192,21 @@ func formatNumber(n int) string {
 		result = append(result, byte(c))
 	}
 	return string(result)
+}
+
+// commandLogger adapts to types.Logger
+type commandLogger struct {
+	quiet bool
+}
+
+func (l *commandLogger) Printf(format string, v ...interface{}) {
+	if !l.quiet {
+		fmt.Fprintf(os.Stderr, format+"\n", v...)
+	}
+}
+
+func (l *commandLogger) Println(v ...interface{}) {
+	if !l.quiet {
+		fmt.Fprintln(os.Stderr, v...)
+	}
 }

@@ -5,40 +5,106 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	flag "github.com/spf13/pflag"
-
+	"github.com/spf13/cobra"
 	"tangled.org/atscan.net/plcbundle/cmd/plcbundle/ui"
 	internalsync "tangled.org/atscan.net/plcbundle/internal/sync"
 )
 
-// CloneCommand handles the clone subcommand
-func CloneCommand(args []string) error {
-	fs := flag.NewFlagSet("clone", flag.ExitOnError)
-	workers := fs.Int("workers", 4, "number of concurrent download workers")
-	verbose := fs.Bool("v", false, "verbose output")
-	skipExisting := fs.Bool("skip-existing", true, "skip bundles that already exist locally")
-	saveInterval := fs.Duration("save-interval", 5*time.Second, "interval to save index during download")
+func NewCloneCommand() *cobra.Command {
+	var (
+		workers int
+		resume  bool
+	)
 
-	if err := fs.Parse(args); err != nil {
-		return err
+	cmd := &cobra.Command{
+		Use:   "clone <remote-url> [directory]",
+		Short: "Clone bundles from remote HTTP endpoint",
+		Long: `Clone bundles from remote plcbundle HTTP endpoint
+
+Download all bundles from a remote plcbundle server to your local
+repository. Similar to 'git clone' - creates a complete copy of
+the remote repository.
+
+If directory is not specified, bundles will be cloned into './bundles'
+
+The clone process:
+  1. Fetches remote index
+  2. Downloads missing bundles in parallel
+  3. Verifies hashes
+  4. Updates local index
+  5. Can be interrupted and resumed safely`,
+
+		Args: cobra.RangeArgs(1, 2), // ✨ 1 or 2 arguments
+
+		Example: `  # Clone into default 'bundles' directory
+  plcbundle clone https://plc.example.com
+  
+  # Clone into specific directory
+  plcbundle clone https://plc.example.com my-plc-data
+  
+  # Clone with more parallel workers (faster)
+  plcbundle clone https://plc.example.com --workers 8
+  
+  # Resume interrupted clone
+  plcbundle clone https://plc.example.com --resume
+  
+  # Verbose output (shows each bundle)
+  plcbundle clone https://plc.example.com my-bundles -v`,
+
+		RunE: func(cmd *cobra.Command, args []string) error {
+			remoteURL := strings.TrimSuffix(args[0], "/")
+
+			// ✨ Optional directory argument (default: "bundles")
+			targetDir := "bundles"
+			if len(args) > 1 {
+				targetDir = args[1]
+			}
+
+			// Get global verbose flag
+			verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
+
+			return runClone(remoteURL, targetDir, cloneOptions{
+				workers: workers,
+				verbose: verbose,
+				resume:  resume,
+			})
+		},
 	}
 
-	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: plcbundle clone <remote-url> [options]\n\n" +
-			"Clone bundles from a remote plcbundle HTTP endpoint\n\n" +
-			"Example:\n" +
-			"  plcbundle clone https://plc.example.com")
+	// Local flags
+	cmd.Flags().IntVarP(&workers, "workers", "w", 4,
+		"Number of parallel download workers (higher = faster, more bandwidth)")
+	cmd.Flags().BoolVarP(&resume, "resume", "r", false,
+		"Resume interrupted clone (automatically skips existing bundles)")
+
+	return cmd
+}
+
+type cloneOptions struct {
+	workers int
+	verbose bool
+	resume  bool
+}
+
+func runClone(remoteURL string, targetDir string, opts cloneOptions) error {
+	// ✨ Create target directory if it doesn't exist
+	absDir, err := filepath.Abs(targetDir)
+	if err != nil {
+		return fmt.Errorf("invalid directory path: %w", err)
 	}
 
-	remoteURL := strings.TrimSuffix(fs.Arg(0), "/")
+	if err := os.MkdirAll(absDir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
 
-	// Create manager
-	mgr, dir, err := getManager("")
+	// ✨ Create manager in target directory
+	mgr, dir, err := getManagerInDirectory(absDir, "")
 	if err != nil {
 		return err
 	}
@@ -46,7 +112,12 @@ func CloneCommand(args []string) error {
 
 	fmt.Printf("Cloning from: %s\n", remoteURL)
 	fmt.Printf("Target directory: %s\n", dir)
-	fmt.Printf("Workers: %d\n", *workers)
+	fmt.Printf("Workers: %d\n", opts.workers)
+
+	if opts.resume {
+		fmt.Printf("Mode: resume (skipping existing bundles)\n")
+	}
+
 	fmt.Printf("(Press Ctrl+C to safely interrupt - progress will be saved)\n\n")
 
 	// Set up signal handling
@@ -77,10 +148,10 @@ func CloneCommand(args []string) error {
 	// Clone with library
 	result, err := mgr.CloneFromRemote(ctx, internalsync.CloneOptions{
 		RemoteURL:    remoteURL,
-		Workers:      *workers,
-		SkipExisting: *skipExisting,
-		SaveInterval: *saveInterval,
-		Verbose:      *verbose,
+		Workers:      opts.workers,
+		SkipExisting: opts.resume,
+		SaveInterval: 5 * time.Second,
+		Verbose:      opts.verbose,
 		ProgressFunc: func(downloaded, total int, bytesDownloaded, bytesTotal int64) {
 			progressMu.Lock()
 			defer progressMu.Unlock()
