@@ -28,6 +28,9 @@ GOGET=$(GOCMD) get
 GOFMT=$(GOCMD) fmt
 GOMOD=$(GOCMD) mod
 
+# Test runner - auto-detect gotestsum
+GOTESTSUM := $(shell command -v gotestsum 2> /dev/null)
+
 # Build flags
 LDFLAGS=-ldflags "-X main.version=$(VERSION) -X main.gitCommit=$(GIT_COMMIT) -X main.buildDate=$(BUILD_DATE)"
 
@@ -46,13 +49,20 @@ install:
 
 # Run tests
 test:
-	@echo "Running tests..."
-	$(GOTEST) -v ./...
+ifdef GOTESTSUM
+	@gotestsum -- ./...
+else
+	@echo "Running tests (install gotestsum for better output: go install gotest.tools/gotestsum@latest)"
+	@$(GOTEST) -v ./...
+endif
 
 # Run tests with coverage
 test-coverage:
-	@echo "Running tests with coverage..."
-	$(GOTEST) -v -cover ./...
+ifdef GOTESTSUM
+	@gotestsum --format testname -- -cover ./...
+else
+	@$(GOTEST) -v -cover ./...
+endif
 
 # Clean build artifacts
 clean:

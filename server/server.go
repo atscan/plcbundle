@@ -106,3 +106,8 @@ func (s *Server) createHandler() http.Handler {
 func (s *Server) GetStartTime() time.Time {
 	return s.startTime
 }
+
+// Add this method to Server
+func (s *Server) Handler() http.Handler {
+	return s.createHandler()
+}
