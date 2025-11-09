@@ -55,6 +55,7 @@ Documentation: https://tangled.org/@atscan.net/plcbundle`,
 	// Status & info (root level)
 	cmd.AddCommand(commands.NewStatusCommand())
 	cmd.AddCommand(commands.NewLogCommand())
+	cmd.AddCommand(commands.NewLsCommand())
 	//cmd.AddCommand(commands.NewGapsCommand())
 	cmd.AddCommand(commands.NewVerifyCommand())
 	cmd.AddCommand(commands.NewDiffCommand())
