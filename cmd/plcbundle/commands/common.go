@@ -132,7 +132,14 @@ func getManager(opts *ManagerOptions) (*bundle.Manager, string, error) {
 	// Create PLC client if URL provided
 	var client *plcclient.Client
 	if opts.PLCURL != "" {
-		client = plcclient.NewClient(opts.PLCURL)
+		// Build user agent with version
+		userAgent := fmt.Sprintf("plcbundle/%s",
+			GetVersion())
+
+		client = plcclient.NewClient(
+			opts.PLCURL,
+			plcclient.WithUserAgent(userAgent),
+		)
 	}
 
 	// Set handle resolver URL from flag or option

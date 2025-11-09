@@ -19,6 +19,7 @@ type Client struct {
 	httpClient  *http.Client
 	rateLimiter *RateLimiter
 	logger      Logger
+	userAgent   string
 }
 
 // Logger is a simple logging interface
@@ -45,6 +46,13 @@ type ClientOption func(*Client)
 func WithLogger(logger Logger) ClientOption {
 	return func(c *Client) {
 		c.logger = logger
+	}
+}
+
+// WithUserAgent sets a custom user agent string
+func WithUserAgent(userAgent string) ClientOption {
+	return func(c *Client) {
+		c.userAgent = userAgent
 	}
 }
 
@@ -75,6 +83,7 @@ func NewClient(baseURL string, opts ...ClientOption) *Client {
 		},
 		rateLimiter: NewRateLimiter(90, time.Minute),
 		logger:      defaultLogger{},
+		userAgent:   "plcbundle/dev",
 	}
 
 	for _, opt := range opts {
@@ -153,6 +162,7 @@ func (c *Client) doExport(ctx context.Context, opts ExportOptions) ([]PLCOperati
 	if err != nil {
 		return nil, 0, err
 	}
+	req.Header.Set("User-Agent", c.userAgent)
 
 	// Add query parameters
 	q := req.URL.Query()
@@ -252,6 +262,7 @@ func (c *Client) GetDID(ctx context.Context, did string) (*DIDDocument, error) {
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", c.userAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
