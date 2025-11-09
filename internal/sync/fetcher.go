@@ -42,7 +42,7 @@ func (f *Fetcher) FetchToMempool(
 	prevBoundaryCIDs map[string]bool,
 	target int,
 	quiet bool,
-	mempool MempoolInterface, // NEW: pass mempool directly
+	mempool MempoolInterface,
 	totalFetchesSoFar int,
 ) ([]plcclient.PLCOperation, int, error) {
 
@@ -112,39 +112,64 @@ func (f *Fetcher) FetchToMempool(
 		originalBatchSize := len(batch)
 		totalReceived += originalBatchSize
 
-		// Deduplicate
+		// ✨ FIX: Collect new ops first (don't mark as seen yet)
 		beforeDedup := len(allNewOps)
+		var batchNewOps []plcclient.PLCOperation
+
 		for _, op := range batch {
 			if !seenCIDs[op.CID] {
-				seenCIDs[op.CID] = true
-				allNewOps = append(allNewOps, op)
+				// Collect but don't mark as seen yet
+				batchNewOps = append(batchNewOps, op)
 			}
 		}
 
-		uniqueAdded := len(allNewOps) - beforeDedup
-		dupesFiltered := originalBatchSize - uniqueAdded
+		uniqueInBatch := len(batchNewOps)
+		dupesFiltered := originalBatchSize - uniqueInBatch
 		totalDupes += dupesFiltered
 
-		// Show fetch result with running totals
-		if !quiet {
-			opsPerSec := float64(originalBatchSize) / fetchDuration.Seconds()
+		// ✨ FIX: Try to add to mempool BEFORE marking as seen
+		if uniqueInBatch > 0 && mempool != nil {
+			added, addErr := mempool.Add(batchNewOps)
 
-			if dupesFiltered > 0 {
-				f.logger.Printf("  → +%d unique (%d dupes) in %s • Running: %d/%d (%.0f ops/sec)",
-					uniqueAdded, dupesFiltered, fetchDuration, len(allNewOps), target, opsPerSec)
-			} else {
-				f.logger.Printf("  → +%d unique in %s • Running: %d/%d (%.0f ops/sec)",
-					uniqueAdded, fetchDuration, len(allNewOps), target, opsPerSec)
-			}
-		}
-
-		// ✨ ADD TO MEMPOOL AND SAVE after each fetch
-		if uniqueAdded > 0 && mempool != nil {
-			added, addErr := mempool.Add(allNewOps[beforeDedup:])
 			if addErr != nil {
-				// Force save before returning error
+				// ✨ CRITICAL: Add failed - don't mark as seen!
+				if !quiet {
+					f.logger.Printf("  ❌ Mempool add failed: %v", addErr)
+					f.logger.Printf("  → %d operations NOT marked as seen (will retry on next sync)", uniqueInBatch)
+				}
+
+				// Save what we successfully added so far
 				mempool.Save()
-				return allNewOps, fetchesMade, fmt.Errorf("mempool add failed: %w", addErr)
+				return allNewOps, fetchesMade, fmt.Errorf("mempool add failed for %d operations: %w", uniqueInBatch, addErr)
+			}
+
+			// ✨ SUCCESS: Add succeeded, NOW mark as seen and add to result
+			if added != uniqueInBatch {
+				// Mempool deduplicated some - this is OK, just log
+				if !quiet {
+					f.logger.Printf("  ℹ️  Mempool deduplicated %d operations (already present)", uniqueInBatch-added)
+				}
+			}
+
+			// Mark successfully added ops as seen
+			for _, op := range batchNewOps {
+				seenCIDs[op.CID] = true
+			}
+			allNewOps = append(allNewOps, batchNewOps...)
+
+			uniqueAdded := len(allNewOps) - beforeDedup
+
+			// Show fetch result with running totals
+			if !quiet {
+				opsPerSec := float64(originalBatchSize) / fetchDuration.Seconds()
+
+				if dupesFiltered > 0 {
+					f.logger.Printf("  → +%d unique (%d dupes) in %s • Running: %d/%d (%.0f ops/sec)",
+						uniqueAdded, dupesFiltered, fetchDuration, len(allNewOps), target, opsPerSec)
+				} else {
+					f.logger.Printf("  → +%d unique in %s • Running: %d/%d (%.0f ops/sec)",
+						uniqueAdded, fetchDuration, len(allNewOps), target, opsPerSec)
+				}
 			}
 
 			// ✨ Save only if threshold met
@@ -157,9 +182,15 @@ func (f *Fetcher) FetchToMempool(
 				f.logger.Printf("  Added to mempool: %d ops (total: %d, cursor: %s)",
 					added, mempool.Count(), cursor[:19])
 			}
+		} else if uniqueInBatch > 0 {
+			// No mempool provided - just collect
+			for _, op := range batchNewOps {
+				seenCIDs[op.CID] = true
+			}
+			allNewOps = append(allNewOps, batchNewOps...)
 		}
 
-		// Update cursor
+		// Update cursor for next fetch
 		if len(batch) > 0 {
 			currentAfter = batch[len(batch)-1].CreatedAt.Format(time.RFC3339Nano)
 		}

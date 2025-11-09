@@ -343,6 +343,33 @@ func displayOperation(bundleNum, position int, op *plcclient.PLCOperation, verbo
 // findOperationByCID searches for an operation by CID
 func findOperationByCID(mgr BundleManager, cid string) error {
 	ctx := context.Background()
+
+	// ✨ CHECK MEMPOOL FIRST (most recent data)
+	fmt.Fprintf(os.Stderr, "Checking mempool...\n")
+	mempoolOps, err := mgr.GetMempoolOperations()
+	if err == nil && len(mempoolOps) > 0 {
+		for pos, op := range mempoolOps {
+			if op.CID == cid {
+				fmt.Printf("Found in mempool: position %d\n\n", pos)
+				fmt.Printf("  DID:        %s\n", op.DID)
+				fmt.Printf("  Created:    %s\n", op.CreatedAt.Format("2006-01-02 15:04:05"))
+
+				if op.IsNullified() {
+					fmt.Printf("  Status:     ✗ Nullified")
+					if nullCID := op.GetNullifyingCID(); nullCID != "" {
+						fmt.Printf(" by %s", nullCID)
+					}
+					fmt.Printf("\n")
+				} else {
+					fmt.Printf("  Status:     ✓ Active\n")
+				}
+
+				return nil
+			}
+		}
+	}
+
+	// Search bundles
 	index := mgr.GetIndex()
 	bundles := index.GetBundles()
 
@@ -390,5 +417,6 @@ func findOperationByCID(mgr BundleManager, cid string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "\nCID not found: %s\n", cid)
+	fmt.Fprintf(os.Stderr, "(Searched %d bundles + mempool)\n", len(bundles))
 	return fmt.Errorf("CID not found")
 }
