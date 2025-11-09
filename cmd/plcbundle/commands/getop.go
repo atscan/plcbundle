@@ -25,7 +25,7 @@ func GetOpCommand(args []string) error {
 		return fmt.Errorf("invalid position")
 	}
 
-	mgr, _, err := getManager("")
+	mgr, _, err := getManager(nil)
 	if err != nil {
 		return err
 	}

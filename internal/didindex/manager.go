@@ -21,9 +21,6 @@ func NewManager(baseDir string, logger Logger) *Manager {
 	shardDir := filepath.Join(indexDir, DID_INDEX_SHARDS)
 	configPath := filepath.Join(indexDir, DID_INDEX_CONFIG)
 
-	// Ensure directories exist
-	os.MkdirAll(shardDir, 0755)
-
 	// Load or create config
 	config, _ := loadIndexConfig(configPath)
 	if config == nil {
@@ -46,6 +43,11 @@ func NewManager(baseDir string, logger Logger) *Manager {
 		config:            config,
 		logger:            logger,
 	}
+}
+
+// Add helper to ensure directories when actually writing
+func (dim *Manager) ensureDirectories() error {
+	return os.MkdirAll(dim.shardDir, 0755)
 }
 
 // Close unmaps all shards and cleans up

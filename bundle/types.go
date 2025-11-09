@@ -122,6 +122,7 @@ type Config struct {
 	BundleDir       string
 	VerifyOnLoad    bool
 	AutoRebuild     bool
+	AutoInit        bool                     // Allow auto-creating empty repository
 	RebuildWorkers  int                      // Number of workers for parallel rebuild (0 = auto-detect)
 	RebuildProgress func(current, total int) // Progress callback for rebuild
 	Logger          types.Logger
@@ -133,6 +134,7 @@ func DefaultConfig(bundleDir string) *Config {
 		BundleDir:       bundleDir,
 		VerifyOnLoad:    true,
 		AutoRebuild:     true,
+		AutoInit:        false,
 		RebuildWorkers:  0,   // 0 means auto-detect CPU count
 		RebuildProgress: nil, // No progress callback by default
 		Logger:          nil,

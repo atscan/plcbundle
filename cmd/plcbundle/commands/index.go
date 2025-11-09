@@ -63,7 +63,7 @@ func indexBuild(args []string) error {
 		return err
 	}
 
-	mgr, dir, err := getManager("")
+	mgr, dir, err := getManager(nil)
 	if err != nil {
 		return err
 	}
@@ -115,7 +115,7 @@ func indexBuild(args []string) error {
 }
 
 func indexStats(args []string) error {
-	mgr, dir, err := getManager("")
+	mgr, dir, err := getManager(nil)
 	if err != nil {
 		return err
 	}
@@ -184,7 +184,7 @@ func indexLookup(args []string) error {
 
 	did := fs.Arg(0)
 
-	mgr, _, err := getManager("")
+	mgr, _, err := getManager(nil)
 	if err != nil {
 		return err
 	}
@@ -255,7 +255,7 @@ func indexResolve(args []string) error {
 
 	did := fs.Arg(0)
 
-	mgr, _, err := getManager("")
+	mgr, _, err := getManager(nil)
 	if err != nil {
 		return err
 	}

@@ -52,7 +52,7 @@ shell scripts and automation.`,
   plcbundle ls --separator "," > bundles.csv # Export to CSV`,
 
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr, _, err := getManagerFromCommand(cmd, "")
+			mgr, _, err := getManager(&ManagerOptions{Cmd: cmd})
 			if err != nil {
 				return err
 			}

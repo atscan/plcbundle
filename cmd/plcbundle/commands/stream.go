@@ -56,13 +56,7 @@ new bundles from PLC directory until caught up.`,
 			verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 			quiet, _ := cmd.Root().PersistentFlags().GetBool("quiet")
 
-			// Setup PLC client only if syncing
-			var effectivePLCURL string
-			if sync {
-				effectivePLCURL = plcURL
-			}
-
-			mgr, dir, err := getManagerFromCommand(cmd, effectivePLCURL)
+			mgr, dir, err := getManager(&ManagerOptions{Cmd: cmd, PLCURL: plcURL})
 			if err != nil {
 				return err
 			}

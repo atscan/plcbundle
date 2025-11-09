@@ -92,7 +92,7 @@ func mempoolStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	mgr, dir, err := getManagerFromCommand(cmd, "")
+	mgr, dir, err := getManager(&ManagerOptions{Cmd: cmd})
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,7 @@ Use cases:
   plcbundle mempool clear -f`,
 
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr, dir, err := getManagerFromCommand(cmd, "")
+			mgr, dir, err := getManager(&ManagerOptions{Cmd: cmd})
 			if err != nil {
 				return err
 			}
@@ -204,7 +204,7 @@ Perfect for backup, analysis, or piping to other tools.`,
   plcbundle mempool export`,
 
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr, _, err := getManagerFromCommand(cmd, "")
+			mgr, _, err := getManager(&ManagerOptions{Cmd: cmd})
 			if err != nil {
 				return err
 			}

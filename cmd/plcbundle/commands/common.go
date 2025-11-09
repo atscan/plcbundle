@@ -48,58 +48,50 @@ type BundleManager interface {
 // PLCOperationWithLocation wraps operation with location info
 type PLCOperationWithLocation = bundle.PLCOperationWithLocation
 
+// ============================================================================
+// ✨ MANAGER OPTIONS STRUCT
+// ============================================================================
+
+// ManagerOptions configures manager creation
+type ManagerOptions struct {
+	Cmd      *cobra.Command // Optional: for reading --dir flag
+	Dir      string         // Optional: explicit directory (overrides Cmd flag and cwd)
+	PLCURL   string         // Optional: PLC directory URL
+	AutoInit bool           // Optional: allow creating new empty repository (default: false)
+}
+
+// ============================================================================
+// ✨ SINGLE UNIFIED getManager METHOD
+// ============================================================================
+
 // getManager creates or opens a bundle manager
-func getManager(plcURL string) (*bundle.Manager, string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return nil, "", err
+// Pass nil for default options (read-only, current directory, no PLC client)
+//
+// Examples:
+//
+//	getManager(nil)                                          // All defaults
+//	getManager(&ManagerOptions{Cmd: cmd})                    // Use --dir flag
+//	getManager(&ManagerOptions{PLCURL: url})                 // Add PLC client
+//	getManager(&ManagerOptions{AutoInit: true})              // Allow creating repo
+//	getManager(&ManagerOptions{Dir: "/path", AutoInit: true}) // Explicit dir + create
+func getManager(opts *ManagerOptions) (*bundle.Manager, string, error) {
+	// Use defaults if nil
+	if opts == nil {
+		opts = &ManagerOptions{}
 	}
 
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, "", fmt.Errorf("failed to create directory: %w", err)
+	// Determine directory (priority: explicit Dir > Cmd flag > current working dir)
+	var dir string
+
+	if opts.Dir != "" {
+		// Explicit directory provided
+		dir = opts.Dir
+	} else if opts.Cmd != nil {
+		// Try to get from command --dir flag
+		dir, _ = opts.Cmd.Root().PersistentFlags().GetString("dir")
 	}
 
-	config := bundle.DefaultConfig(dir)
-
-	var client *plcclient.Client
-	if plcURL != "" {
-		client = plcclient.NewClient(plcURL)
-	}
-
-	mgr, err := bundle.NewManager(config, client)
-	if err != nil {
-		return nil, "", err
-	}
-
-	return mgr, dir, nil
-}
-
-// getManagerInDirectory creates manager in specific directory
-func getManagerInDirectory(dir string, plcURL string) (*bundle.Manager, string, error) {
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, "", fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	config := bundle.DefaultConfig(dir)
-
-	var client *plcclient.Client
-	if plcURL != "" {
-		client = plcclient.NewClient(plcURL)
-	}
-
-	mgr, err := bundle.NewManager(config, client)
-	if err != nil {
-		return nil, "", err
-	}
-
-	return mgr, dir, nil
-}
-
-// getManagerFromCommand creates manager using command flags
-func getManagerFromCommand(cmd *cobra.Command, plcURL string) (*bundle.Manager, string, error) {
-	// Get --dir flag from root command
-	dir, _ := cmd.Root().PersistentFlags().GetString("dir")
-
+	// Fallback to current working directory
 	if dir == "" {
 		var err error
 		dir, err = os.Getwd()
@@ -114,7 +106,23 @@ func getManagerFromCommand(cmd *cobra.Command, plcURL string) (*bundle.Manager, 
 		return nil, "", fmt.Errorf("invalid directory path: %w", err)
 	}
 
-	return getManagerInDirectory(absDir, plcURL)
+	// Create config
+	config := bundle.DefaultConfig(absDir)
+	config.AutoInit = opts.AutoInit
+
+	// Create PLC client if URL provided
+	var client *plcclient.Client
+	if opts.PLCURL != "" {
+		client = plcclient.NewClient(opts.PLCURL)
+	}
+
+	// Create manager
+	mgr, err := bundle.NewManager(config, client)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return mgr, absDir, nil
 }
 
 // parseBundleRange parses bundle range string

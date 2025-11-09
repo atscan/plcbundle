@@ -57,8 +57,12 @@ that continuously syncs at regular intervals.`,
 			verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 			quiet, _ := cmd.Root().PersistentFlags().GetBool("quiet")
 
-			// Get manager using global --dir flag
-			mgr, dir, err := getManagerFromCommand(cmd, plcURL)
+			// ✨ Sync creates repository if missing
+			mgr, dir, err := getManager(&ManagerOptions{
+				Cmd:      cmd,
+				PLCURL:   plcURL,
+				AutoInit: true,
+			})
 			if err != nil {
 				return err
 			}

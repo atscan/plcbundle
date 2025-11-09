@@ -89,7 +89,7 @@ full scan (slow).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			did := args[0]
 
-			mgr, _, err := getManagerFromCommand(cmd, "")
+			mgr, _, err := getManager(&ManagerOptions{Cmd: cmd})
 			if err != nil {
 				return err
 			}
@@ -185,7 +185,7 @@ O(1) lookup of latest operation.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			did := args[0]
 
-			mgr, _, err := getManagerFromCommand(cmd, "")
+			mgr, _, err := getManager(&ManagerOptions{Cmd: cmd})
 			if err != nil {
 				return err
 			}
@@ -274,7 +274,7 @@ This provides a full audit trail of all changes to the DID.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			did := args[0]
 
-			mgr, _, err := getManagerFromCommand(cmd, "")
+			mgr, _, err := getManager(&ManagerOptions{Cmd: cmd})
 			if err != nil {
 				return err
 			}
@@ -383,7 +383,7 @@ Input formats:
 					"  cat dids.txt | plcbundle did batch -")
 			}
 
-			mgr, _, err := getManagerFromCommand(cmd, "")
+			mgr, _, err := getManager(&ManagerOptions{Cmd: cmd})
 			if err != nil {
 				return err
 			}
@@ -439,7 +439,7 @@ Without DID: shows global index statistics`,
 		Args: cobra.MaximumNArgs(1),
 
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr, dir, err := getManagerFromCommand(cmd, "")
+			mgr, dir, err := getManager(&ManagerOptions{Cmd: cmd})
 			if err != nil {
 				return err
 			}

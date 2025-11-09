@@ -99,12 +99,12 @@ func runClone(remoteURL string, targetDir string, opts cloneOptions) error {
 		return fmt.Errorf("invalid directory path: %w", err)
 	}
 
-	if err := os.MkdirAll(absDir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	// ✨ Create manager in target directory
-	mgr, dir, err := getManagerInDirectory(absDir, "")
+	// ✨ Clone creates new repository in specific directory
+	mgr, dir, err := getManager(&ManagerOptions{
+		Dir:      absDir,
+		PLCURL:   "https://plc.directory",
+		AutoInit: true,
+	})
 	if err != nil {
 		return err
 	}

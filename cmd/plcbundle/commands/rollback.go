@@ -63,7 +63,7 @@ The rollback process:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 
-			mgr, dir, err := getManagerFromCommand(cmd, "")
+			mgr, dir, err := getManager(&ManagerOptions{Cmd: cmd})
 			if err != nil {
 				return err
 			}

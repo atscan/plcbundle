@@ -68,7 +68,7 @@ is a terminal, just like 'git log'. Use --no-pager to disable.`,
   plcbundle history -n 5`,
 
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr, dir, err := getManagerFromCommand(cmd, "")
+			mgr, dir, err := getManager(&ManagerOptions{Cmd: cmd})
 			if err != nil {
 				return err
 			}

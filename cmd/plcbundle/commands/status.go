@@ -27,7 +27,7 @@ storage, timeline, mempool, and DID index status.`,
   plcbundle info`,
 
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr, dir, err := getManagerFromCommand(cmd, "")
+			mgr, dir, err := getManager(&ManagerOptions{Cmd: cmd})
 			if err != nil {
 				return err
 			}

@@ -61,7 +61,20 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 		config.Logger = defaultLogger{}
 	}
 
-	// Ensure directory exists
+	// CHECK: Don't auto-create if repository doesn't exist
+	repoExists := repositoryExists(config.BundleDir)
+
+	if !repoExists && !config.AutoInit {
+		return nil, fmt.Errorf(
+			"no plcbundle repository found in: %s\n\n"+
+				"Initialize a new repository with:\n"+
+				"  plcbundle clone <url>     # Clone from remote\n"+
+				"  plcbundle sync            # Fetch from PLC directory",
+			config.BundleDir,
+		)
+	}
+
+	// Ensure directory exists (only if repo exists OR AutoInit is enabled)
 	if err := os.MkdirAll(config.BundleDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create bundle directory: %w", err)
 	}
@@ -1443,4 +1456,20 @@ func (m *Manager) EnsureDIDIndex(ctx context.Context, progressCallback func(curr
 	}
 
 	return true, nil
+}
+
+// Add this helper function at the top of manager.go
+func repositoryExists(bundleDir string) bool {
+	indexPath := filepath.Join(bundleDir, bundleindex.INDEX_FILE)
+
+	// Check for index file
+	if _, err := os.Stat(indexPath); err == nil {
+		return true
+	}
+
+	// Check for bundle files
+	bundleFiles, _ := filepath.Glob(filepath.Join(bundleDir, "*.jsonl.zst"))
+	bundleFiles = filterBundleFiles(bundleFiles)
+
+	return len(bundleFiles) > 0
 }

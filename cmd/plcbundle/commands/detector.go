@@ -99,7 +99,7 @@ func detectorTest(args []string) error {
 		return fmt.Errorf("--bundle required")
 	}
 
-	mgr, _, err := getManager("")
+	mgr, _, err := getManager(nil)
 	if err != nil {
 		return err
 	}
@@ -195,7 +195,7 @@ func detectorRun(args []string) error {
 		}()
 	}
 
-	mgr, _, err := getManager("")
+	mgr, _, err := getManager(nil)
 	if err != nil {
 		return err
 	}

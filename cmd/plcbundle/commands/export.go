@@ -34,7 +34,7 @@ func ExportCommand(args []string) error {
 			"  plcbundle export --bundles 42 | jq .")
 	}
 
-	mgr, _, err := getManager("")
+	mgr, _, err := getManager(&ManagerOptions{Cmd: nil})
 	if err != nil {
 		return err
 	}
