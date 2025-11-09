@@ -1,4 +1,3 @@
-// repo/cmd/plcbundle/commands/status.go
 package commands
 
 import (

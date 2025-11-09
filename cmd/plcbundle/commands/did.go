@@ -1,4 +1,3 @@
-// repo/cmd/plcbundle/commands/did.go
 package commands
 
 import (

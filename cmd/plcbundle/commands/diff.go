@@ -1,4 +1,3 @@
-// repo/cmd/plcbundle/commands/diff.go
 package commands
 
 import (

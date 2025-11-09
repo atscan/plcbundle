@@ -1,4 +1,3 @@
-// cmd/plcbundle/commands/server.go
 package commands
 
 import (

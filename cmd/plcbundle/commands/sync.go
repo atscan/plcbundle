@@ -1,4 +1,3 @@
-// cmd/plcbundle/commands/sync.go
 package commands
 
 import (
