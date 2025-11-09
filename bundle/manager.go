@@ -369,7 +369,7 @@ func (m *Manager) LoadBundle(ctx context.Context, bundleNumber int) (*Bundle, er
 }
 
 // loadBundleFromDisk loads a bundle from disk
-func (m *Manager) loadBundleFromDisk(ctx context.Context, bundleNumber int) (*Bundle, error) {
+func (m *Manager) loadBundleFromDisk(_ context.Context, bundleNumber int) (*Bundle, error) {
 	// Get metadata from index
 	meta, err := m.index.GetBundle(bundleNumber)
 	if err != nil {
@@ -1321,12 +1321,10 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 	// Find latest non-nullified location
 	var latestLoc *didindex.OpLocation
 	for i := range locations {
-		if locations[i].Nullified {
+		if locations[i].Nullified() {
 			continue
 		}
-		if latestLoc == nil ||
-			locations[i].Bundle > latestLoc.Bundle ||
-			(locations[i].Bundle == latestLoc.Bundle && locations[i].Position > latestLoc.Position) {
+		if latestLoc == nil || locations[i].IsAfter(*latestLoc) {
 			latestLoc = &locations[i]
 		}
 	}
@@ -1337,15 +1335,15 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 
 	// STEP 3: Load operation
 	opStart := time.Now()
-	op, err := m.LoadOperation(ctx, int(latestLoc.Bundle), int(latestLoc.Position))
+	op, err := m.LoadOperation(ctx, latestLoc.BundleInt(), latestLoc.PositionInt())
 	result.LoadOpTime = time.Since(opStart)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to load operation: %w", err)
 	}
 
-	result.BundleNumber = int(latestLoc.Bundle)
-	result.Position = int(latestLoc.Position)
+	result.BundleNumber = latestLoc.BundleInt()
+	result.Position = latestLoc.PositionInt()
 
 	// STEP 4: Resolve document
 	doc, err := plcclient.ResolveDIDDocument(did, []plcclient.PLCOperation{*op})

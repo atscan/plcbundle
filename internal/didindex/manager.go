@@ -25,11 +25,15 @@ func NewManager(baseDir string, logger Logger) *Manager {
 	config, _ := loadIndexConfig(configPath)
 	if config == nil {
 		config = &Config{
-			Version:    DIDINDEX_VERSION,
-			Format:     "binary_v1",
+			Version:    DIDINDEX_VERSION, // Will be 4
+			Format:     "binary_v4",      // Update format name
 			ShardCount: DID_SHARD_COUNT,
 			UpdatedAt:  time.Now().UTC(),
 		}
+	} else if config.Version < DIDINDEX_VERSION {
+		// Auto-trigger rebuild on version mismatch
+		logger.Printf("DID index version outdated (v%d, need v%d) - rebuild required",
+			config.Version, DIDINDEX_VERSION)
 	}
 
 	return &Manager{
@@ -43,11 +47,6 @@ func NewManager(baseDir string, logger Logger) *Manager {
 		config:            config,
 		logger:            logger,
 	}
-}
-
-// Add helper to ensure directories when actually writing
-func (dim *Manager) ensureDirectories() error {
-	return os.MkdirAll(dim.shardDir, 0755)
 }
 
 // Close unmaps all shards and cleans up
@@ -274,7 +273,7 @@ func (dim *Manager) evictMultiple(count int) {
 
 // searchShard performs optimized binary search using prefix index
 func (dim *Manager) searchShard(shard *mmapShard, identifier string) []OpLocation {
-	if shard.data == nil || len(shard.data) < 1056 {
+	if len(shard.data) < 1056 {
 		return nil
 	}
 
@@ -449,21 +448,15 @@ func (dim *Manager) readLocations(data []byte, offset int) []OpLocation {
 	// Read locations
 	locations := make([]OpLocation, count)
 	for i := 0; i < int(count); i++ {
-		if offset+5 > len(data) {
+		if offset+4 > len(data) { // ← 4 bytes now
 			return locations[:i]
 		}
 
-		bundle := binary.LittleEndian.Uint16(data[offset : offset+2])
-		position := binary.LittleEndian.Uint16(data[offset+2 : offset+4])
-		nullified := data[offset+4] != 0
+		// Read packed uint32
+		packed := binary.LittleEndian.Uint32(data[offset : offset+4])
+		locations[i] = OpLocation(packed)
 
-		locations[i] = OpLocation{
-			Bundle:    bundle,
-			Position:  position,
-			Nullified: nullified,
-		}
-
-		offset += 5
+		offset += 4 // ← 4 bytes
 	}
 
 	return locations
@@ -660,7 +653,7 @@ func (dim *Manager) writeShardToPath(path string, shardNum uint8, builder *Shard
 	for i, id := range identifiers {
 		offsetTable[i] = uint32(currentOffset)
 		locations := builder.entries[id]
-		entrySize := DID_IDENTIFIER_LEN + 2 + (len(locations) * 5)
+		entrySize := DID_IDENTIFIER_LEN + 2 + (len(locations) * 4) // ← 4 bytes
 		currentOffset += entrySize
 	}
 
@@ -700,16 +693,9 @@ func (dim *Manager) writeShardToPath(path string, shardNum uint8, builder *Shard
 		offset += 2
 
 		for _, loc := range locations {
-			binary.LittleEndian.PutUint16(buf[offset:offset+2], loc.Bundle)
-			binary.LittleEndian.PutUint16(buf[offset+2:offset+4], loc.Position)
-
-			if loc.Nullified {
-				buf[offset+4] = 1
-			} else {
-				buf[offset+4] = 0
-			}
-
-			offset += 5
+			// Write packed uint32 (global position + nullified bit)
+			binary.LittleEndian.PutUint32(buf[offset:offset+4], uint32(loc))
+			offset += 4 // ← 4 bytes per location
 		}
 	}
 
@@ -724,8 +710,7 @@ func (dim *Manager) parseShardData(data []byte, builder *ShardBuilder) error {
 
 	entryCount := binary.LittleEndian.Uint32(data[9:13])
 
-	var offsetTableStart int
-	offsetTableStart = 1056
+	offsetTableStart := 1056
 
 	// Start reading entries after offset table
 	offset := offsetTableStart + (int(entryCount) * 4)
@@ -745,17 +730,32 @@ func (dim *Manager) parseShardData(data []byte, builder *ShardBuilder) error {
 
 		// Read locations
 		locations := make([]OpLocation, locCount)
-		for j := 0; j < int(locCount); j++ {
-			if offset+5 > len(data) {
-				break
-			}
 
-			locations[j] = OpLocation{
-				Bundle:    binary.LittleEndian.Uint16(data[offset : offset+2]),
-				Position:  binary.LittleEndian.Uint16(data[offset+2 : offset+4]),
-				Nullified: data[offset+4] != 0,
+		// Check version to determine format
+		version := binary.LittleEndian.Uint32(data[4:8])
+
+		for j := 0; j < int(locCount); j++ {
+			if version >= 4 {
+				// New format: 4-byte packed uint32
+				if offset+4 > len(data) {
+					break
+				}
+				packed := binary.LittleEndian.Uint32(data[offset : offset+4])
+				locations[j] = OpLocation(packed)
+				offset += 4
+			} else {
+				// Old format: 5-byte separate fields (for migration)
+				if offset+5 > len(data) {
+					break
+				}
+				bundle := binary.LittleEndian.Uint16(data[offset : offset+2])
+				position := binary.LittleEndian.Uint16(data[offset+2 : offset+4])
+				nullified := data[offset+4] != 0
+
+				// Convert to new format
+				locations[j] = NewOpLocation(bundle, position, nullified)
+				offset += 5
 			}
-			offset += 5
 		}
 
 		builder.entries[identifier] = locations

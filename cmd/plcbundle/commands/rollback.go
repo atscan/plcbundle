@@ -527,20 +527,3 @@ func displayRollbackSuccess(plan *rollbackPlan, opts rollbackOptions) {
 		fmt.Printf("   plcbundle index build\n\n")
 	}
 }
-
-// Validation helpers
-
-// validateRollbackSafety performs additional safety checks
-func validateRollbackSafety(mgr BundleManager, plan *rollbackPlan) error {
-	// Check for chain integrity issues
-	if len(plan.toKeep) > 1 {
-		// Verify the target bundle exists and has valid hash
-		lastKeep := plan.toKeep[len(plan.toKeep)-1]
-		if lastKeep.Hash == "" {
-			return fmt.Errorf("target bundle %06d has no chain hash - may be corrupted",
-				lastKeep.BundleNumber)
-		}
-	}
-
-	return nil
-}

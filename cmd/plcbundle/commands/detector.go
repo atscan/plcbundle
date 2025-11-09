@@ -62,7 +62,7 @@ Examples:
 `)
 }
 
-func detectorList(args []string) error {
+func detectorList(_ []string) error {
 	registry := detector.DefaultRegistry()
 	detectors := registry.List()
 

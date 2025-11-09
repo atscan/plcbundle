@@ -17,7 +17,11 @@ const (
 
 	// Binary format constants
 	DIDINDEX_MAGIC   = "PLCD"
-	DIDINDEX_VERSION = 3
+	DIDINDEX_VERSION = 4
+
+	// Format sizes
+	LOCATION_SIZE_V3 = 5 // Old: 2+2+1
+	LOCATION_SIZE_V4 = 4 // New: packed uint32
 
 	BUILD_BATCH_SIZE = 100 // Process 100 bundles at a time
 
@@ -63,22 +67,77 @@ type Config struct {
 	LastBundle int       `json:"last_bundle"`
 }
 
-// OpLocation represents exact location of an operation
-type OpLocation struct {
-	Bundle    uint16
-	Position  uint16
-	Nullified bool
-}
-
 // ShardBuilder accumulates DID positions for a shard
 type ShardBuilder struct {
 	entries map[string][]OpLocation
 	mu      sync.Mutex
 }
 
+// OpLocation represents exact location of an operation
+type OpLocation uint32
+
 // OpLocationWithOperation contains an operation with its bundle/position
 type OpLocationWithOperation struct {
 	Operation plcclient.PLCOperation
 	Bundle    int
 	Position  int
+}
+
+func NewOpLocation(bundle, position uint16, nullified bool) OpLocation {
+	globalPos := uint32(bundle)*10000 + uint32(position)
+	loc := globalPos << 1
+	if nullified {
+		loc |= 1
+	}
+	return OpLocation(loc)
+}
+
+// Getters
+func (loc OpLocation) GlobalPosition() uint32 {
+	return uint32(loc) >> 1
+}
+
+func (loc OpLocation) Bundle() uint16 {
+	return uint16(loc.GlobalPosition() / 10000)
+}
+
+func (loc OpLocation) Position() uint16 {
+	return uint16(loc.GlobalPosition() % 10000)
+}
+
+func (loc OpLocation) Nullified() bool {
+	return (loc & 1) == 1
+}
+
+func (loc OpLocation) IsAfter(other OpLocation) bool {
+	// Compare global positions directly
+	return loc.GlobalPosition() > other.GlobalPosition()
+}
+
+func (loc OpLocation) IsBefore(other OpLocation) bool {
+	return loc.GlobalPosition() < other.GlobalPosition()
+}
+
+func (loc OpLocation) Equals(other OpLocation) bool {
+	// Compare entire packed value (including nullified bit)
+	return loc == other
+}
+
+func (loc OpLocation) PositionEquals(other OpLocation) bool {
+	// Compare only position (ignore nullified bit)
+	return loc.GlobalPosition() == other.GlobalPosition()
+}
+
+// Convenience conversions
+func (loc OpLocation) BundleInt() int {
+	return int(loc.Bundle())
+}
+
+func (loc OpLocation) PositionInt() int {
+	return int(loc.Position())
+}
+
+// For sorting/comparison
+func (loc OpLocation) Less(other OpLocation) bool {
+	return loc.GlobalPosition() < other.GlobalPosition()
 }

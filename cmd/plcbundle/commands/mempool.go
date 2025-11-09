@@ -83,7 +83,7 @@ next bundle, validation status, and memory usage.`,
 	return cmd
 }
 
-func mempoolStatus(cmd *cobra.Command, args []string) error {
+func mempoolStatus(cmd *cobra.Command, _ []string) error {
 	verbose, _ := cmd.Flags().GetBool("verbose")
 	if cmd.Parent() != nil {
 		// Called as subcommand, check parent's verbose flag

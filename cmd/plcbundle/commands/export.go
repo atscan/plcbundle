@@ -24,14 +24,18 @@ func ExportCommand(args []string) error {
 	}
 
 	if !*all && *bundles == "" {
-		return fmt.Errorf("usage: plcbundle export --bundles <number|range> [options]\n" +
-			"   or: plcbundle export --all [options]\n\n" +
-			"Examples:\n" +
-			"  plcbundle export --bundles 42\n" +
-			"  plcbundle export --bundles 1-100\n" +
-			"  plcbundle export --all\n" +
-			"  plcbundle export --all --count 50000\n" +
-			"  plcbundle export --bundles 42 | jq .")
+		fmt.Fprint(os.Stderr, `usage: plcbundle export --bundles <number|range> [options]
+   or: plcbundle export --all [options]
+
+Examples:
+  plcbundle export --bundles 42
+  plcbundle export --bundles 1-100
+  plcbundle export --all
+  plcbundle export --all --count 50000
+  plcbundle export --bundles 42 | jq .
+
+`)
+		return fmt.Errorf("missing required flag: --bundles or --all")
 	}
 
 	mgr, _, err := getManager(&ManagerOptions{Cmd: nil})

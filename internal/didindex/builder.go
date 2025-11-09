@@ -20,15 +20,22 @@ func newShardBuilder() *ShardBuilder {
 }
 
 // add adds a location to the shard
-func (sb *ShardBuilder) add(identifier string, bundle uint16, position uint16, nullified bool) {
+func (sb *ShardBuilder) add(identifier string, loc OpLocation) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
-	sb.entries[identifier] = append(sb.entries[identifier], OpLocation{
-		Bundle:    bundle,
-		Position:  position,
-		Nullified: nullified,
-	})
+	sb.entries[identifier] = append(sb.entries[identifier], loc)
+}
+
+// updateAndSaveConfig updates config with new values and saves atomically
+func (dim *Manager) updateAndSaveConfig(totalDIDs int64, lastBundle int) error {
+	dim.config.TotalDIDs = totalDIDs
+	dim.config.LastBundle = lastBundle
+	dim.config.Version = DIDINDEX_VERSION
+	dim.config.Format = "binary_v4"
+	dim.config.UpdatedAt = time.Now().UTC()
+
+	return dim.saveIndexConfig()
 }
 
 // BuildIndexFromScratch builds index with controlled memory usage
@@ -92,18 +99,13 @@ func (dim *Manager) BuildIndexFromScratch(ctx context.Context, mgr BundleProvide
 
 			shardNum := dim.calculateShard(identifier)
 
-			// Write entry: [24 bytes ID][2 bytes bundle][2 bytes pos][1 byte nullified]
-			entry := make([]byte, 29)
+			// Write entry: [24 bytes ID][4 bytes packed OpLocation]
+			entry := make([]byte, 28)
 			copy(entry[0:24], identifier)
-			binary.LittleEndian.PutUint16(entry[24:26], uint16(meta.BundleNumber))
-			binary.LittleEndian.PutUint16(entry[26:28], uint16(pos))
 
-			// Store nullified flag
-			if op.IsNullified() {
-				entry[28] = 1
-			} else {
-				entry[28] = 0
-			}
+			// Create packed OpLocation (includes nullified bit)
+			loc := NewOpLocation(uint16(meta.BundleNumber), uint16(pos), op.IsNullified())
+			binary.LittleEndian.PutUint32(entry[24:28], uint32(loc))
 
 			if _, err := tempShards[shardNum].Write(entry); err != nil {
 				dim.logger.Printf("Warning: failed to write to temp shard %02x: %v", shardNum, err)
@@ -135,10 +137,7 @@ func (dim *Manager) BuildIndexFromScratch(ctx context.Context, mgr BundleProvide
 		totalDIDs += count
 	}
 
-	dim.config.TotalDIDs = totalDIDs
-	dim.config.LastBundle = bundles[len(bundles)-1].BundleNumber
-
-	if err := dim.saveIndexConfig(); err != nil {
+	if err := dim.updateAndSaveConfig(totalDIDs, bundles[len(bundles)-1].BundleNumber); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
@@ -165,27 +164,23 @@ func (dim *Manager) consolidateShard(shardNum uint8) (int64, error) {
 		return 0, nil
 	}
 
-	// Parse entries (29 bytes each)
-	entryCount := len(data) / 29
-	if len(data)%29 != 0 {
-		return 0, fmt.Errorf("corrupted temp shard: size not multiple of 29")
+	// Parse entries (28 bytes each)
+	entryCount := len(data) / 28
+	if len(data)%28 != 0 {
+		return 0, fmt.Errorf("corrupted temp shard: size not multiple of 28")
 	}
 
 	type tempEntry struct {
 		identifier string
-		bundle     uint16
-		position   uint16
-		nullified  bool
+		location   OpLocation // ← Single packed value
 	}
 
 	entries := make([]tempEntry, entryCount)
 	for i := 0; i < entryCount; i++ {
-		offset := i * 29
+		offset := i * 28 // ← 28 bytes
 		entries[i] = tempEntry{
 			identifier: string(data[offset : offset+24]),
-			bundle:     binary.LittleEndian.Uint16(data[offset+24 : offset+26]),
-			position:   binary.LittleEndian.Uint16(data[offset+26 : offset+28]),
-			nullified:  data[offset+28] != 0,
+			location:   OpLocation(binary.LittleEndian.Uint32(data[offset+24 : offset+28])),
 		}
 	}
 
@@ -200,7 +195,7 @@ func (dim *Manager) consolidateShard(shardNum uint8) (int64, error) {
 	// Group by DID
 	builder := newShardBuilder()
 	for _, entry := range entries {
-		builder.add(entry.identifier, entry.bundle, entry.position, entry.nullified)
+		builder.add(entry.identifier, entry.location)
 	}
 
 	// Free entries
@@ -240,11 +235,8 @@ func (dim *Manager) UpdateIndexForBundle(ctx context.Context, bundle *BundleData
 			shardOps[shardNum] = make(map[string][]OpLocation)
 		}
 
-		shardOps[shardNum][identifier] = append(shardOps[shardNum][identifier], OpLocation{
-			Bundle:    uint16(bundle.BundleNumber),
-			Position:  uint16(pos),
-			Nullified: op.IsNullified(),
-		})
+		loc := NewOpLocation(uint16(bundle.BundleNumber), uint16(pos), op.IsNullified())
+		shardOps[shardNum][identifier] = append(shardOps[shardNum][identifier], loc)
 	}
 
 	groupDuration := time.Since(groupStart)
@@ -349,10 +341,8 @@ func (dim *Manager) UpdateIndexForBundle(ctx context.Context, bundle *BundleData
 	// STEP 4: Update config
 	configStart := time.Now()
 
-	dim.config.TotalDIDs += deltaCount
-	dim.config.LastBundle = bundle.BundleNumber
-
-	if err := dim.saveIndexConfig(); err != nil {
+	newTotal := dim.config.TotalDIDs + deltaCount
+	if err := dim.updateAndSaveConfig(newTotal, bundle.BundleNumber); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 

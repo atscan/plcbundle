@@ -795,7 +795,7 @@ func outputHistoryJSON(did string, opsWithLoc []PLCOperationWithLocation, mempoo
 	return nil
 }
 
-func batchLookup(mgr BundleManager, dids []string, output *os.File, workers int) error {
+func batchLookup(mgr BundleManager, dids []string, output *os.File, _ int) error {
 	progress := ui.NewProgressBar(len(dids))
 	ctx := context.Background()
 
@@ -855,7 +855,7 @@ func batchLookup(mgr BundleManager, dids []string, output *os.File, workers int)
 	return nil
 }
 
-func batchResolve(mgr BundleManager, dids []string, output *os.File, workers int) error {
+func batchResolve(mgr BundleManager, dids []string, output *os.File, _ int) error {
 	progress := ui.NewProgressBar(len(dids))
 	ctx := context.Background()
 
@@ -900,7 +900,7 @@ func batchResolve(mgr BundleManager, dids []string, output *os.File, workers int
 	return nil
 }
 
-func batchExport(mgr BundleManager, dids []string, output *os.File, workers int) error {
+func batchExport(mgr BundleManager, dids []string, output *os.File, _ int) error {
 	progress := ui.NewProgressBar(len(dids))
 	ctx := context.Background()
 

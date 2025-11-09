@@ -34,7 +34,7 @@ func (dim *Manager) GetDIDOperations(ctx context.Context, did string, provider B
 	// Filter nullified
 	var validLocations []OpLocation
 	for _, loc := range locations {
-		if !loc.Nullified {
+		if !loc.Nullified() {
 			validLocations = append(validLocations, loc)
 		}
 	}
@@ -46,7 +46,7 @@ func (dim *Manager) GetDIDOperations(ctx context.Context, did string, provider B
 
 	if len(validLocations) == 1 {
 		loc := validLocations[0]
-		op, err := provider.LoadOperation(ctx, int(loc.Bundle), int(loc.Position))
+		op, err := provider.LoadOperation(ctx, loc.BundleInt(), loc.PositionInt())
 		if err != nil {
 			return nil, err
 		}
@@ -56,7 +56,7 @@ func (dim *Manager) GetDIDOperations(ctx context.Context, did string, provider B
 	// For multiple operations: group by bundle to minimize bundle loads
 	bundleMap := make(map[uint16][]uint16)
 	for _, loc := range validLocations {
-		bundleMap[loc.Bundle] = append(bundleMap[loc.Bundle], loc.Position)
+		bundleMap[loc.Bundle()] = append(bundleMap[loc.Bundle()], loc.Position())
 	}
 
 	if dim.verbose {
@@ -133,7 +133,7 @@ func (dim *Manager) GetDIDOperationsWithLocations(ctx context.Context, did strin
 	// Group by bundle
 	bundleMap := make(map[uint16][]OpLocation)
 	for _, loc := range locations {
-		bundleMap[loc.Bundle] = append(bundleMap[loc.Bundle], loc)
+		bundleMap[loc.Bundle()] = append(bundleMap[loc.Bundle()], loc)
 	}
 
 	if dim.verbose {
@@ -149,15 +149,15 @@ func (dim *Manager) GetDIDOperationsWithLocations(ctx context.Context, did strin
 		}
 
 		for _, loc := range locs {
-			if int(loc.Position) >= len(bundle.Operations) {
+			if loc.PositionInt() >= len(bundle.Operations) {
 				continue
 			}
 
-			op := bundle.Operations[loc.Position]
+			op := bundle.Operations[loc.Position()]
 			results = append(results, OpLocationWithOperation{
 				Operation: op,
-				Bundle:    int(loc.Bundle),
-				Position:  int(loc.Position),
+				Bundle:    loc.BundleInt(),
+				Position:  loc.PositionInt(),
 			})
 		}
 	}
@@ -196,15 +196,15 @@ func (dim *Manager) GetLatestDIDOperation(ctx context.Context, did string, provi
 	// Find latest non-nullified location
 	var latestLoc *OpLocation
 	for i := range locations {
-		if locations[i].Nullified {
+		if locations[i].Nullified() {
 			continue
 		}
 
 		if latestLoc == nil {
 			latestLoc = &locations[i]
 		} else {
-			if locations[i].Bundle > latestLoc.Bundle ||
-				(locations[i].Bundle == latestLoc.Bundle && locations[i].Position > latestLoc.Position) {
+			if locations[i].Bundle() > latestLoc.Bundle() ||
+				(locations[i].Bundle() == latestLoc.Bundle() && locations[i].Position() > latestLoc.Position()) {
 				latestLoc = &locations[i]
 			}
 		}
@@ -215,5 +215,5 @@ func (dim *Manager) GetLatestDIDOperation(ctx context.Context, did string, provi
 	}
 
 	// Load ONLY the specific operation (efficient!)
-	return provider.LoadOperation(ctx, int(latestLoc.Bundle), int(latestLoc.Position))
+	return provider.LoadOperation(ctx, latestLoc.BundleInt(), latestLoc.PositionInt())
 }

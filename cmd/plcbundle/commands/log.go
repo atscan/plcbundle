@@ -197,9 +197,9 @@ func renderBundleLog(w io.Writer, dir string, index *bundleindex.Index, allBundl
 	// Display bundles
 	for i, meta := range displayBundles {
 		if opts.oneline {
-			displayBundleOneLine(w, meta, opts.showHashes, useColor, colorBundleNum, colorHash, colorDate, colorAge, colorSize, colorReset)
+			displayBundleOneLine(w, meta, opts.showHashes, colorBundleNum, colorHash, colorDate, colorAge, colorSize, colorReset)
 		} else {
-			displayBundleDetailed(w, meta, opts.showHashes, useColor, colorBundleNum, colorHash, colorDate, colorAge, colorSize, colorDim, colorReset)
+			displayBundleDetailed(w, meta, opts.showHashes, colorBundleNum, colorHash, colorDate, colorAge, colorSize, colorDim, colorReset)
 
 			// Add separator between bundles (except last)
 			if i < len(displayBundles)-1 {
@@ -212,11 +212,11 @@ func renderBundleLog(w io.Writer, dir string, index *bundleindex.Index, allBundl
 	// Summary footer
 	if !opts.oneline && len(displayBundles) > 0 {
 		fmt.Fprintf(w, "\n")
-		displayLogSummary(w, allBundles, displayBundles, opts.last, useColor, colorHeader, colorReset)
+		displayLogSummary(w, allBundles, displayBundles, opts.last, colorHeader, colorReset)
 	}
 }
 
-func displayBundleOneLine(w io.Writer, meta *bundleindex.BundleMetadata, showHashes bool, useColor bool, colorBundle, colorHash, colorDate, colorAge, colorSize, colorReset string) {
+func displayBundleOneLine(w io.Writer, meta *bundleindex.BundleMetadata, showHashes bool, colorBundle, colorHash, colorDate, colorAge, colorSize, colorReset string) {
 	age := time.Since(meta.EndTime)
 	ageStr := formatDurationShort(age)
 
@@ -236,7 +236,7 @@ func displayBundleOneLine(w io.Writer, meta *bundleindex.BundleMetadata, showHas
 		colorSize, formatBytes(meta.CompressedSize), colorReset)
 }
 
-func displayBundleDetailed(w io.Writer, meta *bundleindex.BundleMetadata, showHashes bool, useColor bool, colorBundle, colorHash, colorDate, colorAge, colorSize, colorDim, colorReset string) {
+func displayBundleDetailed(w io.Writer, meta *bundleindex.BundleMetadata, showHashes bool, colorBundle, colorHash, colorDate, colorAge, colorSize, colorDim, colorReset string) {
 	fmt.Fprintf(w, "%sBundle %06d%s\n", colorBundle, meta.BundleNumber, colorReset)
 
 	// Timestamp and age
@@ -282,7 +282,7 @@ func displayBundleDetailed(w io.Writer, meta *bundleindex.BundleMetadata, showHa
 	}
 }
 
-func displayLogSummary(w io.Writer, allBundles, displayedBundles []*bundleindex.BundleMetadata, limit int, useColor bool, colorHeader, colorReset string) {
+func displayLogSummary(w io.Writer, allBundles, displayedBundles []*bundleindex.BundleMetadata, limit int, colorHeader, colorReset string) {
 	first := displayedBundles[0]
 	last := displayedBundles[len(displayedBundles)-1]
 

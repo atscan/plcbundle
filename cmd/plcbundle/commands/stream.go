@@ -230,8 +230,7 @@ func streamExistingBundles(ctx context.Context, mgr BundleManager, start, end in
 }
 
 type streamLogger struct {
-	quiet   bool
-	verbose bool
+	quiet bool
 }
 
 func (l *streamLogger) Printf(format string, v ...interface{}) {
