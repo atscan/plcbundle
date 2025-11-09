@@ -199,6 +199,18 @@ func (m *Mempool) Take(n int) ([]plcclient.PLCOperation, error) {
 	// Remove taken operations
 	m.operations = m.operations[n:]
 
+	// Adjust lastSavedLen to account for removed operations
+	if m.lastSavedLen > 0 {
+		if m.lastSavedLen > n {
+			m.lastSavedLen -= n // Some saved ops remain
+		} else {
+			m.lastSavedLen = 0 // All saved ops were taken
+		}
+	}
+
+	// ✨ Mark dirty since state changed
+	m.dirty = true
+
 	return result, nil
 }
 
@@ -294,6 +306,16 @@ func (m *Mempool) Save() error {
 	// Validate before saving
 	if err := m.validateLocked(); err != nil {
 		return fmt.Errorf("mempool validation failed, refusing to save: %w", err)
+	}
+
+	// Bounds check to prevent panic
+	if m.lastSavedLen > len(m.operations) {
+		// This shouldn't happen, but if it does, log and reset
+		if m.verbose {
+			m.logger.Printf("Warning: lastSavedLen (%d) > operations (%d), resetting to 0",
+				m.lastSavedLen, len(m.operations))
+		}
+		m.lastSavedLen = 0
 	}
 
 	// Get only new operations since last save
