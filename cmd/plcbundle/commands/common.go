@@ -47,6 +47,7 @@ type BundleManager interface {
 	GetBundleIndex() didindex.BundleIndexProvider
 	ScanDirectoryParallel(workers int, progressCallback func(current, total int, bytesProcessed int64)) (*bundle.DirectoryScanResult, error)
 	LoadBundleForDIDIndex(ctx context.Context, bundleNumber int) (*didindex.BundleData, error)
+	ResolveHandleOrDID(ctx context.Context, input string) (string, time.Duration, error)
 }
 
 // PLCOperationWithLocation wraps operation with location info
@@ -58,10 +59,11 @@ type PLCOperationWithLocation = bundle.PLCOperationWithLocation
 
 // ManagerOptions configures manager creation
 type ManagerOptions struct {
-	Cmd      *cobra.Command // Optional: for reading --dir flag
-	Dir      string         // Optional: explicit directory (overrides Cmd flag and cwd)
-	PLCURL   string         // Optional: PLC directory URL
-	AutoInit bool           // Optional: allow creating new empty repository (default: false)
+	Cmd               *cobra.Command // Optional: for reading --dir flag
+	Dir               string         // Optional: explicit directory (overrides Cmd flag and cwd)
+	PLCURL            string         // Optional: PLC directory URL
+	HandleResolverURL string         // Optional: Handle resolver URL (XRPC)
+	AutoInit          bool           // Optional: allow creating new empty repository (default: false)
 }
 
 // ============================================================================
@@ -118,6 +120,16 @@ func getManager(opts *ManagerOptions) (*bundle.Manager, string, error) {
 	var client *plcclient.Client
 	if opts.PLCURL != "" {
 		client = plcclient.NewClient(opts.PLCURL)
+	}
+
+	// Set handle resolver URL from flag or option
+	handleResolverURL := opts.HandleResolverURL
+	if handleResolverURL == "" && opts.Cmd != nil {
+		handleResolverURL, _ = opts.Cmd.Root().PersistentFlags().GetString("handle-resolver") // ✅ Fixed flag name
+	}
+	// Only override default if explicitly provided
+	if handleResolverURL != "" {
+		config.HandleResolverURL = handleResolverURL
 	}
 
 	// Create manager

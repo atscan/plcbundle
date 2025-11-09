@@ -61,39 +61,52 @@ func newDIDLookupCommand() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:     "lookup <did>",
+		Use:     "lookup <did|handle>",
 		Aliases: []string{"find", "get"},
-		Short:   "Find all operations for a DID",
-		Long: `Find all operations for a DID
+		Short:   "Find all operations for a DID or handle",
+		Long: `Find all operations for a DID or handle
 
-Retrieves all operations (both bundled and mempool) for a specific DID,
-showing bundle locations, timestamps, and nullification status.
+Retrieves all operations (both bundled and mempool) for a specific DID.
+Accepts either:
+  • DID: did:plc:524tuhdhh3m7li5gycdn6boe
+  • Handle: tree.fail (resolves via configured resolver)
 
 Requires DID index to be built. If not available, will fall back to
 full scan (slow).`,
 
-		Example: `  # Lookup DID operations
+		Example: `  # Lookup by DID
   plcbundle did lookup did:plc:524tuhdhh3m7li5gycdn6boe
 
-  # Verbose output with timing
-  plcbundle did lookup did:plc:524tuhdhh3m7li5gycdn6boe -v
+  # Lookup by handle (requires --resolver-url)
+  plcbundle did lookup tree.fail
+  plcbundle did lookup ngerakines.me
 
-  # JSON output
-  plcbundle did lookup did:plc:524tuhdhh3m7li5gycdn6boe --json
-
-  # Using alias
-  plcbundle did find did:plc:524tuhdhh3m7li5gycdn6boe`,
+  # With non-default handle resolver configured
+  plcbundle --handle-resolver https://quickdid.smokesignal.tools did lookup tree.fail`,
 
 		Args: cobra.ExactArgs(1),
 
 		RunE: func(cmd *cobra.Command, args []string) error {
-			did := args[0]
+			input := args[0]
 
 			mgr, _, err := getManager(&ManagerOptions{Cmd: cmd})
 			if err != nil {
 				return err
 			}
 			defer mgr.Close()
+
+			// ✨ Resolve handle to DID with timing
+			ctx := context.Background()
+			did, handleResolveTime, err := mgr.ResolveHandleOrDID(ctx, input)
+			if err != nil {
+				return err
+			}
+
+			// Show what we resolved to (if it was a handle)
+			if input != did && !showJSON {
+				fmt.Fprintf(os.Stderr, "Resolved handle '%s' → %s (in %s)\n\n",
+					input, did, handleResolveTime)
+			}
 
 			stats := mgr.GetDIDIndexStats()
 			if !stats["exists"].(bool) {
@@ -102,7 +115,6 @@ full scan (slow).`,
 			}
 
 			totalStart := time.Now()
-			ctx := context.Background()
 
 			// Lookup operations
 			lookupStart := time.Now()
@@ -178,12 +190,15 @@ O(1) lookup of latest operation.`,
   plcbundle did resolve did:plc:524tuhdhh3m7li5gycdn6boe --raw
 
   # Pipe to jq
-  plcbundle did resolve did:plc:524tuhdhh3m7li5gycdn6boe | jq .service`,
+  plcbundle did resolve did:plc:524tuhdhh3m7li5gycdn6boe | jq .service
+  
+  # Resolve by handle
+  plcbundle did resolve tree.fail`,
 
 		Args: cobra.ExactArgs(1),
 
 		RunE: func(cmd *cobra.Command, args []string) error {
-			did := args[0]
+			input := args[0]
 
 			mgr, _, err := getManager(&ManagerOptions{Cmd: cmd})
 			if err != nil {
@@ -193,8 +208,24 @@ O(1) lookup of latest operation.`,
 
 			ctx := context.Background()
 
+			// ✨ Resolve handle to DID with timing
+			did, handleResolveTime, err := mgr.ResolveHandleOrDID(ctx, input)
+			if err != nil {
+				return err
+			}
+
+			// Show resolution timing if it was a handle
+			if input != did {
+				if showTiming {
+					fmt.Fprintf(os.Stderr, "Handle resolution: %s → %s (%s)\n",
+						input, did, handleResolveTime)
+				} else {
+					fmt.Fprintf(os.Stderr, "Resolved handle '%s' → %s\n", input, did)
+				}
+			}
+
 			if showTiming {
-				fmt.Fprintf(os.Stderr, "Resolving: %s\n", did)
+				fmt.Fprintf(os.Stderr, "Resolving DID: %s\n", did)
 			}
 
 			if verbose {
@@ -208,6 +239,9 @@ O(1) lookup of latest operation.`,
 
 			// Display timing if requested
 			if showTiming {
+				if handleResolveTime > 0 {
+					fmt.Fprintf(os.Stderr, "Handle: %s | ", handleResolveTime)
+				}
 				if result.Source == "mempool" {
 					fmt.Fprintf(os.Stderr, "Mempool check: %s (✓ found)\n", result.MempoolTime)
 					fmt.Fprintf(os.Stderr, "Total: %s\n\n", result.TotalTime)

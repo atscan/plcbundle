@@ -119,25 +119,27 @@ type DirectoryScanResult struct {
 
 // Config holds configuration for bundle operations
 type Config struct {
-	BundleDir       string
-	VerifyOnLoad    bool
-	AutoRebuild     bool
-	AutoInit        bool                     // Allow auto-creating empty repository
-	RebuildWorkers  int                      // Number of workers for parallel rebuild (0 = auto-detect)
-	RebuildProgress func(current, total int) // Progress callback for rebuild
-	Logger          types.Logger
+	BundleDir         string
+	HandleResolverURL string
+	VerifyOnLoad      bool
+	AutoRebuild       bool
+	AutoInit          bool                     // Allow auto-creating empty repository
+	RebuildWorkers    int                      // Number of workers for parallel rebuild (0 = auto-detect)
+	RebuildProgress   func(current, total int) // Progress callback for rebuild
+	Logger            types.Logger
 }
 
 // DefaultConfig returns default configuration
 func DefaultConfig(bundleDir string) *Config {
 	return &Config{
-		BundleDir:       bundleDir,
-		VerifyOnLoad:    true,
-		AutoRebuild:     true,
-		AutoInit:        false,
-		RebuildWorkers:  0,   // 0 means auto-detect CPU count
-		RebuildProgress: nil, // No progress callback by default
-		Logger:          nil,
+		BundleDir:         bundleDir,
+		HandleResolverURL: "https://quickdid.atscan.net",
+		VerifyOnLoad:      true,
+		AutoRebuild:       true,
+		AutoInit:          false,
+		RebuildWorkers:    0,   // 0 means auto-detect CPU count
+		RebuildProgress:   nil, // No progress callback by default
+		Logger:            nil,
 	}
 }
 
@@ -191,12 +193,13 @@ func (b *Bundle) ToMetadata() *bundleindex.BundleMetadata {
 
 // ResolveDIDResult contains DID resolution with timing metrics
 type ResolveDIDResult struct {
-	Document     *plcclient.DIDDocument
-	MempoolTime  time.Duration
-	IndexTime    time.Duration
-	LoadOpTime   time.Duration
-	TotalTime    time.Duration
-	Source       string // "mempool" or "bundle"
-	BundleNumber int    // if from bundle
-	Position     int    // if from bundle
+	Document       *plcclient.DIDDocument
+	MempoolTime    time.Duration
+	IndexTime      time.Duration
+	LoadOpTime     time.Duration
+	TotalTime      time.Duration
+	ResolvedHandle string
+	Source         string // "mempool" or "bundle"
+	BundleNumber   int    // if from bundle
+	Position       int    // if from bundle
 }

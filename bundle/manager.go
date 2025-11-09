@@ -9,11 +9,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/internal/didindex"
+	"tangled.org/atscan.net/plcbundle/internal/handleresolver"
 	"tangled.org/atscan.net/plcbundle/internal/mempool"
 	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 	"tangled.org/atscan.net/plcbundle/internal/storage"
@@ -38,10 +40,12 @@ type Manager struct {
 	operations *storage.Operations
 	index      *bundleindex.Index
 	indexPath  string
-	plcClient  *plcclient.Client
 	logger     types.Logger
 	mempool    *mempool.Mempool
 	didIndex   *didindex.Manager
+
+	plcClient      *plcclient.Client
+	handleResolver *handleresolver.Client
 
 	syncer *internalsync.Fetcher
 	cloner *internalsync.Cloner
@@ -291,19 +295,27 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 	fetcher := internalsync.NewFetcher(plcClient, ops, config.Logger)
 	cloner := internalsync.NewCloner(ops, config.BundleDir, config.Logger)
 
+	// Initialize handle resolver if configured
+	var handleResolver *handleresolver.Client
+	if config.HandleResolverURL != "" {
+		handleResolver = handleresolver.NewClient(config.HandleResolverURL)
+		config.Logger.Printf("Handle resolver configured: %s", config.HandleResolverURL)
+	}
+
 	return &Manager{
-		config:       config,
-		operations:   ops,
-		index:        index,
-		indexPath:    indexPath,
-		plcClient:    plcClient,
-		logger:       config.Logger,
-		mempool:      mempool,
-		didIndex:     didIndex, // Updated type
-		bundleCache:  make(map[int]*Bundle),
-		maxCacheSize: 10,
-		syncer:       fetcher,
-		cloner:       cloner,
+		config:         config,
+		operations:     ops,
+		index:          index,
+		indexPath:      indexPath,
+		logger:         config.Logger,
+		mempool:        mempool,
+		didIndex:       didIndex, // Updated type
+		bundleCache:    make(map[int]*Bundle),
+		maxCacheSize:   10,
+		syncer:         fetcher,
+		cloner:         cloner,
+		plcClient:      plcClient,
+		handleResolver: handleResolver,
 	}, nil
 }
 
@@ -1470,4 +1482,57 @@ func repositoryExists(bundleDir string) bool {
 	bundleFiles = filterBundleFiles(bundleFiles)
 
 	return len(bundleFiles) > 0
+}
+
+// ResolveHandleOrDID resolves input that can be either a handle or DID
+// Returns: (did, handleResolveTime, error)
+func (m *Manager) ResolveHandleOrDID(ctx context.Context, input string) (string, time.Duration, error) {
+	input = strings.TrimSpace(input)
+
+	// Normalize handle format (remove at://, @ prefixes)
+	if !strings.HasPrefix(input, "did:") {
+		input = strings.TrimPrefix(input, "at://")
+		input = strings.TrimPrefix(input, "@")
+	}
+
+	// If already a DID, validate and return
+	if strings.HasPrefix(input, "did:plc:") {
+		if err := plcclient.ValidateDIDFormat(input); err != nil {
+			return "", 0, err
+		}
+		return input, 0, nil // ✅ No resolution needed
+	}
+
+	// Support did:web too
+	if strings.HasPrefix(input, "did:web:") {
+		return input, 0, nil
+	}
+
+	// It's a handle - need resolver
+	if m.handleResolver == nil {
+		return "", 0, fmt.Errorf(
+			"input '%s' appears to be a handle, but handle resolver is not configured\n\n"+
+				"Configure resolver with:\n"+
+				"  plcbundle --handle-resolver https://quickdid.smokesignal.tools did resolve %s\n\n"+
+				"Or set default in config",
+			input, input)
+	}
+
+	// ✨ TIME THE RESOLUTION
+	resolveStart := time.Now()
+	m.logger.Printf("Resolving handle: %s", input)
+	did, err := m.handleResolver.ResolveHandle(ctx, input)
+	resolveTime := time.Since(resolveStart)
+
+	if err != nil {
+		return "", resolveTime, fmt.Errorf("failed to resolve handle '%s': %w", input, err)
+	}
+
+	m.logger.Printf("Resolved: %s → %s (in %s)", input, did, resolveTime)
+	return did, resolveTime, nil
+}
+
+// GetHandleResolver returns the handle resolver (can be nil)
+func (m *Manager) GetHandleResolver() *handleresolver.Client {
+	return m.handleResolver
 }

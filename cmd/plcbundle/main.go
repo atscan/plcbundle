@@ -41,6 +41,8 @@ Documentation: https://tangled.org/@atscan.net/plcbundle`,
 	cmd.PersistentFlags().StringP("dir", "C", "", "Repository directory (default: current directory)")
 	cmd.PersistentFlags().BoolP("verbose", "v", false, "Show detailed output and progress")
 	cmd.PersistentFlags().BoolP("quiet", "q", false, "Suppress non-error output")
+	cmd.PersistentFlags().String("handle-resolver", "",
+		"Handle resolver URL (e.g., https://quickdid.smokesignal.tools)")
 
 	// Bundle operations (root level - most common)
 	cmd.AddCommand(commands.NewSyncCommand())
