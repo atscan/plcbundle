@@ -47,8 +47,8 @@ func showStatus(mgr *bundle.Manager, dir string) error {
 	bundleCount := stats["bundle_count"].(int)
 
 	// Header
-	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
-	fmt.Printf("\n              PLC Bundle Repository Status\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("               plcbundle Repository Status\n")
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
 
 	// Location & Origin

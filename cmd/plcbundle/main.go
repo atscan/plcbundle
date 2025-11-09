@@ -24,7 +24,7 @@ func newRootCommand() *cobra.Command {
 		Short: "DID PLC Bundle Management Tool",
 		Long: `plcbundle - DID PLC Bundle Management Tool
 
-plcbundle archives AT Protocol's DID PLC Directory operations
+Tool for archiving AT Protocol's DID PLC Directory operations
 into immutable, cryptographically-chained bundles of 10,000
 operations each.
 
@@ -41,7 +41,7 @@ Documentation: https://tangled.org/@atscan.net/plcbundle`,
 	cmd.PersistentFlags().StringP("dir", "C", "", "Repository directory (default: current directory)")
 	cmd.PersistentFlags().BoolP("verbose", "v", false, "Show detailed output and progress")
 	cmd.PersistentFlags().BoolP("quiet", "q", false, "Suppress non-error output")
-	cmd.PersistentFlags().Bool("json", false, "Output as JSON (where applicable)")
+	//cmd.PersistentFlags().Bool("json", false, "Output as JSON (where applicable)")
 
 	// Bundle operations (root level - most common)
 	cmd.AddCommand(commands.NewSyncCommand())
@@ -54,8 +54,8 @@ Documentation: https://tangled.org/@atscan.net/plcbundle`,
 
 	// Status & info (root level)
 	cmd.AddCommand(commands.NewStatusCommand())
-	/*cmd.AddCommand(commands.NewLogCommand())
-	cmd.AddCommand(commands.NewGapsCommand())*/
+	cmd.AddCommand(commands.NewLogCommand())
+	//cmd.AddCommand(commands.NewGapsCommand())
 	cmd.AddCommand(commands.NewVerifyCommand())
 	cmd.AddCommand(commands.NewDiffCommand())
 	/*cmd.AddCommand(commands.NewStatsCommand())
