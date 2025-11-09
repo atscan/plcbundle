@@ -1378,44 +1378,15 @@ func (m *Manager) FetchAndSaveNextBundle(ctx context.Context, quiet bool) (int, 
 
 // RunSyncLoop runs continuous sync loop (delegates to internal/sync)
 func (m *Manager) RunSyncLoop(ctx context.Context, config *internalsync.SyncLoopConfig) error {
-	adapter := &syncManagerAdapter{mgr: m}
-	return internalsync.RunSyncLoop(ctx, adapter, config)
+	// Manager itself implements the SyncManager interface
+	return internalsync.RunSyncLoop(ctx, m, config)
 }
 
 // RunSyncOnce performs a single sync cycle
 func (m *Manager) RunSyncOnce(ctx context.Context, config *internalsync.SyncLoopConfig, verbose bool) (int, error) {
-	adapter := &syncManagerAdapter{mgr: m}
-	return internalsync.SyncOnce(ctx, adapter, config, verbose)
+	// Manager itself implements the SyncManager interface
+	return internalsync.SyncOnce(ctx, m, config, verbose)
 }
-
-// syncManagerAdapter adapts Manager to sync.SyncManager interface
-type syncManagerAdapter struct {
-	mgr *Manager
-}
-
-func (a *syncManagerAdapter) GetLastBundleNumber() int {
-	return a.mgr.GetLastBundleNumber()
-}
-
-func (a *syncManagerAdapter) GetMempoolCount() int {
-	return a.mgr.GetMempoolCount()
-}
-
-func (a *syncManagerAdapter) FetchNextBundle(ctx context.Context, quiet bool) (int, error) {
-	bundleNum, _, err := a.mgr.FetchAndSaveNextBundle(ctx, quiet)
-	return bundleNum, err
-}
-
-func (a *syncManagerAdapter) SaveBundle(ctx context.Context, bundleNum int, quiet bool) (time.Duration, error) {
-	// Already saved in FetchAndSaveNextBundle
-	return 0, nil
-}
-
-func (a *syncManagerAdapter) SaveMempool() error {
-	return a.mgr.SaveMempool()
-}
-
-// bundle/manager.go
 
 // EnsureDIDIndex ensures DID index is built and up-to-date
 // Returns true if index was built/rebuilt, false if already up-to-date

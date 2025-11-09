@@ -31,8 +31,8 @@ func DefaultSyncLoopConfig() *SyncLoopConfig {
 type SyncManager interface {
 	GetLastBundleNumber() int
 	GetMempoolCount() int
-	FetchNextBundle(ctx context.Context, quiet bool) (int, error) // returns bundle number
-	SaveBundle(ctx context.Context, bundleNum int, quiet bool) (time.Duration, error)
+	// Returns: bundleNumber, indexUpdateTime, error
+	FetchAndSaveNextBundle(ctx context.Context, quiet bool) (int, time.Duration, error)
 	SaveMempool() error
 }
 
@@ -116,18 +116,12 @@ func SyncOnce(ctx context.Context, mgr SyncManager, config *SyncLoopConfig, verb
 	// Keep fetching until caught up
 	for {
 		// quiet = !verbose
-		bundleNum, err := mgr.FetchNextBundle(ctx, !verbose)
+		bundleNum, indexTime, err := mgr.FetchAndSaveNextBundle(ctx, !verbose)
 		if err != nil {
 			if isEndOfDataError(err) {
 				break
 			}
 			return fetchedCount, fmt.Errorf("fetch failed: %w", err)
-		}
-
-		// Save bundle and track index update time
-		indexTime, err := mgr.SaveBundle(ctx, bundleNum, !verbose)
-		if err != nil {
-			return fetchedCount, fmt.Errorf("save failed: %w", err)
 		}
 
 		fetchedCount++
