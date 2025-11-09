@@ -46,16 +46,15 @@ Documentation: https://tangled.org/@atscan.net/plcbundle`,
 	// Bundle operations (root level - most common)
 	cmd.AddCommand(commands.NewSyncCommand())
 	cmd.AddCommand(commands.NewCloneCommand())
-	/*cmd.AddCommand(commands.NewPullCommand())
-	cmd.AddCommand(commands.NewExportCommand())*/
+	//cmd.AddCommand(commands.NewExportCommand())
 	cmd.AddCommand(commands.NewStreamCommand())
-	//cmd.AddCommand(commands.NewGetCommand())
 	cmd.AddCommand(commands.NewRollbackCommand())
 
 	// Status & info (root level)
 	cmd.AddCommand(commands.NewStatusCommand())
 	cmd.AddCommand(commands.NewLogCommand())
 	cmd.AddCommand(commands.NewLsCommand())
+	cmd.AddCommand(commands.NewOpCommand())
 	//cmd.AddCommand(commands.NewGapsCommand())
 	cmd.AddCommand(commands.NewVerifyCommand())
 	cmd.AddCommand(commands.NewDiffCommand())

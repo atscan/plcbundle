@@ -1,0 +1,384 @@
+package commands
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/goccy/go-json"
+	"github.com/spf13/cobra"
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
+	"tangled.org/atscan.net/plcbundle/internal/types"
+)
+
+func NewOpCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "op",
+		Aliases: []string{"operation"},
+		Short:   "Operation queries and inspection",
+		Long: `Operation queries and inspection
+
+Direct access to individual operations within bundles using either:
+  • Bundle number + position (e.g., 42 1337)
+  • Global position (e.g., 420000)
+
+Global position format: (bundleNumber × 10,000) + position
+Example: 88410345 = bundle 8841, position 345`,
+
+		Example: `  # Get operation as JSON
+  plcbundle op get 42 1337
+  plcbundle op get 420000
+
+  # Show operation (formatted)
+  plcbundle op show 42 1337
+  plcbundle op show 88410345
+
+  # Find by CID
+  plcbundle op find bafyreig3...`,
+	}
+
+	// Add subcommands
+	cmd.AddCommand(newOpGetCommand())
+	cmd.AddCommand(newOpShowCommand())
+	cmd.AddCommand(newOpFindCommand())
+
+	return cmd
+}
+
+// ============================================================================
+// OP GET - Get operation as JSON
+// ============================================================================
+
+func newOpGetCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "get <bundle> <position> | <globalPosition>",
+		Short: "Get operation as JSON",
+		Long: `Get operation as JSON (machine-readable)
+
+Supports two input formats:
+  1. Bundle number + position: get 42 1337
+  2. Global position: get 420000
+
+Global position = (bundleNumber × 10,000) + position`,
+
+		Example: `  # By bundle + position
+  plcbundle op get 42 1337
+
+  # By global position
+  plcbundle op get 88410345
+
+  # Pipe to jq
+  plcbundle op get 42 1337 | jq .did`,
+
+		Args: cobra.RangeArgs(1, 2),
+
+		RunE: func(cmd *cobra.Command, args []string) error {
+			bundleNum, position, err := parseOpArgs(args)
+			if err != nil {
+				return err
+			}
+
+			mgr, _, err := getManager(&ManagerOptions{Cmd: cmd})
+			if err != nil {
+				return err
+			}
+			defer mgr.Close()
+
+			ctx := context.Background()
+			op, err := mgr.LoadOperation(ctx, bundleNum, position)
+			if err != nil {
+				return err
+			}
+
+			// Output raw JSON
+			if len(op.RawJSON) > 0 {
+				fmt.Println(string(op.RawJSON))
+			} else {
+				data, _ := json.Marshal(op)
+				fmt.Println(string(data))
+			}
+
+			return nil
+		},
+	}
+
+	return cmd
+}
+
+// ============================================================================
+// OP SHOW - Show operation (formatted)
+// ============================================================================
+
+func newOpShowCommand() *cobra.Command {
+	var verbose bool
+
+	cmd := &cobra.Command{
+		Use:   "show <bundle> <position> | <globalPosition>",
+		Short: "Show operation (human-readable)",
+		Long: `Show operation with formatted output
+
+Displays operation in human-readable format with:
+  • Bundle location and global position
+  • DID and CID
+  • Timestamp and age
+  • Nullification status
+  • Parsed operation details`,
+
+		Example: `  # By bundle + position
+  plcbundle op show 42 1337
+
+  # By global position
+  plcbundle op show 88410345
+
+  # Verbose (show full operation JSON)
+  plcbundle op show 42 1337 -v`,
+
+		Args: cobra.RangeArgs(1, 2),
+
+		RunE: func(cmd *cobra.Command, args []string) error {
+			bundleNum, position, err := parseOpArgs(args)
+			if err != nil {
+				return err
+			}
+
+			mgr, _, err := getManager(&ManagerOptions{Cmd: cmd})
+			if err != nil {
+				return err
+			}
+			defer mgr.Close()
+
+			ctx := context.Background()
+			op, err := mgr.LoadOperation(ctx, bundleNum, position)
+			if err != nil {
+				return err
+			}
+
+			return displayOperation(bundleNum, position, op, verbose)
+		},
+	}
+
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show full operation JSON")
+
+	return cmd
+}
+
+// ============================================================================
+// OP FIND - Find operation by CID
+// ============================================================================
+
+func newOpFindCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "find <cid>",
+		Short: "Find operation by CID",
+		Long: `Find operation by CID across all bundles
+
+Searches the entire repository for an operation with the given CID
+and returns its location (bundle + position).
+
+Note: This performs a full scan and can be slow on large repositories.`,
+
+		Example: `  # Find by CID
+  plcbundle op find bafyreig3tg4k...
+
+  # Pipe to op get
+  plcbundle op find bafyreig3... | awk '{print $3, $5}' | xargs plcbundle op get`,
+
+		Args: cobra.ExactArgs(1),
+
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cid := args[0]
+
+			mgr, _, err := getManager(&ManagerOptions{Cmd: cmd})
+			if err != nil {
+				return err
+			}
+			defer mgr.Close()
+
+			return findOperationByCID(mgr, cid)
+		},
+	}
+
+	return cmd
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+// parseOpArgs parses operation arguments (supports both formats)
+func parseOpArgs(args []string) (bundleNum, position int, err error) {
+	if len(args) == 1 {
+		global, err := strconv.Atoi(args[0])
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid position: %w", err)
+		}
+
+		if global < types.BUNDLE_SIZE {
+			// Small numbers: shorthand for "bundle 1, position N"
+			// op get 1 → bundle 1, position 1
+			// op get 100 → bundle 1, position 100
+			return 1, global, nil
+		}
+
+		// Large numbers: global position
+		// op get 10000 → bundle 1, position 0
+		// op get 88410345 → bundle 8841, position 345
+		bundleNum = global / types.BUNDLE_SIZE
+		position = global % types.BUNDLE_SIZE
+
+		return bundleNum, position, nil
+	}
+
+	if len(args) == 2 {
+		// Explicit: bundle + position
+		bundleNum, err = strconv.Atoi(args[0])
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid bundle number: %w", err)
+		}
+
+		position, err = strconv.Atoi(args[1])
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid position: %w", err)
+		}
+
+		return bundleNum, position, nil
+	}
+
+	return 0, 0, fmt.Errorf("usage: op <command> <bundle> <position> OR op <command> <globalPosition>")
+}
+
+// displayOperation shows formatted operation details
+func displayOperation(bundleNum, position int, op *plcclient.PLCOperation, verbose bool) error {
+	globalPos := (bundleNum * types.BUNDLE_SIZE) + position
+
+	fmt.Printf("Operation %d\n", globalPos)
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
+
+	fmt.Printf("Location\n")
+	fmt.Printf("────────\n")
+	fmt.Printf("  Bundle:          %06d\n", bundleNum)
+	fmt.Printf("  Position:        %d\n", position)
+	fmt.Printf("  Global position: %d\n\n", globalPos)
+
+	fmt.Printf("Identity\n")
+	fmt.Printf("────────\n")
+	fmt.Printf("  DID:             %s\n", op.DID)
+	fmt.Printf("  CID:             %s\n\n", op.CID)
+
+	fmt.Printf("Timestamp\n")
+	fmt.Printf("─────────\n")
+	fmt.Printf("  Created:         %s\n", op.CreatedAt.Format("2006-01-02 15:04:05.000 MST"))
+	fmt.Printf("  Age:             %s\n\n", formatDuration(time.Since(op.CreatedAt)))
+
+	// Status
+	status := "✓ Active"
+	if op.IsNullified() {
+		status = "✗ Nullified"
+		if cid := op.GetNullifyingCID(); cid != "" {
+			status += fmt.Sprintf(" by %s", cid)
+		}
+	}
+	fmt.Printf("Status\n")
+	fmt.Printf("──────\n")
+	fmt.Printf("  %s\n\n", status)
+
+	// Parse operation details
+	if opData, err := op.GetOperationData(); err == nil && opData != nil && !op.IsNullified() {
+		fmt.Printf("Details\n")
+		fmt.Printf("───────\n")
+
+		if opType, ok := opData["type"].(string); ok {
+			fmt.Printf("  Type:            %s\n", opType)
+		}
+
+		if handle, ok := opData["handle"].(string); ok {
+			fmt.Printf("  Handle:          %s\n", handle)
+		} else if aka, ok := opData["alsoKnownAs"].([]interface{}); ok && len(aka) > 0 {
+			if akaStr, ok := aka[0].(string); ok {
+				handle := strings.TrimPrefix(akaStr, "at://")
+				fmt.Printf("  Handle:          %s\n", handle)
+			}
+		}
+
+		if services, ok := opData["services"].(map[string]interface{}); ok {
+			if pds, ok := services["atproto_pds"].(map[string]interface{}); ok {
+				if endpoint, ok := pds["endpoint"].(string); ok {
+					fmt.Printf("  PDS:             %s\n", endpoint)
+				}
+			}
+		}
+
+		fmt.Printf("\n")
+	}
+
+	// Verbose: show full JSON
+	if verbose {
+		fmt.Printf("Raw JSON\n")
+		fmt.Printf("────────\n")
+		if len(op.RawJSON) > 0 {
+			fmt.Println(string(op.RawJSON))
+		} else {
+			data, _ := json.MarshalIndent(op, "", "  ")
+			fmt.Println(string(data))
+		}
+		fmt.Printf("\n")
+	}
+
+	return nil
+}
+
+// findOperationByCID searches for an operation by CID
+func findOperationByCID(mgr BundleManager, cid string) error {
+	ctx := context.Background()
+	index := mgr.GetIndex()
+	bundles := index.GetBundles()
+
+	if len(bundles) == 0 {
+		fmt.Fprintf(os.Stderr, "No bundles to search\n")
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "Searching %d bundles for CID: %s\n\n", len(bundles), cid)
+
+	for _, meta := range bundles {
+		bundle, err := mgr.LoadBundle(ctx, meta.BundleNumber)
+		if err != nil {
+			continue
+		}
+
+		for pos, op := range bundle.Operations {
+			if op.CID == cid {
+				globalPos := (meta.BundleNumber * types.BUNDLE_SIZE) + pos
+
+				fmt.Printf("Found: bundle %06d, position %d\n", meta.BundleNumber, pos)
+				fmt.Printf("Global position: %d\n\n", globalPos)
+
+				fmt.Printf("  DID:        %s\n", op.DID)
+				fmt.Printf("  Created:    %s\n", op.CreatedAt.Format("2006-01-02 15:04:05"))
+
+				if op.IsNullified() {
+					fmt.Printf("  Status:     ✗ Nullified")
+					if nullCID := op.GetNullifyingCID(); nullCID != "" {
+						fmt.Printf(" by %s", nullCID)
+					}
+					fmt.Printf("\n")
+				} else {
+					fmt.Printf("  Status:     ✓ Active\n")
+				}
+
+				return nil
+			}
+		}
+
+		// Progress indicator
+		if meta.BundleNumber%100 == 0 {
+			fmt.Fprintf(os.Stderr, "Searched through bundle %06d...\r", meta.BundleNumber)
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "\nCID not found: %s\n", cid)
+	return fmt.Errorf("CID not found")
+}
