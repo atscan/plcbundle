@@ -41,13 +41,11 @@ Documentation: https://tangled.org/@atscan.net/plcbundle`,
 	cmd.PersistentFlags().StringP("dir", "C", "", "Repository directory (default: current directory)")
 	cmd.PersistentFlags().BoolP("verbose", "v", false, "Show detailed output and progress")
 	cmd.PersistentFlags().BoolP("quiet", "q", false, "Suppress non-error output")
-	//cmd.PersistentFlags().Bool("json", false, "Output as JSON (where applicable)")
 
 	// Bundle operations (root level - most common)
 	cmd.AddCommand(commands.NewSyncCommand())
 	cmd.AddCommand(commands.NewCloneCommand())
-	//cmd.AddCommand(commands.NewExportCommand())
-	cmd.AddCommand(commands.NewStreamCommand())
+	cmd.AddCommand(commands.NewExportCommand())
 	cmd.AddCommand(commands.NewRollbackCommand())
 
 	// Status & info (root level)
@@ -150,7 +148,7 @@ Main Commands:
   server               Start HTTP server
 
 Command Groups:
-  Bundle:   clone, sync, pull, export, stream, get, rollback
+  Bundle:   clone, sync, pull, export, get, rollback
   Status:   status, log, gaps, verify, diff, stats, inspect
   DID:      did <lookup|resolve|history|batch|search|stats>
   Index:    index <build|repair|stats|verify>
