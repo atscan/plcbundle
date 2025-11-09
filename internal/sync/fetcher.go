@@ -48,13 +48,19 @@ func (f *Fetcher) FetchToMempool(
 
 	seenCIDs := make(map[string]bool)
 
-	// Mark previous boundary CIDs as seen
-	for cid := range prevBoundaryCIDs {
+	// ✅ Initialize current boundaries from previous bundle (or empty if first fetch)
+	currentBoundaryCIDs := prevBoundaryCIDs
+	if currentBoundaryCIDs == nil {
+		currentBoundaryCIDs = make(map[string]bool)
+	}
+
+	// Mark boundary CIDs as seen to prevent re-inclusion
+	for cid := range currentBoundaryCIDs {
 		seenCIDs[cid] = true
 	}
 
-	if !quiet && len(prevBoundaryCIDs) > 0 {
-		f.logger.Printf("  Tracking %d boundary CIDs from previous bundle", len(prevBoundaryCIDs))
+	if !quiet && len(currentBoundaryCIDs) > 0 {
+		f.logger.Printf("  Starting with %d boundary CIDs from previous bundle", len(currentBoundaryCIDs))
 	}
 
 	currentAfter := afterTime
@@ -112,46 +118,48 @@ func (f *Fetcher) FetchToMempool(
 		originalBatchSize := len(batch)
 		totalReceived += originalBatchSize
 
-		// ✨ FIX: Collect new ops first (don't mark as seen yet)
+		// ✅ CRITICAL: Strip boundary duplicates using current boundaries
+		batch = f.operations.StripBoundaryDuplicates(
+			batch,
+			currentAfter,
+			currentBoundaryCIDs,
+		)
+
+		afterStripSize := len(batch)
+		strippedCount := originalBatchSize - afterStripSize
+
+		if !quiet && strippedCount > 0 {
+			f.logger.Printf("  Stripped %d boundary duplicates from fetch", strippedCount)
+		}
+
+		// Collect new ops (not in seenCIDs)
 		beforeDedup := len(allNewOps)
 		var batchNewOps []plcclient.PLCOperation
 
 		for _, op := range batch {
 			if !seenCIDs[op.CID] {
-				// Collect but don't mark as seen yet
 				batchNewOps = append(batchNewOps, op)
 			}
 		}
 
 		uniqueInBatch := len(batchNewOps)
-		dupesFiltered := originalBatchSize - uniqueInBatch
-		totalDupes += dupesFiltered
+		dupesFiltered := afterStripSize - uniqueInBatch
+		totalDupes += dupesFiltered + strippedCount
 
-		// ✨ FIX: Try to add to mempool BEFORE marking as seen
+		// Try to add to mempool
 		if uniqueInBatch > 0 && mempool != nil {
-			added, addErr := mempool.Add(batchNewOps)
+			_, addErr := mempool.Add(batchNewOps)
 
 			if addErr != nil {
-				// ✨ CRITICAL: Add failed - don't mark as seen!
+				// Add failed - don't mark as seen
 				if !quiet {
 					f.logger.Printf("  ❌ Mempool add failed: %v", addErr)
-					f.logger.Printf("  → %d operations NOT marked as seen (will retry on next sync)", uniqueInBatch)
 				}
-
-				// Save what we successfully added so far
 				mempool.Save()
-				return allNewOps, fetchesMade, fmt.Errorf("mempool add failed for %d operations: %w", uniqueInBatch, addErr)
+				return allNewOps, fetchesMade, fmt.Errorf("mempool add failed: %w", addErr)
 			}
 
-			// ✨ SUCCESS: Add succeeded, NOW mark as seen and add to result
-			if added != uniqueInBatch {
-				// Mempool deduplicated some - this is OK, just log
-				if !quiet {
-					f.logger.Printf("  ℹ️  Mempool deduplicated %d operations (already present)", uniqueInBatch-added)
-				}
-			}
-
-			// Mark successfully added ops as seen
+			// Success - mark as seen
 			for _, op := range batchNewOps {
 				seenCIDs[op.CID] = true
 			}
@@ -159,43 +167,50 @@ func (f *Fetcher) FetchToMempool(
 
 			uniqueAdded := len(allNewOps) - beforeDedup
 
-			// Show fetch result with running totals
 			if !quiet {
 				opsPerSec := float64(originalBatchSize) / fetchDuration.Seconds()
-
-				if dupesFiltered > 0 {
-					f.logger.Printf("  → +%d unique (%d dupes) in %s • Running: %d/%d (%.0f ops/sec)",
-						uniqueAdded, dupesFiltered, fetchDuration, len(allNewOps), target, opsPerSec)
+				if dupesFiltered+strippedCount > 0 {
+					f.logger.Printf("  → +%d unique (%d dupes, %d boundary) in %s • Running: %d/%d (%.0f ops/sec)",
+						uniqueAdded, dupesFiltered, strippedCount, fetchDuration, len(allNewOps), target, opsPerSec)
 				} else {
 					f.logger.Printf("  → +%d unique in %s • Running: %d/%d (%.0f ops/sec)",
 						uniqueAdded, fetchDuration, len(allNewOps), target, opsPerSec)
 				}
 			}
 
-			// ✨ Save only if threshold met
+			// ✅ CRITICAL: Calculate NEW boundary CIDs from this fetch for next iteration
+			if len(batch) > 0 {
+				boundaryTime, newBoundaryCIDs := f.operations.GetBoundaryCIDs(batch)
+				currentBoundaryCIDs = newBoundaryCIDs
+				currentAfter = boundaryTime.Format(time.RFC3339Nano)
+
+				if !quiet && len(newBoundaryCIDs) > 1 {
+					f.logger.Printf("  Updated boundaries: %d CIDs at %s",
+						len(newBoundaryCIDs), currentAfter[:19])
+				}
+			}
+
+			// Save if threshold met
 			if err := mempool.SaveIfNeeded(); err != nil {
 				f.logger.Printf("  Warning: failed to save mempool: %v", err)
 			}
 
-			if !quiet && added > 0 {
-				cursor := mempool.GetLastTime()
-				f.logger.Printf("  Added to mempool: %d ops (total: %d, cursor: %s)",
-					added, mempool.Count(), cursor[:19])
-			}
 		} else if uniqueInBatch > 0 {
-			// No mempool provided - just collect
+			// No mempool - just collect
 			for _, op := range batchNewOps {
 				seenCIDs[op.CID] = true
 			}
 			allNewOps = append(allNewOps, batchNewOps...)
+
+			// ✅ Still update boundaries even without mempool
+			if len(batch) > 0 {
+				boundaryTime, newBoundaryCIDs := f.operations.GetBoundaryCIDs(batch)
+				currentBoundaryCIDs = newBoundaryCIDs
+				currentAfter = boundaryTime.Format(time.RFC3339Nano)
+			}
 		}
 
-		// Update cursor for next fetch
-		if len(batch) > 0 {
-			currentAfter = batch[len(batch)-1].CreatedAt.Format(time.RFC3339Nano)
-		}
-
-		// Check completeness
+		// Check if incomplete batch (caught up)
 		if originalBatchSize < batchSize {
 			if !quiet {
 				f.logger.Printf("  Incomplete batch (%d/%d) → caught up", originalBatchSize, batchSize)

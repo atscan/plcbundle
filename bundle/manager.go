@@ -1134,24 +1134,38 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		afterTime = lastBundle.EndTime.Format(time.RFC3339Nano)
 		prevBundleHash = lastBundle.Hash
 
+		// ALWAYS get boundaries from last bundle initially
 		prevBundle, err := m.LoadBundle(ctx, lastBundle.BundleNumber)
 		if err == nil {
 			_, prevBoundaryCIDs = m.operations.GetBoundaryCIDs(prevBundle.Operations)
 			if !quiet {
-				m.logger.Printf("Previous bundle %06d has %d boundary CIDs at %s",
-					lastBundle.BundleNumber, len(prevBoundaryCIDs), lastBundle.EndTime.Format(time.RFC3339))
+				m.logger.Printf("Loaded %d boundary CIDs from bundle %06d (at %s)",
+					len(prevBoundaryCIDs), lastBundle.BundleNumber,
+					lastBundle.EndTime.Format(time.RFC3339)[:19])
 			}
 		}
 	}
 
-	// Use mempool's last time if available
+	// If mempool has operations, update cursor but KEEP boundaries from bundle
+	// (mempool operations already had boundary dedup applied when they were added)
 	if m.mempool.Count() > 0 {
 		mempoolLastTime := m.mempool.GetLastTime()
 		if mempoolLastTime != "" {
 			if !quiet {
-				m.logger.Printf("Mempool has %d ops, last at %s", m.mempool.Count(), mempoolLastTime)
+				m.logger.Printf("Mempool has %d ops, resuming from %s",
+					m.mempool.Count(), mempoolLastTime[:19])
 			}
 			afterTime = mempoolLastTime
+
+			// Calculate boundaries from MEMPOOL for next fetch
+			mempoolOps, _ := m.GetMempoolOperations()
+			if len(mempoolOps) > 0 {
+				_, mempoolBoundaries := m.operations.GetBoundaryCIDs(mempoolOps)
+				prevBoundaryCIDs = mempoolBoundaries
+				if !quiet {
+					m.logger.Printf("Using %d boundary CIDs from mempool", len(prevBoundaryCIDs))
+				}
+			}
 		}
 	}
 
