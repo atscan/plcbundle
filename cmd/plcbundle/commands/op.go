@@ -314,16 +314,26 @@ func displayOperation(bundleNum, position int, op *plcclient.PLCOperation, verbo
 		fmt.Printf("\n")
 	}
 
-	// Verbose: show full JSON
+	// Verbose: show full JSON (pretty-printed)
 	if verbose {
 		fmt.Printf("Raw JSON\n")
 		fmt.Printf("────────\n")
+
+		var data []byte
 		if len(op.RawJSON) > 0 {
-			fmt.Println(string(op.RawJSON))
+			// Parse and re-format the raw JSON
+			var temp interface{}
+			if err := json.Unmarshal(op.RawJSON, &temp); err == nil {
+				data, _ = json.MarshalIndent(temp, "", "  ")
+			} else {
+				// Fallback to raw if parse fails
+				data = op.RawJSON
+			}
 		} else {
-			data, _ := json.MarshalIndent(op, "", "  ")
-			fmt.Println(string(data))
+			data, _ = json.MarshalIndent(op, "", "  ")
 		}
+
+		fmt.Println(string(data))
 		fmt.Printf("\n")
 	}
 
