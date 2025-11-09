@@ -22,8 +22,9 @@ func NewSyncCommand() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "sync",
-		Short: "Fetch new bundles from PLC directory",
+		Use:     "sync",
+		Aliases: []string{"fetch"},
+		Short:   "Fetch new bundles from PLC directory",
 		Long: `Fetch new bundles from PLC directory
 
 Download new operations from the PLC directory and create bundles.
