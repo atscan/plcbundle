@@ -64,7 +64,7 @@ Documentation: https://tangled.org/@atscan.net/plcbundle`,
 
 	// Namespaced commands
 	cmd.AddCommand(commands.NewDIDCommand())
-	//cmd.AddCommand(commands.NewIndexCommand())
+	cmd.AddCommand(commands.NewIndexCommand())
 	cmd.AddCommand(commands.NewMempoolCommand())
 	/*cmd.AddCommand(commands.NewDetectorCommand())
 

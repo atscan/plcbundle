@@ -978,3 +978,133 @@ func batchExport(mgr BundleManager, dids []string, output *os.File, workers int)
 
 	return nil
 }
+
+// ============================================================================
+// Shared Helper Functions (used by both DID and legacy index commands)
+// ============================================================================
+
+func outputLookupJSON(did string, opsWithLoc []PLCOperationWithLocation, mempoolOps []plcclient.PLCOperation, totalElapsed, lookupElapsed, mempoolElapsed time.Duration) error {
+	output := map[string]interface{}{
+		"found": true,
+		"did":   did,
+		"timing": map[string]interface{}{
+			"total_ms":   totalElapsed.Milliseconds(),
+			"lookup_ms":  lookupElapsed.Milliseconds(),
+			"mempool_ms": mempoolElapsed.Milliseconds(),
+		},
+		"bundled": make([]map[string]interface{}, 0),
+		"mempool": make([]map[string]interface{}, 0),
+	}
+
+	for _, owl := range opsWithLoc {
+		output["bundled"] = append(output["bundled"].([]map[string]interface{}), map[string]interface{}{
+			"bundle":     owl.Bundle,
+			"position":   owl.Position,
+			"cid":        owl.Operation.CID,
+			"nullified":  owl.Operation.IsNullified(),
+			"created_at": owl.Operation.CreatedAt.Format(time.RFC3339Nano),
+		})
+	}
+
+	for _, op := range mempoolOps {
+		output["mempool"] = append(output["mempool"].([]map[string]interface{}), map[string]interface{}{
+			"cid":        op.CID,
+			"nullified":  op.IsNullified(),
+			"created_at": op.CreatedAt.Format(time.RFC3339Nano),
+		})
+	}
+
+	data, _ := json.MarshalIndent(output, "", "  ")
+	fmt.Println(string(data))
+
+	return nil
+}
+
+func displayLookupResults(did string, opsWithLoc []PLCOperationWithLocation, mempoolOps []plcclient.PLCOperation, totalElapsed, lookupElapsed, mempoolElapsed time.Duration, verbose bool, stats map[string]interface{}) error {
+	nullifiedCount := 0
+	for _, owl := range opsWithLoc {
+		if owl.Operation.IsNullified() {
+			nullifiedCount++
+		}
+	}
+
+	totalOps := len(opsWithLoc) + len(mempoolOps)
+	activeOps := len(opsWithLoc) - nullifiedCount + len(mempoolOps)
+
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("                    DID Lookup Results\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
+	fmt.Printf("DID: %s\n\n", did)
+
+	fmt.Printf("Summary\n───────\n")
+	fmt.Printf("  Total operations:   %d\n", totalOps)
+	fmt.Printf("  Active operations:  %d\n", activeOps)
+	if nullifiedCount > 0 {
+		fmt.Printf("  Nullified:          %d\n", nullifiedCount)
+	}
+	if len(opsWithLoc) > 0 {
+		fmt.Printf("  Bundled:            %d\n", len(opsWithLoc))
+	}
+	if len(mempoolOps) > 0 {
+		fmt.Printf("  Mempool:            %d\n", len(mempoolOps))
+	}
+	fmt.Printf("\n")
+
+	fmt.Printf("Performance\n───────────\n")
+	fmt.Printf("  Index lookup:       %s\n", lookupElapsed)
+	fmt.Printf("  Mempool check:      %s\n", mempoolElapsed)
+	fmt.Printf("  Total time:         %s\n\n", totalElapsed)
+
+	// Show operations
+	if len(opsWithLoc) > 0 {
+		fmt.Printf("Bundled Operations (%d total)\n", len(opsWithLoc))
+		fmt.Printf("══════════════════════════════════════════════════════════════\n\n")
+
+		for i, owl := range opsWithLoc {
+			op := owl.Operation
+			status := "✓ Active"
+			if op.IsNullified() {
+				status = "✗ Nullified"
+			}
+
+			fmt.Printf("Operation %d [Bundle %06d, Position %04d]\n", i+1, owl.Bundle, owl.Position)
+			fmt.Printf("   CID:        %s\n", op.CID)
+			fmt.Printf("   Created:    %s\n", op.CreatedAt.Format("2006-01-02 15:04:05.000 MST"))
+			fmt.Printf("   Status:     %s\n", status)
+
+			if verbose && !op.IsNullified() {
+				showOperationDetails(&op)
+			}
+
+			fmt.Printf("\n")
+		}
+	}
+
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("✓ Lookup complete in %s\n", totalElapsed)
+	if stats["exists"].(bool) {
+		fmt.Printf("  Method: DID index (fast)\n")
+	} else {
+		fmt.Printf("  Method: Full scan (slow)\n")
+	}
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+
+	return nil
+}
+
+func showOperationDetails(op *plcclient.PLCOperation) {
+	if opData, err := op.GetOperationData(); err == nil && opData != nil {
+		if opType, ok := opData["type"].(string); ok {
+			fmt.Printf("   Type:       %s\n", opType)
+		}
+
+		if handle, ok := opData["handle"].(string); ok {
+			fmt.Printf("   Handle:     %s\n", handle)
+		} else if aka, ok := opData["alsoKnownAs"].([]interface{}); ok && len(aka) > 0 {
+			if akaStr, ok := aka[0].(string); ok {
+				handle := strings.TrimPrefix(akaStr, "at://")
+				fmt.Printf("   Handle:     %s\n", handle)
+			}
+		}
+	}
+}

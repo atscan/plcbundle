@@ -35,6 +35,7 @@ type BundleManager interface {
 	GetDIDIndexStats() map[string]interface{}
 	GetDIDIndex() *didindex.Manager
 	BuildDIDIndex(ctx context.Context, progress func(int, int)) error
+	GetDIDOperations(ctx context.Context, did string, verbose bool) ([]plcclient.PLCOperation, error)
 	GetDIDOperationsWithLocations(ctx context.Context, did string, verbose bool) ([]bundle.PLCOperationWithLocation, error)
 	GetDIDOperationsFromMempool(did string) ([]plcclient.PLCOperation, error)
 	GetLatestDIDOperation(ctx context.Context, did string) (*plcclient.PLCOperation, error)
@@ -43,6 +44,9 @@ type BundleManager interface {
 	ResolveDID(ctx context.Context, did string) (*bundle.ResolveDIDResult, error)
 	RunSyncOnce(ctx context.Context, config *internalsync.SyncLoopConfig, verbose bool) (int, error)
 	RunSyncLoop(ctx context.Context, config *internalsync.SyncLoopConfig) error
+	GetBundleIndex() didindex.BundleIndexProvider
+	ScanDirectoryParallel(workers int, progressCallback func(current, total int, bytesProcessed int64)) (*bundle.DirectoryScanResult, error)
+	LoadBundleForDIDIndex(ctx context.Context, bundleNumber int) (*didindex.BundleData, error)
 }
 
 // PLCOperationWithLocation wraps operation with location info
