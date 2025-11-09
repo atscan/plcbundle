@@ -49,8 +49,8 @@ Documentation: https://tangled.org/@atscan.net/plcbundle`,
 	/*cmd.AddCommand(commands.NewPullCommand())
 	cmd.AddCommand(commands.NewExportCommand())*/
 	cmd.AddCommand(commands.NewStreamCommand())
-	/*cmd.AddCommand(commands.NewGetCommand())
-	cmd.AddCommand(commands.NewRollbackCommand())*/
+	//cmd.AddCommand(commands.NewGetCommand())
+	cmd.AddCommand(commands.NewRollbackCommand())
 
 	// Status & info (root level)
 	cmd.AddCommand(commands.NewStatusCommand())

@@ -30,7 +30,8 @@ type BundleManager interface {
 	RefreshMempool() error
 	ClearMempool() error
 	FetchNextBundle(ctx context.Context, quiet bool) (*bundle.Bundle, error)
-	SaveBundle(ctx context.Context, b *bundle.Bundle, quiet bool) (time.Duration, error) // ✨ Updated signature
+	SaveBundle(ctx context.Context, b *bundle.Bundle, quiet bool) (time.Duration, error)
+	SaveIndex() error
 	GetDIDIndexStats() map[string]interface{}
 	GetDIDIndex() *didindex.Manager
 	BuildDIDIndex(ctx context.Context, progress func(int, int)) error
@@ -211,4 +212,27 @@ func (l *commandLogger) Println(v ...interface{}) {
 	if !l.quiet {
 		fmt.Fprintln(os.Stderr, v...)
 	}
+}
+
+// formatCount formats count with color coding
+func formatCount(count int) string {
+	if count == 0 {
+		return "\033[32m0 ✓\033[0m"
+	}
+	return fmt.Sprintf("\033[33m%d ⚠️\033[0m", count)
+}
+
+// formatCountCritical formats count with critical color coding
+func formatCountCritical(count int) string {
+	if count == 0 {
+		return "\033[32m0 ✓\033[0m"
+	}
+	return fmt.Sprintf("\033[31m%d ✗\033[0m", count)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

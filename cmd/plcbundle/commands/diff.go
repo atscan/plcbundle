@@ -776,26 +776,3 @@ func (ic *IndexComparison) HasDifferences() bool {
 	return len(ic.MissingBundles) > 0 || len(ic.ExtraBundles) > 0 ||
 		len(ic.HashMismatches) > 0 || len(ic.ContentMismatches) > 0
 }
-
-// formatCount formats count with color coding
-func formatCount(count int) string {
-	if count == 0 {
-		return "\033[32m0 ✓\033[0m"
-	}
-	return fmt.Sprintf("\033[33m%d ⚠️\033[0m", count)
-}
-
-// formatCountCritical formats count with critical color coding
-func formatCountCritical(count int) string {
-	if count == 0 {
-		return "\033[32m0 ✓\033[0m"
-	}
-	return fmt.Sprintf("\033[31m%d ✗\033[0m", count)
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
