@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -25,6 +26,7 @@ type ScriptDetector struct {
 	conn       net.Conn
 	writer     *bufio.Writer
 	reader     *bufio.Reader
+	mu         sync.Mutex
 }
 
 func NewScriptDetector(scriptPath string) (*ScriptDetector, error) {
@@ -143,6 +145,10 @@ func (d *ScriptDetector) Detect(ctx context.Context, op plcclient.PLCOperation) 
 	if d.conn == nil {
 		return nil, fmt.Errorf("not connected to server")
 	}
+
+	// ✨ LOCK for entire socket communication
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
 	// Use RawJSON directly
 	data := op.RawJSON
