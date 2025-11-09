@@ -2,9 +2,10 @@ package commands
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
+
+	flag "github.com/spf13/pflag"
 )
 
 // BackfillCommand handles the backfill subcommand

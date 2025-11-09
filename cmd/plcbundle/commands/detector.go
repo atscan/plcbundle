@@ -3,13 +3,14 @@ package commands
 import (
 	"bufio"
 	"context"
-	"flag"
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"sort"
 	"strings"
+
+	flag "github.com/spf13/pflag"
 
 	"github.com/goccy/go-json"
 	"tangled.org/atscan.net/plcbundle/detector"

@@ -2,13 +2,14 @@ package commands
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
 	"syscall"
 	"time"
+
+	flag "github.com/spf13/pflag"
 
 	"tangled.org/atscan.net/plcbundle/bundle"
 	"tangled.org/atscan.net/plcbundle/cmd/plcbundle/ui"

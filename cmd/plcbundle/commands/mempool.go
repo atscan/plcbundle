@@ -1,12 +1,13 @@
 package commands
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	flag "github.com/spf13/pflag"
 
 	"tangled.org/atscan.net/plcbundle/internal/types"
 )

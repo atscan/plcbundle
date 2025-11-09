@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -10,6 +9,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	flag "github.com/spf13/pflag"
 
 	"tangled.org/atscan.net/plcbundle/cmd/plcbundle/ui"
 	internalsync "tangled.org/atscan.net/plcbundle/internal/sync"

@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	flag "github.com/spf13/pflag"
 
 	"github.com/goccy/go-json"
 	"tangled.org/atscan.net/plcbundle/internal/bundleindex"

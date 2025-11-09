@@ -2,12 +2,13 @@ package commands
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"time"
+
+	flag "github.com/spf13/pflag"
 
 	"tangled.org/atscan.net/plcbundle/bundle"
 	"tangled.org/atscan.net/plcbundle/cmd/plcbundle/ui"

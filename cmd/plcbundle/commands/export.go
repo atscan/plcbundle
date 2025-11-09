@@ -2,10 +2,11 @@ package commands
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"time"
+
+	flag "github.com/spf13/pflag"
 
 	"github.com/goccy/go-json"
 )

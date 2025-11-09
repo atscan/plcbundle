@@ -2,11 +2,12 @@ package commands
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"strings"
 	"time"
+
+	flag "github.com/spf13/pflag"
 
 	"github.com/goccy/go-json"
 	"tangled.org/atscan.net/plcbundle/cmd/plcbundle/ui"
@@ -242,7 +243,7 @@ func indexLookup(args []string) error {
 
 func indexResolve(args []string) error {
 	fs := flag.NewFlagSet("index resolve", flag.ExitOnError)
-	verbose := fs.Bool("v", false, "verbose timing breakdown")
+	verbose := fs.BoolP("verbose", "v", false, "verbose timing breakdown")
 
 	if err := fs.Parse(args); err != nil {
 		return err

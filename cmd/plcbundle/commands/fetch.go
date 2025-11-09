@@ -2,10 +2,11 @@ package commands
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"time"
+
+	flag "github.com/spf13/pflag"
 )
 
 // FetchCommand handles the fetch subcommand
