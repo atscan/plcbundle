@@ -24,6 +24,8 @@ func main() {
 		err = commands.FetchCommand(os.Args[2:])
 	case "clone":
 		err = commands.CloneCommand(os.Args[2:])
+	case "rollback":
+		err = commands.RollbackCommand(os.Args[2:])
 	case "rebuild":
 		err = commands.RebuildCommand(os.Args[2:])
 	case "verify":
@@ -67,8 +69,9 @@ Usage:
   plcbundle <command> [options]
 
 Commands:
-  fetch      Fetch next bundle from PLC directory
+  fetch      Fetch next bundle(s) from PLC directory
   clone      Clone bundles from remote HTTP endpoint
+  rollback   Rollback to previous bundle state 
   rebuild    Rebuild index from existing bundle files
   verify     Verify bundle integrity
   info       Show bundle information
