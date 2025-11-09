@@ -109,7 +109,7 @@ bump-major:
 	@./scripts/bump-version.sh major
 
 # Bump alpha version (0.1.0 -> 0.2.0-alpha.1)
-bump-major:
+bump-alpha:
 	@echo "Bumping major version..."
 	@./scripts/bump-version.sh alpha	
 
