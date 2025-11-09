@@ -67,8 +67,8 @@ Documentation: https://tangled.org/@atscan.net/plcbundle`,
 
 	// Monitoring & maintenance
 	/*cmd.AddCommand(commands.NewWatchCommand())
-	cmd.AddCommand(commands.NewHealCommand())
-	cmd.AddCommand(commands.NewCleanCommand())*/
+	cmd.AddCommand(commands.NewHealCommand())*/
+	cmd.AddCommand(commands.NewCleanCommand())
 
 	// Server
 	cmd.AddCommand(commands.NewServerCommand())
@@ -148,9 +148,10 @@ Main Commands:
   server               Start HTTP server
 
 Command Groups:
-  Bundle:   clone, sync, pull, export, get, rollback
+  Bundle:   clone, sync, export, get, rollback
   Status:   status, log, gaps, verify, diff, stats, inspect
-  DID:      did <lookup|resolve|history|batch|search|stats>
+  Ops:      op <get|show|find>
+  DID:      did <resolve|lookup|history|batch|stats>
   Index:    index <build|repair|stats|verify>
   Tools:    watch, heal, clean, mempool, detector
 

@@ -17,7 +17,7 @@ import (
 func NewOpCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "op",
-		Aliases: []string{"operation"},
+		Aliases: []string{"operation", "record"},
 		Short:   "Operation queries and inspection",
 		Long: `Operation queries and inspection
 
