@@ -199,17 +199,15 @@ func (m *Mempool) Take(n int) ([]plcclient.PLCOperation, error) {
 	// Remove taken operations
 	m.operations = m.operations[n:]
 
-	// Adjust lastSavedLen to account for removed operations
-	if m.lastSavedLen > 0 {
-		if m.lastSavedLen > n {
-			m.lastSavedLen -= n // Some saved ops remain
-		} else {
-			m.lastSavedLen = 0 // All saved ops were taken
-		}
-	}
+	// ✨ FIX: ALWAYS reset tracking after Take
+	// Take() means we're consuming these ops for a bundle
+	// Any remaining ops are "new" and unsaved
+	m.lastSavedLen = 0
+	m.lastSaveTime = time.Now()
 
-	// ✨ Mark dirty since state changed
-	m.dirty = true
+	// Mark dirty only if ops remain
+	m.dirty = len(m.operations) > 0
+	m.validated = false
 
 	return result, nil
 }

@@ -493,7 +493,10 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (t
 		return 0, fmt.Errorf("failed to create new mempool: %w", err)
 	}
 
+	oldMempool := m.mempool
 	m.mempool = newMempool
+
+	oldMempool.Clear()
 
 	// ✨ Update DID index if enabled and track timing
 	var indexUpdateDuration time.Duration
