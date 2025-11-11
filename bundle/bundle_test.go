@@ -13,8 +13,20 @@ import (
 	"tangled.org/atscan.net/plcbundle/internal/types"
 )
 
+var (
+	bundleInfo = &storage.BundleInfo{
+		BundleNumber: 1,
+		Origin:       "test-origin",
+		ParentHash:   "",
+		Cursor:       "",
+		CreatedBy:    "test",
+		Hostname:     "test-host",
+	}
+)
+
 // TestIndex tests index operations
 func TestIndex(t *testing.T) {
+
 	t.Run("CreateNewIndex", func(t *testing.T) {
 		idx := bundleindex.NewIndex("test-origin")
 		if idx == nil {
@@ -348,7 +360,7 @@ func TestOperations(t *testing.T) {
 		path := filepath.Join(tmpDir, "test_bundle.jsonl.zst")
 
 		// Save
-		uncompHash, compHash, uncompSize, compSize, err := ops.SaveBundle(path, operations, nil)
+		uncompHash, compHash, uncompSize, compSize, err := ops.SaveBundle(path, operations, bundleInfo)
 		if err != nil {
 			t.Fatalf("SaveBundle failed: %v", err)
 		}

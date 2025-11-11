@@ -34,6 +34,17 @@ func (l *testLogger) Println(v ...interface{}) {
 	l.t.Log(v...)
 }
 
+var (
+	bundleInfo = &storage.BundleInfo{
+		BundleNumber: 1,
+		Origin:       "test-origin",
+		ParentHash:   "",
+		Cursor:       "",
+		CreatedBy:    "test",
+		Hostname:     "test-host",
+	}
+)
+
 // ====================================================================================
 // HTTP ENDPOINT TESTS
 // ====================================================================================
@@ -1006,7 +1017,7 @@ func setupTestManager(t *testing.T) (*bundle.Manager, func()) {
 		path := filepath.Join(tmpDir, fmt.Sprintf("%06d.jsonl.zst", i))
 		ops := makeMinimalTestOperations(10000, i*10000) // Unique ops per bundle
 
-		contentHash, compHash, uncompSize, compSize, err := storageOps.SaveBundle(path, ops, nil)
+		contentHash, compHash, uncompSize, compSize, err := storageOps.SaveBundle(path, ops, bundleInfo)
 		if err != nil {
 			t.Fatalf("failed to save test bundle %d: %v", i, err)
 		}

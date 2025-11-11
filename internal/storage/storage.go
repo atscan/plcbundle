@@ -140,6 +140,10 @@ func (op *Operations) ParseJSONL(data []byte) ([]plcclient.PLCOperation, error) 
 
 // SaveBundle saves operations with metadata containing RELATIVE frame offsets
 func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperation, bundleInfo *BundleInfo) (string, string, int64, int64, error) {
+	if bundleInfo == nil {
+		return "", "", 0, 0, fmt.Errorf("bundleInfo cannot be nil")
+	}
+
 	// 1. Calculate content
 	jsonlData := op.SerializeJSONL(operations)
 	contentSize := int64(len(jsonlData))
@@ -263,8 +267,23 @@ func (op *Operations) LoadBundle(path string) ([]plcclient.PLCOperation, error) 
 		return nil, fmt.Errorf("failed to decompress: %w", err)
 	}
 
+	// DEFENSIVE: Validate we got actual data
+	if len(decompressed) == 0 {
+		return nil, fmt.Errorf("decompression produced empty result")
+	}
+
 	// Parse JSONL
-	return op.ParseJSONL(decompressed)
+	operations, err := op.ParseJSONL(decompressed)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse JSONL: %w", err)
+	}
+
+	// DEFENSIVE: Additional validation
+	if len(operations) == 0 {
+		return nil, fmt.Errorf("bundle contains no valid operations")
+	}
+
+	return operations, nil
 }
 
 // ========================================
