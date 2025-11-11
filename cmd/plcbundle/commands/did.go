@@ -97,7 +97,7 @@ full scan (slow).`,
 			}
 			defer mgr.Close()
 
-			// ✨ Resolve handle to DID with timing
+			// Resolve handle to DID with timing
 			ctx := context.Background()
 			did, handleResolveTime, err := mgr.ResolveHandleOrDID(ctx, input)
 			if err != nil {
@@ -209,7 +209,7 @@ O(1) lookup of latest operation.`,
 
 			ctx := context.Background()
 
-			// ✨ Resolve handle to DID with timing
+			// Resolve handle to DID with timing
 			did, handleResolveTime, err := mgr.ResolveHandleOrDID(ctx, input)
 			if err != nil {
 				return err
@@ -1030,7 +1030,7 @@ func batchResolve(mgr BundleManager, dids []string, output *os.File, workers int
 		writeResult(nil, fmt.Errorf("not found"))
 	}
 
-	// ✨ Process bundles in parallel - LoadOperations once per bundle
+	// Process bundles in parallel - LoadOperations once per bundle
 	bundleJobs := make(chan bundleGroup, len(bundles))
 	var wg sync.WaitGroup
 
@@ -1046,7 +1046,7 @@ func batchResolve(mgr BundleManager, dids []string, output *os.File, workers int
 					positions[i] = locations[didIdx].position
 				}
 
-				// ✨ Load operations once for this bundle
+				// Load operations once for this bundle
 				ops, err := mgr.LoadOperations(ctx, job.bundleNum, positions)
 
 				if err != nil {

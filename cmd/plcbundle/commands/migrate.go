@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -86,6 +87,14 @@ type migrationOptions struct {
 	verbose bool
 }
 
+type bundleMigrationInfo struct {
+	bundleNumber        int
+	oldSize             int64
+	uncompressedSize    int64
+	oldFormat           string
+	oldCompressionRatio float64
+}
+
 func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 	fmt.Printf("Scanning for legacy bundles in: %s\n\n", dir)
 
@@ -97,21 +106,34 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 		return nil
 	}
 
-	// Get plcbundle version
 	version := GetVersion()
+	ops := &storage.Operations{}
 
-	var needsMigration []int
+	var needsMigration []bundleMigrationInfo
 	var totalSize int64
 
-	ops := &storage.Operations{}
 	for _, meta := range bundles {
 		bundlePath := filepath.Join(dir, fmt.Sprintf("%06d.jsonl.zst", meta.BundleNumber))
+		embeddedMeta, err := ops.ExtractBundleMetadata(bundlePath)
 
-		// Check if already has embedded metadata
-		_, err := ops.ExtractBundleMetadata(bundlePath)
+		info := bundleMigrationInfo{
+			bundleNumber:     meta.BundleNumber,
+			oldSize:          meta.CompressedSize,
+			uncompressedSize: meta.UncompressedSize,
+		}
+
+		if meta.CompressedSize > 0 {
+			info.oldCompressionRatio = float64(meta.UncompressedSize) / float64(meta.CompressedSize)
+		}
+
+		if err != nil {
+			info.oldFormat = "v0 (single-frame)"
+		} else {
+			info.oldFormat = embeddedMeta.Format
+		}
 
 		if err != nil || opts.force {
-			needsMigration = append(needsMigration, meta.BundleNumber)
+			needsMigration = append(needsMigration, info)
 			totalSize += meta.CompressedSize
 		}
 	}
@@ -122,22 +144,41 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 		return nil
 	}
 
-	// Display plan
+	// COMPACT PLAN
 	fmt.Printf("Migration Plan\n")
 	fmt.Printf("══════════════\n\n")
-	fmt.Printf("  Bundles to migrate: %d\n", len(needsMigration))
-	fmt.Printf("  Total size:         %s\n", formatBytes(totalSize))
-	fmt.Printf("  Workers:            %d\n", opts.workers)
-	fmt.Printf("  plcbundle version:  %s\n", version)
-	fmt.Printf("\n")
+
+	formatCounts := make(map[string]int)
+	var totalUncompressed int64
+	for _, info := range needsMigration {
+		formatCounts[info.oldFormat]++
+		totalUncompressed += info.uncompressedSize
+	}
+
+	fmt.Printf("  Format:  ")
+	first := true
+	for format, count := range formatCounts {
+		if !first {
+			fmt.Printf(" + ")
+		}
+		fmt.Printf("%s (%d)", format, count)
+		first = false
+	}
+	fmt.Printf(" → v%d\n", storage.MetadataFormatVersion)
+
+	fmt.Printf("  Bundles: %d\n", len(needsMigration))
+	fmt.Printf("  Size:    %s (%.3fx compression)\n",
+		formatBytes(totalSize),
+		float64(totalUncompressed)/float64(totalSize))
+	fmt.Printf("  Workers: %d, Compression Level: %d\n\n", opts.workers, storage.CompressionLevel)
 
 	if opts.dryRun {
-		fmt.Printf("💡 This is a dry-run. No files will be modified.\n")
+		fmt.Printf("💡 Dry-run mode\n")
 		return nil
 	}
 
 	// Execute migration
-	fmt.Printf("Starting migration...\n\n")
+	fmt.Printf("Migrating...\n\n")
 
 	start := time.Now()
 	progress := ui.NewProgressBar(len(needsMigration))
@@ -145,24 +186,40 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 	success := 0
 	failed := 0
 	var firstError error
-	hashChanges := make([]int, 0, len(needsMigration))
+	hashChanges := make([]int, 0)
 
-	for i, bundleNum := range needsMigration {
-		// Pass version to migrateBundle
-		if err := migrateBundle(dir, bundleNum, index, version, opts.verbose); err != nil {
+	var totalOldSize int64
+	var totalNewSize int64
+	var totalOldUncompressed int64
+	var totalNewUncompressed int64
+
+	for i, info := range needsMigration {
+		totalOldSize += info.oldSize
+		totalOldUncompressed += info.uncompressedSize
+
+		sizeDiff, newUncompressedSize, err := migrateBundle(dir, info.bundleNumber, index, version, opts.verbose)
+		if err != nil {
 			failed++
 			if firstError == nil {
 				firstError = err
 			}
 			if opts.verbose {
-				fmt.Fprintf(os.Stderr, "\n✗ Bundle %06d failed: %v\n", bundleNum, err)
+				fmt.Fprintf(os.Stderr, "\n✗ Bundle %06d failed: %v\n", info.bundleNumber, err)
 			}
 		} else {
 			success++
-			hashChanges = append(hashChanges, bundleNum)
+			hashChanges = append(hashChanges, info.bundleNumber)
+
+			newSize := info.oldSize + sizeDiff
+			totalNewSize += newSize
+			totalNewUncompressed += newUncompressedSize
 
 			if opts.verbose {
-				fmt.Fprintf(os.Stderr, "✓ Migrated bundle %06d\n", bundleNum)
+				oldRatio := float64(info.uncompressedSize) / float64(info.oldSize)
+				newRatio := float64(newUncompressedSize) / float64(newSize)
+
+				fmt.Fprintf(os.Stderr, "✓ %06d: %.3fx→%.3fx %+s\n",
+					info.bundleNumber, oldRatio, newRatio, formatBytes(sizeDiff))
 			}
 		}
 
@@ -172,34 +229,25 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 	progress.Finish()
 	elapsed := time.Since(start)
 
-	// Update index with new compressed hashes
+	// Update index
 	if len(hashChanges) > 0 {
-		fmt.Printf("\nUpdating bundle index...\n")
+		fmt.Printf("\nUpdating index...\n")
 		updateStart := time.Now()
 
 		updated := 0
 		for _, bundleNum := range hashChanges {
 			bundlePath := filepath.Join(dir, fmt.Sprintf("%06d.jsonl.zst", bundleNum))
-
-			// Recalculate hashes
-			compHash, compSize, contentHash, contentSize, err := ops.CalculateFileHashes(bundlePath)
+			compHash, compSize, _, contentSize, err := ops.CalculateFileHashes(bundlePath)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "  ⚠️  Failed to hash bundle %06d: %v\n", bundleNum, err)
+				fmt.Fprintf(os.Stderr, "  ⚠️  Failed to hash %06d: %v\n", bundleNum, err)
 				continue
 			}
 
-			// Get and update metadata
 			bundleMeta, err := index.GetBundle(bundleNum)
 			if err != nil {
 				continue
 			}
 
-			// Verify content hash unchanged
-			if bundleMeta.ContentHash != contentHash {
-				fmt.Fprintf(os.Stderr, "  ⚠️  Content hash changed for %06d (unexpected!)\n", bundleNum)
-			}
-
-			// Update compressed info (this changed due to skippable frames)
 			bundleMeta.CompressedHash = compHash
 			bundleMeta.CompressedSize = compSize
 			bundleMeta.UncompressedSize = contentSize
@@ -208,29 +256,83 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 			updated++
 		}
 
-		// Save index
 		if err := mgr.SaveIndex(); err != nil {
 			fmt.Fprintf(os.Stderr, "  ⚠️  Failed to save index: %v\n", err)
 		} else {
-			fmt.Printf("  ✓ Updated %d entries in %s\n", updated, time.Since(updateStart).Round(time.Millisecond))
+			fmt.Printf("  ✓ %d entries in %s\n", updated, time.Since(updateStart).Round(time.Millisecond))
 		}
 	}
 
-	// Summary
+	// COMPACT SUMMARY
 	fmt.Printf("\n")
 	if failed == 0 {
-		fmt.Printf("✓ Migration complete in %s\n", elapsed.Round(time.Millisecond))
-		fmt.Printf("  Migrated:     %d bundles\n", success)
-		fmt.Printf("  Index updated: %d entries\n", len(hashChanges))
-		fmt.Printf("  Speed:        %.1f bundles/sec\n\n", float64(success)/elapsed.Seconds())
+		fmt.Printf("✓ Complete: %d bundles in %s\n\n", success, elapsed.Round(time.Millisecond))
 
+		if totalOldSize > 0 && success > 0 {
+			sizeDiff := totalNewSize - totalOldSize
+			oldRatio := float64(totalOldUncompressed) / float64(totalOldSize)
+			newRatio := float64(totalNewUncompressed) / float64(totalNewSize)
+			ratioDiff := newRatio - oldRatio
+
+			// MEASURE ACTUAL METADATA SIZE (not estimated)
+			var totalActualMetadata int64
+			for _, bundleNum := range hashChanges {
+				bundlePath := filepath.Join(dir, fmt.Sprintf("%06d.jsonl.zst", bundleNum))
+				metaSize, _ := measureMetadataSize(bundlePath)
+				totalActualMetadata += metaSize
+			}
+
+			// FIXED ALIGNMENT
+			fmt.Printf("                Old           New           Change\n")
+			fmt.Printf("              ────────      ────────      ─────────\n")
+			fmt.Printf("Size          %-13s %-13s %+s (%.1f%%)\n",
+				formatBytes(totalOldSize),
+				formatBytes(totalNewSize),
+				formatBytes(sizeDiff),
+				float64(sizeDiff)/float64(totalOldSize)*100)
+			fmt.Printf("Ratio         %-13s %-13s %+s\n",
+				fmt.Sprintf("%.3fx", oldRatio), fmt.Sprintf("%.3fx", newRatio), fmt.Sprintf("%+.3fx", ratioDiff))
+			fmt.Printf("Avg/bundle    %-13s %-13s %+s\n\n",
+				formatBytes(totalOldSize/int64(success)),
+				formatBytes(totalNewSize/int64(success)),
+				formatBytes(sizeDiff/int64(success)))
+
+			// FIXED BREAKDOWN - use actual metadata size
+			if totalActualMetadata > 0 {
+				compressionEfficiency := sizeDiff - totalActualMetadata
+
+				fmt.Printf("Breakdown:\n")
+				fmt.Printf("  Metadata:     %+s (~%s/bundle, structural)\n",
+					formatBytes(totalActualMetadata),
+					formatBytes(totalActualMetadata/int64(success)))
+
+				// FIX: Use absolute threshold based on old size, not metadata size
+				threshold := totalOldSize / 1000 // 0.1% of old size
+
+				if abs(compressionEfficiency) > threshold {
+					if compressionEfficiency > 0 {
+						// Compression got worse
+						pctWorse := float64(compressionEfficiency) / float64(totalOldSize) * 100
+						fmt.Printf("  Compression:  %+s (%.2f%% worse)\n",
+							formatBytes(compressionEfficiency), pctWorse)
+					} else if compressionEfficiency < 0 {
+						// Compression improved
+						pctBetter := float64(-compressionEfficiency) / float64(totalOldSize) * 100
+						fmt.Printf("  Compression:  %s (%.2f%% better)\n",
+							formatBytes(compressionEfficiency), pctBetter)
+					}
+				} else {
+					// Truly negligible
+					fmt.Printf("  Compression:  unchanged\n")
+				}
+			}
+
+			fmt.Printf("\n")
+		}
 	} else {
-		fmt.Printf("⚠️  Migration completed with errors\n")
-		fmt.Printf("  Success:  %d bundles\n", success)
-		fmt.Printf("  Failed:   %d bundles\n", failed)
-		fmt.Printf("  Duration: %s\n", elapsed.Round(time.Millisecond))
+		fmt.Printf("⚠️  Failed: %d bundles\n", failed)
 		if firstError != nil {
-			fmt.Printf("  First error: %v\n", firstError)
+			fmt.Printf("  Error: %v\n", firstError)
 		}
 		return fmt.Errorf("migration failed for %d bundles", failed)
 	}
@@ -238,82 +340,109 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 	return nil
 }
 
-func migrateBundle(dir string, bundleNum int, index *bundleindex.Index, version string, verbose bool) error {
+func migrateBundle(dir string, bundleNum int, index *bundleindex.Index, version string, verbose bool) (sizeDiff int64, newUncompressedSize int64, err error) {
 	bundlePath := filepath.Join(dir, fmt.Sprintf("%06d.jsonl.zst", bundleNum))
 	backupPath := bundlePath + ".bak"
 
-	// 1. Get metadata from index
 	meta, err := index.GetBundle(bundleNum)
 	if err != nil {
-		return fmt.Errorf("bundle not in index: %w", err)
+		return 0, 0, fmt.Errorf("bundle not in index: %w", err)
 	}
 
-	// 2. Load the bundle using old format
+	oldSize := meta.CompressedSize
+
 	ops := &storage.Operations{}
 	operations, err := ops.LoadBundle(bundlePath)
 	if err != nil {
-		return fmt.Errorf("failed to load: %w", err)
+		return 0, 0, fmt.Errorf("failed to load: %w", err)
 	}
 
-	if verbose {
-		fmt.Fprintf(os.Stderr, "  Loaded %d operations\n", len(operations))
-	}
-
-	// 3. Backup original file
 	if err := os.Rename(bundlePath, backupPath); err != nil {
-		return fmt.Errorf("failed to backup: %w", err)
+		return 0, 0, fmt.Errorf("failed to backup: %w", err)
 	}
 
-	// 4. Get hostname (optional)
 	hostname, _ := os.Hostname()
 
-	// 5. Create BundleInfo for new format
 	bundleInfo := &storage.BundleInfo{
 		BundleNumber: meta.BundleNumber,
-		Origin:       index.Origin, // From index
+		Origin:       index.Origin,
 		ParentHash:   meta.Parent,
 		Cursor:       meta.Cursor,
 		CreatedBy:    fmt.Sprintf("plcbundle/%s", version),
 		Hostname:     hostname,
 	}
 
-	// 6. Save using new format (with skippable frame metadata)
-	contentHash, compHash, contentSize, compSize, err := ops.SaveBundle(bundlePath, operations, bundleInfo)
+	contentHash, _, contentSize, compSize, err := ops.SaveBundle(bundlePath, operations, bundleInfo)
 	if err != nil {
-		// Restore backup on failure
 		os.Rename(backupPath, bundlePath)
-		return fmt.Errorf("failed to save: %w", err)
+		return 0, 0, fmt.Errorf("failed to save: %w", err)
 	}
 
-	// 7. Verify embedded metadata was created
 	embeddedMeta, err := ops.ExtractBundleMetadata(bundlePath)
 	if err != nil {
 		os.Remove(bundlePath)
 		os.Rename(backupPath, bundlePath)
-		return fmt.Errorf("embedded metadata not created: %w", err)
+		return 0, 0, fmt.Errorf("embedded metadata not created: %w", err)
 	}
 
-	// 8. Verify frame offsets are present
 	if len(embeddedMeta.FrameOffsets) == 0 {
 		os.Remove(bundlePath)
 		os.Rename(backupPath, bundlePath)
-		return fmt.Errorf("frame offsets missing in metadata")
+		return 0, 0, fmt.Errorf("frame offsets missing in metadata")
 	}
 
-	// 9. Verify content hash matches (should be unchanged)
 	if contentHash != meta.ContentHash {
-		fmt.Fprintf(os.Stderr, "  ⚠️  Content hash changed (unexpected): %s → %s\n",
+		fmt.Fprintf(os.Stderr, "  ⚠️  Content hash changed: %s → %s\n",
 			meta.ContentHash[:12], contentHash[:12])
 	}
 
-	// 10. Cleanup backup
 	os.Remove(backupPath)
 
+	// Calculate changes
+	newSize := compSize
+	sizeDiff = newSize - oldSize
+	newUncompressedSize = contentSize
+
 	if verbose {
-		fmt.Fprintf(os.Stderr, "  Content hash: %s (%s)\n", contentHash[:12], formatBytes(contentSize))
-		fmt.Fprintf(os.Stderr, "  New compressed hash: %s (%s)\n", compHash[:12], formatBytes(compSize))
-		fmt.Fprintf(os.Stderr, "  Frames: %d (embedded in metadata)\n", len(embeddedMeta.FrameOffsets)-1)
+		oldRatio := float64(meta.UncompressedSize) / float64(oldSize)
+		newRatio := float64(contentSize) / float64(newSize)
+
+		fmt.Fprintf(os.Stderr, "  Frames: %d, Ratio: %.3fx→%.3fx, Size: %+s\n",
+			len(embeddedMeta.FrameOffsets)-1, oldRatio, newRatio, formatBytes(sizeDiff))
 	}
 
-	return nil
+	return sizeDiff, newUncompressedSize, nil
+}
+
+func measureMetadataSize(bundlePath string) (int64, error) {
+	file, err := os.Open(bundlePath)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	// Read magic (4 bytes) + size (4 bytes)
+	header := make([]byte, 8)
+	if _, err := file.Read(header); err != nil {
+		return 0, err
+	}
+
+	// Check if it's a skippable frame
+	magic := binary.LittleEndian.Uint32(header[0:4])
+	if magic < 0x184D2A50 || magic > 0x184D2A5F {
+		return 0, nil // No metadata frame
+	}
+
+	// Get frame data size
+	frameSize := binary.LittleEndian.Uint32(header[4:8])
+
+	// Total metadata size = 4 (magic) + 4 (size) + frameSize (data)
+	return int64(8 + frameSize), nil
+}
+
+func abs(n int64) int64 {
+	if n < 0 {
+		return -n
+	}
+	return n
 }

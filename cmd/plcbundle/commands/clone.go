@@ -40,7 +40,7 @@ The clone process:
   4. Updates local index
   5. Can be interrupted and resumed safely`,
 
-		Args: cobra.RangeArgs(1, 2), // ✨ 1 or 2 arguments
+		Args: cobra.RangeArgs(1, 2),
 
 		Example: `  # Clone into default 'bundles' directory
   plcbundle clone https://plc.example.com
@@ -60,7 +60,6 @@ The clone process:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			remoteURL := strings.TrimSuffix(args[0], "/")
 
-			// ✨ Optional directory argument (default: "bundles")
 			targetDir := "bundles"
 			if len(args) > 1 {
 				targetDir = args[1]
@@ -93,13 +92,13 @@ type cloneOptions struct {
 }
 
 func runClone(remoteURL string, targetDir string, opts cloneOptions) error {
-	// ✨ Create target directory if it doesn't exist
+	// Create target directory if it doesn't exist
 	absDir, err := filepath.Abs(targetDir)
 	if err != nil {
 		return fmt.Errorf("invalid directory path: %w", err)
 	}
 
-	// ✨ Clone creates new repository in specific directory
+	// Clone creates new repository in specific directory
 	mgr, dir, err := getManager(&ManagerOptions{
 		Dir:      absDir,
 		PLCURL:   "https://plc.directory",

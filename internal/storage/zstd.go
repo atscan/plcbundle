@@ -17,7 +17,7 @@ import (
 // ============================================================================
 
 const (
-	CompressionLevel = 2
+	CompressionLevel = 1
 	FrameSize        = 100
 
 	SkippableMagicMetadata = 0x184D2A50
@@ -211,7 +211,7 @@ func (ops *Operations) DebugFrameOffsets(path string) error {
 // ============================================================================
 
 func CompressFrame(data []byte) ([]byte, error) {
-	compressed := gozstd.Compress(nil, data)
+	compressed := gozstd.CompressLevel(nil, data, CompressionLevel)
 	return compressed, nil
 }
 

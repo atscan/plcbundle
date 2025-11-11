@@ -58,7 +58,7 @@ that continuously syncs at regular intervals.`,
 			verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 			quiet, _ := cmd.Root().PersistentFlags().GetBool("quiet")
 
-			// ✨ Sync creates repository if missing
+			// Sync creates repository if missing
 			mgr, dir, err := getManager(&ManagerOptions{
 				Cmd:      cmd,
 				PLCURL:   plcURL,

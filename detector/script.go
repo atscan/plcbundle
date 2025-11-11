@@ -146,7 +146,7 @@ func (d *ScriptDetector) Detect(ctx context.Context, op plcclient.PLCOperation) 
 		return nil, fmt.Errorf("not connected to server")
 	}
 
-	// ✨ LOCK for entire socket communication
+	// LOCK for entire socket communication
 	d.mu.Lock()
 	defer d.mu.Unlock()
 

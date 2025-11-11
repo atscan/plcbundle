@@ -106,7 +106,7 @@ func (pb *ProgressBar) print() {
 		eta = time.Duration(float64(remaining)/speed) * time.Second
 	}
 
-	// ✨ FIX: Check if complete
+	// FIX: Check if complete
 	isComplete := pb.current >= pb.total
 
 	if pb.showBytes && pb.currentBytes > 0 {
@@ -114,7 +114,7 @@ func (pb *ProgressBar) print() {
 		mbPerSec := mbProcessed / elapsed.Seconds()
 
 		if isComplete {
-			// ✨ Don't show ETA when done
+			// Don't show ETA when done
 			fmt.Fprintf(os.Stderr, "\r  [%s] %6.2f%% | %d/%d | %.1f/s | %.1f MB/s | Done    ",
 				bar, percent, pb.current, pb.total, speed, mbPerSec)
 		} else {
@@ -123,7 +123,7 @@ func (pb *ProgressBar) print() {
 		}
 	} else {
 		if isComplete {
-			// ✨ Don't show ETA when done
+			// Don't show ETA when done
 			fmt.Fprintf(os.Stderr, "\r  [%s] %6.2f%% | %d/%d | %.1f/s | Done    ",
 				bar, percent, pb.current, pb.total, speed)
 		} else {
@@ -134,7 +134,7 @@ func (pb *ProgressBar) print() {
 }
 
 func formatETA(d time.Duration) string {
-	// ✨ This should never be called with 0 now, but keep as fallback
+	// This should never be called with 0 now, but keep as fallback
 	if d == 0 {
 		return "0s"
 	}

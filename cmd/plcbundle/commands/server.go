@@ -76,7 +76,7 @@ For one-time sync, use 'plcbundle sync' command instead.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 
-			// ✨ Server in sync mode can create repo, read-only mode cannot
+			// Server in sync mode can create repo, read-only mode cannot
 			mgr, dir, err := getManager(&ManagerOptions{
 				Cmd:      cmd,
 				PLCURL:   plcURL,

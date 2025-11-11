@@ -199,7 +199,7 @@ func (m *Mempool) Take(n int) ([]plcclient.PLCOperation, error) {
 	// Remove taken operations
 	m.operations = m.operations[n:]
 
-	// ✨ FIX: ALWAYS reset tracking after Take
+	// ALWAYS reset tracking after Take
 	// Take() means we're consuming these ops for a bundle
 	// Any remaining ops are "new" and unsaved
 	m.lastSavedLen = 0

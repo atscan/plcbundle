@@ -1268,8 +1268,6 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		}
 	}
 
-	// ✨ REMOVED: m.mempool.Save() - now handled by FetchToMempool
-
 	totalDuration := time.Since(attemptStart)
 
 	if m.mempool.Count() < types.BUNDLE_SIZE {
@@ -1578,7 +1576,6 @@ func (m *Manager) ResolveHandleOrDID(ctx context.Context, input string) (string,
 			input, input)
 	}
 
-	// ✨ TIME THE RESOLUTION
 	resolveStart := time.Now()
 	m.logger.Printf("Resolving handle: %s", input)
 	did, err := m.handleResolver.ResolveHandle(ctx, input)

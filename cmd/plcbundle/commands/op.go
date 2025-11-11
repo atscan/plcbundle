@@ -291,7 +291,7 @@ func parseOpArgs(args []string) (bundleNum, position int, err error) {
 func findOperationByCID(mgr BundleManager, cid string) error {
 	ctx := context.Background()
 
-	// ✨ CHECK MEMPOOL FIRST (most recent data)
+	// CHECK MEMPOOL FIRST (most recent data)
 	fmt.Fprintf(os.Stderr, "Checking mempool...\n")
 	mempoolOps, err := mgr.GetMempoolOperations()
 	if err == nil && len(mempoolOps) > 0 {

@@ -444,12 +444,12 @@ type detectionResult struct {
 func runDetectionParallel(ctx context.Context, mgr BundleManager, setup *detectorSetup, start, end int, workers int, showProgress bool) error {
 	totalBundles := end - start + 1
 
-	// ✨ FIX: Don't create more workers than bundles
+	// Don't create more workers than bundles
 	if workers > totalBundles {
 		workers = totalBundles
 	}
 
-	// ✨ FIX: Use unbuffered channels to avoid blocking issues
+	// Use unbuffered channels to avoid blocking issues
 	jobs := make(chan int, workers*2) // Small buffer for job numbers only
 	results := make(chan detectionResult, workers*2)
 
@@ -538,7 +538,7 @@ func runDetectionParallel(ctx context.Context, mgr BundleManager, setup *detecto
 			// Collect matches
 			allMatches = append(allMatches, res.matches...)
 
-			// ✨ FIX: Output immediately (don't buffer too much)
+			// Output immediately (don't buffer too much)
 			if len(allMatches) >= 500 {
 				for _, match := range allMatches {
 					fmt.Printf("%d,%s,%d,%.2f,%s\n",

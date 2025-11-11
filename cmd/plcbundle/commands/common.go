@@ -55,7 +55,7 @@ type BundleManager interface {
 type PLCOperationWithLocation = bundle.PLCOperationWithLocation
 
 // ============================================================================
-// ✨ MANAGER OPTIONS STRUCT
+// MANAGER OPTIONS STRUCT
 // ============================================================================
 
 // ManagerOptions configures manager creation
@@ -68,7 +68,7 @@ type ManagerOptions struct {
 }
 
 // ============================================================================
-// ✨ SINGLE UNIFIED getManager METHOD
+// SINGLE UNIFIED getManager METHOD
 // ============================================================================
 
 // getManager creates or opens a bundle manager
@@ -200,6 +200,10 @@ func parseBundleRange(rangeStr string) (start, end int, err error) {
 // Formatting helpers
 
 func formatBytes(bytes int64) string {
+	if bytes < 0 {
+		return fmt.Sprintf("-%s", formatBytes(-bytes))
+	}
+
 	const unit = 1000
 	if bytes < unit {
 		return fmt.Sprintf("%d B", bytes)
