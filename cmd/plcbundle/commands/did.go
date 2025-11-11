@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -889,36 +890,77 @@ func batchLookup(mgr BundleManager, dids []string, output *os.File, _ int) error
 	return nil
 }
 
-func batchResolve(mgr BundleManager, dids []string, output *os.File, _ int) error {
+func batchResolve(mgr BundleManager, dids []string, output *os.File, workers int) error {
 	progress := ui.NewProgressBar(len(dids))
 	ctx := context.Background()
 
-	resolved := 0
-	failed := 0
+	type resolveResult struct {
+		did string
+		doc *plcclient.DIDDocument
+		err error
+	}
 
-	// Use buffered writer
+	// Now use it
+	jobs := make(chan string, len(dids))
+	results := make(chan resolveResult, len(dids))
+
+	// Start worker pool
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for did := range jobs {
+				result, err := mgr.ResolveDID(ctx, did)
+				if err != nil {
+					results <- resolveResult{did: did, err: err}
+				} else {
+					results <- resolveResult{did: did, doc: result.Document}
+				}
+			}
+		}()
+	}
+
+	// Send jobs
+	for _, did := range dids {
+		jobs <- did
+	}
+	close(jobs)
+
+	// Collect results in background
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Process results
 	writer := bufio.NewWriterSize(output, 512*1024)
 	defer writer.Flush()
 
-	for i, did := range dids {
-		result, err := mgr.ResolveDID(ctx, did)
-		if err != nil {
+	resolved := 0
+	failed := 0
+	processed := 0
+
+	for res := range results {
+		processed++
+
+		if res.err != nil {
 			failed++
-			if i < 10 {
-				fmt.Fprintf(os.Stderr, "Failed to resolve %s: %v\n", did, err)
+			if failed < 10 {
+				fmt.Fprintf(os.Stderr, "Failed to resolve %s: %v\n", res.did, res.err)
 			}
 		} else {
 			resolved++
-			data, _ := json.Marshal(result.Document)
+			data, _ := json.Marshal(res.doc)
 			writer.Write(data)
 			writer.WriteByte('\n')
 
-			if i%100 == 0 {
+			if processed%100 == 0 {
 				writer.Flush()
 			}
 		}
 
-		progress.Set(i + 1)
+		progress.Set(processed)
 	}
 
 	writer.Flush()
