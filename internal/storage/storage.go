@@ -86,7 +86,7 @@ func (op *Operations) ParseJSONL(data []byte) ([]plcclient.PLCOperation, error) 
 // FILE OPERATIONS (using zstd abstraction)
 // ========================================
 
-// SaveBundle saves operations to disk (compressed with multi-frame support)
+// SaveBundle saves operations to disk with embedded metadata
 func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperation) (string, string, int64, int64, error) {
 	// 1. Serialize all operations once
 	jsonlData := op.SerializeJSONL(operations)
@@ -100,9 +100,25 @@ func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperatio
 	}
 	defer bundleFile.Close()
 
-	frameOffsets := []int64{0}
+	// ✅ 3. Write metadata as skippable frame FIRST (placeholder - will update later)
+	// We write a placeholder now and update after we know the compressed size
+	placeholderMeta := &BundleMetadata{
+		Version:          1,
+		BundleNumber:     0, // Will be set by caller
+		UncompressedSize: contentSize,
+		OperationCount:   len(operations),
+		FrameCount:       (len(operations) + FrameSize - 1) / FrameSize,
+		CreatedAt:        time.Now().UTC(),
+	}
 
-	// 3. Loop through operations in chunks
+	metadataStart, err := WriteMetadataFrame(bundleFile, placeholderMeta)
+	if err != nil {
+		return "", "", 0, 0, fmt.Errorf("failed to write metadata frame: %w", err)
+	}
+
+	frameOffsets := []int64{metadataStart} // First data frame starts after metadata
+
+	// 4. Write data frames
 	for i := 0; i < len(operations); i += FrameSize {
 		end := i + FrameSize
 		if end > len(operations) {
@@ -111,7 +127,7 @@ func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperatio
 		opChunk := operations[i:end]
 		chunkJsonlData := op.SerializeJSONL(opChunk)
 
-		// ✅ Use abstracted compression
+		// Compress this chunk
 		compressedChunk, err := CompressFrame(chunkJsonlData)
 		if err != nil {
 			return "", "", 0, 0, fmt.Errorf("failed to compress frame: %w", err)
@@ -134,16 +150,16 @@ func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperatio
 		}
 	}
 
-	// 4. Get final file size
+	// 5. Get final file size
 	finalSize, _ := bundleFile.Seek(0, io.SeekCurrent)
 	frameOffsets = append(frameOffsets, finalSize)
 
-	// 5. Sync to disk
+	// 6. Sync to disk
 	if err := bundleFile.Sync(); err != nil {
 		return "", "", 0, 0, fmt.Errorf("failed to sync file: %w", err)
 	}
 
-	// 6. Save frame index
+	// 7. Save frame index (still useful for random access)
 	indexPath := path + ".idx"
 	indexData, _ := json.Marshal(frameOffsets)
 	if err := os.WriteFile(indexPath, indexData, 0644); err != nil {
@@ -151,7 +167,7 @@ func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperatio
 		return "", "", 0, 0, fmt.Errorf("failed to write frame index: %w", err)
 	}
 
-	// 7. Calculate compressed hash
+	// 8. Calculate compressed hash
 	compressedData, err := os.ReadFile(path)
 	if err != nil {
 		return "", "", 0, 0, fmt.Errorf("failed to re-read bundle for hashing: %w", err)
@@ -639,4 +655,55 @@ func (op *Operations) CalculateMetadataWithoutLoading(path string) (opCount int,
 	}
 
 	return lineNum, len(didSet), startTime, endTime, scanner.Err()
+}
+
+// ExtractBundleMetadata extracts metadata from bundle file without decompressing
+func (op *Operations) ExtractBundleMetadata(path string) (*BundleMetadata, error) {
+	meta, err := ExtractMetadataFromFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract metadata: %w", err)
+	}
+	return meta, nil
+}
+
+// LoadBundleWithMetadata loads bundle and returns both data and embedded metadata
+func (op *Operations) LoadBundleWithMetadata(path string) ([]plcclient.PLCOperation, *BundleMetadata, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	// 1. Try to read metadata frame first
+	meta, err := ReadMetadataFrame(file)
+	if err != nil {
+		// No metadata frame - fall back to regular load
+		file.Seek(0, io.SeekStart) // Reset to beginning
+		ops, err := op.loadFromReader(file)
+		return ops, nil, err
+	}
+
+	// 2. Read compressed data (file position is now after metadata frame)
+	ops, err := op.loadFromReader(file)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return ops, meta, nil
+}
+
+// loadFromReader loads operations from a reader (internal helper)
+func (op *Operations) loadFromReader(r io.Reader) ([]plcclient.PLCOperation, error) {
+	reader, err := NewStreamingReader(r)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create reader: %w", err)
+	}
+	defer reader.Release()
+
+	decompressed, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decompress: %w", err)
+	}
+
+	return op.ParseJSONL(decompressed)
 }

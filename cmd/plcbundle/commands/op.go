@@ -53,6 +53,8 @@ Example: 88410345 = bundle 8841, position 345`,
 // ============================================================================
 
 func newOpGetCommand() *cobra.Command {
+	var verbose bool
+
 	cmd := &cobra.Command{
 		Use:   "get <bundle> <position> | <globalPosition>",
 		Short: "Get operation as JSON",
@@ -62,13 +64,19 @@ Supports two input formats:
   1. Bundle number + position: get 42 1337
   2. Global position: get 420000
 
-Global position = (bundleNumber × 10,000) + position`,
+Global position = (bundleNumber × 10,000) + position
+
+Use -v/--verbose to see detailed timing breakdown.`,
 
 		Example: `  # By bundle + position
   plcbundle op get 42 1337
 
   # By global position
   plcbundle op get 88410345
+
+  # With timing metrics
+  plcbundle op get 42 1337 -v
+  plcbundle op get 88410345 --verbose
 
   # Pipe to jq
   plcbundle op get 42 1337 | jq .did`,
@@ -88,12 +96,37 @@ Global position = (bundleNumber × 10,000) + position`,
 			defer mgr.Close()
 
 			ctx := context.Background()
+
+			// ✅ Time the operation load
+			totalStart := time.Now()
 			op, err := mgr.LoadOperation(ctx, bundleNum, position)
+			totalDuration := time.Since(totalStart)
+
 			if err != nil {
 				return err
 			}
 
-			// Output raw JSON
+			// Output timing to stderr if verbose
+			if verbose {
+				globalPos := (bundleNum * 10000) + position
+
+				fmt.Fprintf(os.Stderr, "Operation Load Metrics\n")
+				fmt.Fprintf(os.Stderr, "══════════════════════\n\n")
+				fmt.Fprintf(os.Stderr, "  Location:       Bundle %06d, Position %04d\n", bundleNum, position)
+				fmt.Fprintf(os.Stderr, "  Global Position: %d\n", globalPos)
+				fmt.Fprintf(os.Stderr, "  Total Time:      %s\n", totalDuration)
+
+				// Calculate throughput
+				if len(op.RawJSON) > 0 {
+					mbPerSec := float64(len(op.RawJSON)) / totalDuration.Seconds() / (1024 * 1024)
+					fmt.Fprintf(os.Stderr, "  Data Size:       %d bytes\n", len(op.RawJSON))
+					fmt.Fprintf(os.Stderr, "  Throughput:      %.2f MB/s\n", mbPerSec)
+				}
+
+				fmt.Fprintf(os.Stderr, "\n")
+			}
+
+			// Output raw JSON to stdout
 			if len(op.RawJSON) > 0 {
 				fmt.Println(string(op.RawJSON))
 			} else {
@@ -105,10 +138,12 @@ Global position = (bundleNumber × 10,000) + position`,
 		},
 	}
 
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show timing metrics")
+
 	return cmd
 }
 
-// ============================================================================
+// // ============================================================================
 // OP SHOW - Show operation (formatted)
 // ============================================================================
 
@@ -125,7 +160,8 @@ Displays operation in human-readable format with:
   • DID and CID
   • Timestamp and age
   • Nullification status
-  • Parsed operation details`,
+  • Parsed operation details
+  • Performance metrics (with -v)`,
 
 		Example: `  # By bundle + position
   plcbundle op show 42 1337
@@ -133,7 +169,7 @@ Displays operation in human-readable format with:
   # By global position
   plcbundle op show 88410345
 
-  # Verbose (show full operation JSON)
+  # Verbose with timing and full JSON
   plcbundle op show 42 1337 -v`,
 
 		Args: cobra.RangeArgs(1, 2),
@@ -151,16 +187,27 @@ Displays operation in human-readable format with:
 			defer mgr.Close()
 
 			ctx := context.Background()
+
+			// ✅ Time the operation
+			loadStart := time.Now()
 			op, err := mgr.LoadOperation(ctx, bundleNum, position)
+			loadDuration := time.Since(loadStart)
+
 			if err != nil {
 				return err
 			}
 
-			return displayOperation(bundleNum, position, op, verbose)
+			// ✅ Time the parsing
+			parseStart := time.Now()
+			opData, parseErr := op.GetOperationData()
+			parseDuration := time.Since(parseStart)
+
+			return displayOperationWithTiming(bundleNum, position, op, opData, parseErr,
+				loadDuration, parseDuration, verbose)
 		},
 	}
 
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show full operation JSON")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show timing metrics and full JSON")
 
 	return cmd
 }
@@ -250,96 +297,6 @@ func parseOpArgs(args []string) (bundleNum, position int, err error) {
 	return 0, 0, fmt.Errorf("usage: op <command> <bundle> <position> OR op <command> <globalPosition>")
 }
 
-// displayOperation shows formatted operation details
-func displayOperation(bundleNum, position int, op *plcclient.PLCOperation, verbose bool) error {
-	globalPos := (bundleNum * types.BUNDLE_SIZE) + position
-
-	fmt.Printf("Operation %d\n", globalPos)
-	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
-
-	fmt.Printf("Location\n")
-	fmt.Printf("────────\n")
-	fmt.Printf("  Bundle:          %06d\n", bundleNum)
-	fmt.Printf("  Position:        %d\n", position)
-	fmt.Printf("  Global position: %d\n\n", globalPos)
-
-	fmt.Printf("Identity\n")
-	fmt.Printf("────────\n")
-	fmt.Printf("  DID:             %s\n", op.DID)
-	fmt.Printf("  CID:             %s\n\n", op.CID)
-
-	fmt.Printf("Timestamp\n")
-	fmt.Printf("─────────\n")
-	fmt.Printf("  Created:         %s\n", op.CreatedAt.Format("2006-01-02 15:04:05.000 MST"))
-	fmt.Printf("  Age:             %s\n\n", formatDuration(time.Since(op.CreatedAt)))
-
-	// Status
-	status := "✓ Active"
-	if op.IsNullified() {
-		status = "✗ Nullified"
-		if cid := op.GetNullifyingCID(); cid != "" {
-			status += fmt.Sprintf(" by %s", cid)
-		}
-	}
-	fmt.Printf("Status\n")
-	fmt.Printf("──────\n")
-	fmt.Printf("  %s\n\n", status)
-
-	// Parse operation details
-	if opData, err := op.GetOperationData(); err == nil && opData != nil && !op.IsNullified() {
-		fmt.Printf("Details\n")
-		fmt.Printf("───────\n")
-
-		if opType, ok := opData["type"].(string); ok {
-			fmt.Printf("  Type:            %s\n", opType)
-		}
-
-		if handle, ok := opData["handle"].(string); ok {
-			fmt.Printf("  Handle:          %s\n", handle)
-		} else if aka, ok := opData["alsoKnownAs"].([]interface{}); ok && len(aka) > 0 {
-			if akaStr, ok := aka[0].(string); ok {
-				handle := strings.TrimPrefix(akaStr, "at://")
-				fmt.Printf("  Handle:          %s\n", handle)
-			}
-		}
-
-		if services, ok := opData["services"].(map[string]interface{}); ok {
-			if pds, ok := services["atproto_pds"].(map[string]interface{}); ok {
-				if endpoint, ok := pds["endpoint"].(string); ok {
-					fmt.Printf("  PDS:             %s\n", endpoint)
-				}
-			}
-		}
-
-		fmt.Printf("\n")
-	}
-
-	// Verbose: show full JSON (pretty-printed)
-	if verbose {
-		fmt.Printf("Raw JSON\n")
-		fmt.Printf("────────\n")
-
-		var data []byte
-		if len(op.RawJSON) > 0 {
-			// Parse and re-format the raw JSON
-			var temp interface{}
-			if err := json.Unmarshal(op.RawJSON, &temp); err == nil {
-				data, _ = json.MarshalIndent(temp, "", "  ")
-			} else {
-				// Fallback to raw if parse fails
-				data = op.RawJSON
-			}
-		} else {
-			data, _ = json.MarshalIndent(op, "", "  ")
-		}
-
-		fmt.Println(string(data))
-		fmt.Printf("\n")
-	}
-
-	return nil
-}
-
 // findOperationByCID searches for an operation by CID
 func findOperationByCID(mgr BundleManager, cid string) error {
 	ctx := context.Background()
@@ -419,4 +376,117 @@ func findOperationByCID(mgr BundleManager, cid string) error {
 	fmt.Fprintf(os.Stderr, "\nCID not found: %s\n", cid)
 	fmt.Fprintf(os.Stderr, "(Searched %d bundles + mempool)\n", len(bundles))
 	return fmt.Errorf("CID not found")
+}
+
+// displayOperationWithTiming shows formatted operation details with timing
+func displayOperationWithTiming(bundleNum, position int, op *plcclient.PLCOperation,
+	opData map[string]interface{}, _ error,
+	loadDuration, parseDuration time.Duration, verbose bool) error {
+
+	globalPos := (bundleNum * types.BUNDLE_SIZE) + position
+
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("                    Operation %d\n", globalPos)
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
+
+	fmt.Printf("Location\n")
+	fmt.Printf("────────\n")
+	fmt.Printf("  Bundle:          %06d\n", bundleNum)
+	fmt.Printf("  Position:        %d\n", position)
+	fmt.Printf("  Global position: %d\n\n", globalPos)
+
+	fmt.Printf("Identity\n")
+	fmt.Printf("────────\n")
+	fmt.Printf("  DID:             %s\n", op.DID)
+	fmt.Printf("  CID:             %s\n\n", op.CID)
+
+	fmt.Printf("Timestamp\n")
+	fmt.Printf("─────────\n")
+	fmt.Printf("  Created:         %s\n", op.CreatedAt.Format("2006-01-02 15:04:05.000 MST"))
+	fmt.Printf("  Age:             %s\n\n", formatDuration(time.Since(op.CreatedAt)))
+
+	// Status
+	status := "✓ Active"
+	if op.IsNullified() {
+		status = "✗ Nullified"
+		if cid := op.GetNullifyingCID(); cid != "" {
+			status += fmt.Sprintf(" by %s", cid)
+		}
+	}
+	fmt.Printf("Status\n")
+	fmt.Printf("──────\n")
+	fmt.Printf("  %s\n\n", status)
+
+	// ✅ Performance metrics (always shown if verbose)
+	if verbose {
+		totalTime := loadDuration + parseDuration
+
+		fmt.Printf("Performance\n")
+		fmt.Printf("───────────\n")
+		fmt.Printf("  Load time:       %s\n", loadDuration)
+		fmt.Printf("  Parse time:      %s\n", parseDuration)
+		fmt.Printf("  Total time:      %s\n", totalTime)
+
+		if len(op.RawJSON) > 0 {
+			fmt.Printf("  Data size:       %d bytes\n", len(op.RawJSON))
+			mbPerSec := float64(len(op.RawJSON)) / loadDuration.Seconds() / (1024 * 1024)
+			fmt.Printf("  Load speed:      %.2f MB/s\n", mbPerSec)
+		}
+
+		fmt.Printf("\n")
+	}
+
+	// Parse operation details
+	if opData != nil && !op.IsNullified() {
+		fmt.Printf("Details\n")
+		fmt.Printf("───────\n")
+
+		if opType, ok := opData["type"].(string); ok {
+			fmt.Printf("  Type:            %s\n", opType)
+		}
+
+		if handle, ok := opData["handle"].(string); ok {
+			fmt.Printf("  Handle:          %s\n", handle)
+		} else if aka, ok := opData["alsoKnownAs"].([]interface{}); ok && len(aka) > 0 {
+			if akaStr, ok := aka[0].(string); ok {
+				handle := strings.TrimPrefix(akaStr, "at://")
+				fmt.Printf("  Handle:          %s\n", handle)
+			}
+		}
+
+		if services, ok := opData["services"].(map[string]interface{}); ok {
+			if pds, ok := services["atproto_pds"].(map[string]interface{}); ok {
+				if endpoint, ok := pds["endpoint"].(string); ok {
+					fmt.Printf("  PDS:             %s\n", endpoint)
+				}
+			}
+		}
+
+		fmt.Printf("\n")
+	}
+
+	// Verbose: show full JSON (pretty-printed)
+	if verbose {
+		fmt.Printf("Raw JSON\n")
+		fmt.Printf("────────\n")
+
+		var data []byte
+		if len(op.RawJSON) > 0 {
+			// Parse and re-format the raw JSON
+			var temp interface{}
+			if err := json.Unmarshal(op.RawJSON, &temp); err == nil {
+				data, _ = json.MarshalIndent(temp, "", "  ")
+			} else {
+				// Fallback to raw if parse fails
+				data = op.RawJSON
+			}
+		} else {
+			data, _ = json.MarshalIndent(op, "", "  ")
+		}
+
+		fmt.Println(string(data))
+		fmt.Printf("\n")
+	}
+
+	return nil
 }

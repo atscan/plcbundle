@@ -58,8 +58,8 @@ Documentation: https://tangled.org/@atscan.net/plcbundle`,
 	//cmd.AddCommand(commands.NewGapsCommand())
 	cmd.AddCommand(commands.NewVerifyCommand())
 	cmd.AddCommand(commands.NewDiffCommand())
-	/*cmd.AddCommand(commands.NewStatsCommand())
-	cmd.AddCommand(commands.NewInspectCommand())*/
+	//cmd.AddCommand(commands.NewStatsCommand())
+	cmd.AddCommand(commands.NewInspectCommand())
 
 	// Namespaced commands
 	cmd.AddCommand(commands.NewDIDCommand())
