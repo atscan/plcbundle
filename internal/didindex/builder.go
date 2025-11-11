@@ -50,6 +50,10 @@ func (dim *Manager) BuildIndexFromScratch(ctx context.Context, mgr BundleProvide
 		return fmt.Errorf("no bundles to index")
 	}
 
+	if err := os.MkdirAll(dim.shardDir, 0755); err != nil {
+		return fmt.Errorf("failed to create shard directory: %w", err)
+	}
+
 	// Create temporary shard files
 	tempShards := make([]*os.File, DID_SHARD_COUNT)
 	for i := 0; i < DID_SHARD_COUNT; i++ {

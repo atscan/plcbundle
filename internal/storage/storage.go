@@ -89,20 +89,24 @@ func (op *Operations) ParseJSONL(data []byte) ([]plcclient.PLCOperation, error) 
 
 // LoadBundle loads a compressed bundle
 func (op *Operations) LoadBundle(path string) ([]plcclient.PLCOperation, error) {
-	// 1. Read the entire compressed file into memory.
-	compressed, err := os.ReadFile(path)
+	// ✅ FIX: Use streaming reader instead of one-shot Decompress
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
+		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
+	defer file.Close()
 
-	// This is the key: The one-shot Decompress function is designed to correctly
-	// handle a byte slice containing one or more concatenated frames.
-	decompressed, err := gozstd.Decompress(nil, compressed)
+	// NewReader properly handles multi-frame concatenated zstd
+	reader := gozstd.NewReader(file)
+	defer reader.Close()
+
+	// Read ALL decompressed data
+	decompressed, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decompress: %w", err)
 	}
 
-	// 3. Parse the fully decompressed JSONL data.
+	// Parse JSONL
 	return op.ParseJSONL(decompressed)
 }
 
@@ -570,4 +574,50 @@ func (op *Operations) LoadOperationsAtPositions(path string, positions []int) (m
 	}
 
 	return results, nil
+}
+
+// CalculateMetadataWithoutLoading calculates metadata by streaming (no full load)
+func (op *Operations) CalculateMetadataWithoutLoading(path string) (opCount int, didCount int, startTime, endTime time.Time, err error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, 0, time.Time{}, time.Time{}, err
+	}
+	defer file.Close()
+
+	reader := gozstd.NewReader(file)
+	defer reader.Close()
+
+	scanner := bufio.NewScanner(reader)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	didSet := make(map[string]bool)
+	lineNum := 0
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		// Only parse minimal fields needed for metadata
+		var op struct {
+			DID       string    `json:"did"`
+			CreatedAt time.Time `json:"createdAt"`
+		}
+
+		if err := json.Unmarshal(line, &op); err != nil {
+			continue
+		}
+
+		if lineNum == 0 {
+			startTime = op.CreatedAt
+		}
+		endTime = op.CreatedAt
+
+		didSet[op.DID] = true
+		lineNum++
+	}
+
+	return lineNum, len(didSet), startTime, endTime, scanner.Err()
 }
