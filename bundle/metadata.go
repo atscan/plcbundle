@@ -7,9 +7,9 @@ import (
 	"os"
 	"time"
 
-	gozstd "github.com/DataDog/zstd"
 	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/internal/plcclient"
+	"tangled.org/atscan.net/plcbundle/internal/storage"
 )
 
 // CalculateBundleMetadata calculates complete metadata for a bundle
@@ -131,8 +131,12 @@ func (m *Manager) streamBundleInfo(path string) (opCount, didCount int, startTim
 	}
 	defer file.Close()
 
-	reader := gozstd.NewReader(file)
-	defer reader.Close()
+	// ✅ Use abstracted reader from storage package
+	reader, err := storage.NewStreamingReader(file)
+	if err != nil {
+		return 0, 0, time.Time{}, time.Time{}, fmt.Errorf("failed to create reader: %w", err)
+	}
+	defer reader.Release()
 
 	scanner := bufio.NewScanner(reader)
 	buf := make([]byte, 64*1024)

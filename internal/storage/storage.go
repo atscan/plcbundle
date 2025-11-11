@@ -12,9 +12,8 @@ import (
 	"sync"
 	"time"
 
-	gozstd "github.com/DataDog/zstd"
 	"github.com/goccy/go-json"
-	"tangled.org/atscan.net/plcbundle/internal/plcclient" // ONLY import plcclient, NOT bundle
+	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 )
 
 // Operations handles low-level bundle file operations
@@ -84,102 +83,75 @@ func (op *Operations) ParseJSONL(data []byte) ([]plcclient.PLCOperation, error) 
 }
 
 // ========================================
-// FILE OPERATIONS
+// FILE OPERATIONS (using zstd abstraction)
 // ========================================
 
-// LoadBundle loads a compressed bundle
-func (op *Operations) LoadBundle(path string) ([]plcclient.PLCOperation, error) {
-	// ✅ FIX: Use streaming reader instead of one-shot Decompress
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %w", err)
-	}
-	defer file.Close()
-
-	// NewReader properly handles multi-frame concatenated zstd
-	reader := gozstd.NewReader(file)
-	defer reader.Close()
-
-	// Read ALL decompressed data
-	decompressed, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decompress: %w", err)
-	}
-
-	// Parse JSONL
-	return op.ParseJSONL(decompressed)
-}
-
-// SaveBundle saves operations to disk (compressed)
+// SaveBundle saves operations to disk (compressed with multi-frame support)
 func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperation) (string, string, int64, int64, error) {
-	// 1. Serialize all operations once to get a single, consistent content hash.
-	//    This is critical for preserving chain hash integrity.
+	// 1. Serialize all operations once
 	jsonlData := op.SerializeJSONL(operations)
 	contentSize := int64(len(jsonlData))
 	contentHash := op.Hash(jsonlData)
 
-	// --- Correct Multi-Frame Streaming Logic ---
-
-	// 2. Create the destination file.
+	// 2. Create the destination file
 	bundleFile, err := os.Create(path)
 	if err != nil {
 		return "", "", 0, 0, fmt.Errorf("could not create bundle file: %w", err)
 	}
-	defer bundleFile.Close() // Ensure the file is closed on exit.
+	defer bundleFile.Close()
 
-	frameSize := 100           // Each frame will contain 100 operations.
-	frameOffsets := []int64{0} // The first frame always starts at offset 0.
+	frameOffsets := []int64{0}
 
-	// 3. Loop through operations in chunks.
-	for i := 0; i < len(operations); i += frameSize {
-		end := i + frameSize
+	// 3. Loop through operations in chunks
+	for i := 0; i < len(operations); i += FrameSize {
+		end := i + FrameSize
 		if end > len(operations) {
 			end = len(operations)
 		}
 		opChunk := operations[i:end]
 		chunkJsonlData := op.SerializeJSONL(opChunk)
 
-		// a. Create a NEW zstd writer FOR EACH CHUNK. This is the key.
-		zstdWriter := gozstd.NewWriter(bundleFile)
-
-		// b. Write the uncompressed chunk to the zstd writer.
-		_, err := zstdWriter.Write(chunkJsonlData)
+		// ✅ Use abstracted compression
+		compressedChunk, err := CompressFrame(chunkJsonlData)
 		if err != nil {
-			zstdWriter.Close() // Attempt to clean up
-			return "", "", 0, 0, fmt.Errorf("failed to write frame data: %w", err)
+			return "", "", 0, 0, fmt.Errorf("failed to compress frame: %w", err)
 		}
 
-		// c. Close the zstd writer. This finalizes the frame and flushes it
-		//    to the underlying file. It does NOT close the bundleFile itself.
-		if err := zstdWriter.Close(); err != nil {
-			return "", "", 0, 0, fmt.Errorf("failed to close/finalize frame: %w", err)
+		// Write frame to file
+		_, err = bundleFile.Write(compressedChunk)
+		if err != nil {
+			return "", "", 0, 0, fmt.Errorf("failed to write frame: %w", err)
 		}
 
-		// d. After closing the frame, get the file's new total size.
+		// Get current offset for next frame
 		currentOffset, err := bundleFile.Seek(0, io.SeekCurrent)
 		if err != nil {
 			return "", "", 0, 0, fmt.Errorf("failed to get file offset: %w", err)
 		}
 
-		// e. Record this offset as the start of the next frame.
 		if end < len(operations) {
 			frameOffsets = append(frameOffsets, currentOffset)
 		}
 	}
 
-	// 4. Get the final total file size. This is the end of the last frame.
+	// 4. Get final file size
 	finalSize, _ := bundleFile.Seek(0, io.SeekCurrent)
 	frameOffsets = append(frameOffsets, finalSize)
 
-	// 5. Save the companion frame-offset index file.
+	// 5. Sync to disk
+	if err := bundleFile.Sync(); err != nil {
+		return "", "", 0, 0, fmt.Errorf("failed to sync file: %w", err)
+	}
+
+	// 6. Save frame index
 	indexPath := path + ".idx"
 	indexData, _ := json.Marshal(frameOffsets)
 	if err := os.WriteFile(indexPath, indexData, 0644); err != nil {
-		os.Remove(path) // Clean up to avoid inconsistent state.
+		os.Remove(path)
 		return "", "", 0, 0, fmt.Errorf("failed to write frame index: %w", err)
 	}
 
-	// 6. Re-read the full compressed file to get its final hash for the main index.
+	// 7. Calculate compressed hash
 	compressedData, err := os.ReadFile(path)
 	if err != nil {
 		return "", "", 0, 0, fmt.Errorf("failed to re-read bundle for hashing: %w", err)
@@ -189,136 +161,29 @@ func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperatio
 	return contentHash, compressedHash, contentSize, finalSize, nil
 }
 
-// Pool for scanner buffers
-var scannerBufPool = sync.Pool{
-	New: func() interface{} {
-		buf := make([]byte, 64*1024)
-		return &buf
-	},
-}
-
-// LoadOperationAtPosition loads a single operation from a bundle
-func (op *Operations) LoadOperationAtPosition(path string, position int) (*plcclient.PLCOperation, error) {
-	if position < 0 {
-		return nil, fmt.Errorf("invalid position: %d", position)
-	}
-
-	frameSize := 100 // Must match the frame size used in SaveBundle
-	indexPath := path + ".idx"
-
-	// 1. Load the frame offset index.
-	indexData, err := os.ReadFile(indexPath)
-	if err != nil {
-		// If the frame index doesn't exist, fall back to the legacy full-scan method.
-		// This ensures backward compatibility with your old bundle files during migration.
-		if os.IsNotExist(err) {
-			op.logger.Printf("DEBUG: Frame index not found for %s, falling back to legacy full scan.", filepath.Base(path))
-			return op.loadOperationAtPositionLegacy(path, position)
-		}
-		return nil, fmt.Errorf("could not read frame index %s: %w", indexPath, err)
-	}
-
-	var frameOffsets []int64
-	if err := json.Unmarshal(indexData, &frameOffsets); err != nil {
-		return nil, fmt.Errorf("could not parse frame index %s: %w", indexPath, err)
-	}
-
-	// 2. Calculate target frame and the line number within that frame.
-	frameIndex := position / frameSize
-	lineInFrame := position % frameSize
-
-	if frameIndex >= len(frameOffsets)-1 {
-		return nil, fmt.Errorf("position %d is out of bounds for bundle with %d frames", position, len(frameOffsets)-1)
-	}
-
-	// 3. Get frame boundaries from the index.
-	startOffset := frameOffsets[frameIndex]
-	endOffset := frameOffsets[frameIndex+1]
-	frameLength := endOffset - startOffset
-
-	if frameLength <= 0 {
-		return nil, fmt.Errorf("invalid frame length calculated for position %d", position)
-	}
-
-	// 4. Open the bundle file.
-	bundleFile, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer bundleFile.Close()
-
-	// 5. Read ONLY the bytes for that single frame from the correct offset.
-	compressedFrame := make([]byte, frameLength)
-	_, err = bundleFile.ReadAt(compressedFrame, startOffset)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read frame %d from bundle: %w", frameIndex, err)
-	}
-
-	// 6. Decompress just that small frame.
-	decompressed, err := gozstd.Decompress(nil, compressedFrame)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decompress frame %d: %w", frameIndex, err)
-	}
-
-	// 7. Scan the ~100 lines to get the target operation.
-	scanner := bufio.NewScanner(bytes.NewReader(decompressed))
-	lineNum := 0
-	for scanner.Scan() {
-		if lineNum == lineInFrame {
-			line := scanner.Bytes()
-			var operation plcclient.PLCOperation
-			if err := json.UnmarshalNoEscape(line, &operation); err != nil {
-				return nil, fmt.Errorf("failed to parse operation at position %d: %w", position, err)
-			}
-			operation.RawJSON = make([]byte, len(line))
-			copy(operation.RawJSON, line)
-			return &operation, nil
-		}
-		lineNum++
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scanner error on frame %d: %w", frameIndex, err)
-	}
-
-	return nil, fmt.Errorf("operation at position %d not found", position)
-}
-
-func (op *Operations) loadOperationAtPositionLegacy(path string, position int) (*plcclient.PLCOperation, error) {
+// LoadBundle loads a compressed bundle
+func (op *Operations) LoadBundle(path string) ([]plcclient.PLCOperation, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 
-	reader := gozstd.NewReader(file)
-	defer reader.Close()
+	// ✅ Use abstracted streaming reader
+	reader, err := NewStreamingReader(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create reader: %w", err)
+	}
+	defer reader.Release()
 
-	scanner := bufio.NewScanner(reader)
-	// Use a larger buffer for potentially large lines
-	buf := make([]byte, 512*1024)
-	scanner.Buffer(buf, 1024*1024)
-
-	lineNum := 0
-	for scanner.Scan() {
-		if lineNum == position {
-			line := scanner.Bytes()
-			var operation plcclient.PLCOperation
-			if err := json.UnmarshalNoEscape(line, &operation); err != nil {
-				return nil, fmt.Errorf("failed to parse legacy operation at position %d: %w", position, err)
-			}
-			operation.RawJSON = make([]byte, len(line))
-			copy(operation.RawJSON, line)
-			return &operation, nil
-		}
-		lineNum++
+	// Read all decompressed data from all frames
+	decompressed, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decompress: %w", err)
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("legacy scanner error: %w", err)
-	}
-
-	return nil, fmt.Errorf("position %d not found in legacy bundle", position)
+	// Parse JSONL
+	return op.ParseJSONL(decompressed)
 }
 
 // ========================================
@@ -341,7 +206,12 @@ func (op *Operations) StreamDecompressed(path string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("failed to open bundle: %w", err)
 	}
 
-	reader := gozstd.NewReader(file)
+	// ✅ Use abstracted reader
+	reader, err := NewStreamingReader(file)
+	if err != nil {
+		file.Close()
+		return nil, fmt.Errorf("failed to create reader: %w", err)
+	}
 
 	return &decompressedReader{
 		reader: reader,
@@ -351,7 +221,7 @@ func (op *Operations) StreamDecompressed(path string) (io.ReadCloser, error) {
 
 // decompressedReader wraps a zstd decoder and underlying file
 type decompressedReader struct {
-	reader io.ReadCloser
+	reader StreamReader
 	file   *os.File
 }
 
@@ -360,7 +230,7 @@ func (dr *decompressedReader) Read(p []byte) (int, error) {
 }
 
 func (dr *decompressedReader) Close() error {
-	dr.reader.Close()
+	dr.reader.Release()
 	return dr.file.Close()
 }
 
@@ -396,7 +266,8 @@ func (op *Operations) CalculateFileHashes(path string) (compressedHash string, c
 	compressedHash = op.Hash(compressedData)
 	compressedSize = int64(len(compressedData))
 
-	decompressed, err := gozstd.Decompress(nil, compressedData)
+	// ✅ Use abstracted decompression
+	decompressed, err := DecompressAll(compressedData)
 	if err != nil {
 		return "", 0, "", 0, fmt.Errorf("failed to decompress: %w", err)
 	}
@@ -505,6 +376,146 @@ func (op *Operations) StripBoundaryDuplicates(operations []plcclient.PLCOperatio
 	return operations[startIdx:]
 }
 
+// Pool for scanner buffers
+var scannerBufPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 64*1024)
+		return &buf
+	},
+}
+
+// ========================================
+// POSITION-BASED LOADING (with frame index)
+// ========================================
+
+// LoadOperationAtPosition loads a single operation from a bundle
+func (op *Operations) LoadOperationAtPosition(path string, position int) (*plcclient.PLCOperation, error) {
+	if position < 0 {
+		return nil, fmt.Errorf("invalid position: %d", position)
+	}
+
+	indexPath := path + ".idx"
+
+	// 1. Try to load frame index
+	indexData, err := os.ReadFile(indexPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Fallback to legacy full scan
+			if op.logger != nil {
+				op.logger.Printf("Frame index not found for %s, using legacy scan", filepath.Base(path))
+			}
+			return op.loadOperationAtPositionLegacy(path, position)
+		}
+		return nil, fmt.Errorf("could not read frame index: %w", err)
+	}
+
+	var frameOffsets []int64
+	if err := json.Unmarshal(indexData, &frameOffsets); err != nil {
+		return nil, fmt.Errorf("could not parse frame index: %w", err)
+	}
+
+	// 2. Calculate target frame
+	frameIndex := position / FrameSize
+	lineInFrame := position % FrameSize
+
+	if frameIndex >= len(frameOffsets)-1 {
+		return nil, fmt.Errorf("position %d out of bounds (frame %d, total frames %d)",
+			position, frameIndex, len(frameOffsets)-1)
+	}
+
+	// 3. Read the specific frame from file
+	startOffset := frameOffsets[frameIndex]
+	endOffset := frameOffsets[frameIndex+1]
+	frameLength := endOffset - startOffset
+
+	if frameLength <= 0 {
+		return nil, fmt.Errorf("invalid frame length: %d", frameLength)
+	}
+
+	bundleFile, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open bundle: %w", err)
+	}
+	defer bundleFile.Close()
+
+	compressedFrame := make([]byte, frameLength)
+	_, err = bundleFile.ReadAt(compressedFrame, startOffset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read frame %d: %w", frameIndex, err)
+	}
+
+	// 4. ✅ Decompress this single frame
+	decompressed, err := DecompressFrame(compressedFrame)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decompress frame %d: %w", frameIndex, err)
+	}
+
+	// 5. Scan the decompressed data to find the target line
+	scanner := bufio.NewScanner(bytes.NewReader(decompressed))
+	lineNum := 0
+
+	for scanner.Scan() {
+		if lineNum == lineInFrame {
+			line := scanner.Bytes()
+			var operation plcclient.PLCOperation
+			if err := json.UnmarshalNoEscape(line, &operation); err != nil {
+				return nil, fmt.Errorf("failed to parse operation at position %d: %w", position, err)
+			}
+			operation.RawJSON = make([]byte, len(line))
+			copy(operation.RawJSON, line)
+			return &operation, nil
+		}
+		lineNum++
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scanner error on frame %d: %w", frameIndex, err)
+	}
+
+	return nil, fmt.Errorf("position %d not found in frame %d", position, frameIndex)
+}
+
+// loadOperationAtPositionLegacy loads operation from old single-frame bundles
+func (op *Operations) loadOperationAtPositionLegacy(path string, position int) (*plcclient.PLCOperation, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	// ✅ Use abstracted streaming reader
+	reader, err := NewStreamingReader(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create reader: %w", err)
+	}
+	defer reader.Release()
+
+	scanner := bufio.NewScanner(reader)
+	buf := make([]byte, 512*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	lineNum := 0
+	for scanner.Scan() {
+		if lineNum == position {
+			line := scanner.Bytes()
+			var operation plcclient.PLCOperation
+			if err := json.UnmarshalNoEscape(line, &operation); err != nil {
+				return nil, fmt.Errorf("failed to parse operation at position %d: %w", position, err)
+			}
+			operation.RawJSON = make([]byte, len(line))
+			copy(operation.RawJSON, line)
+			return &operation, nil
+		}
+		lineNum++
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scanner error: %w", err)
+	}
+
+	return nil, fmt.Errorf("position %d not found in bundle", position)
+}
+
 // LoadOperationsAtPositions loads multiple operations from a bundle in one pass
 func (op *Operations) LoadOperationsAtPositions(path string, positions []int) (map[int]*plcclient.PLCOperation, error) {
 	if len(positions) == 0 {
@@ -530,8 +541,12 @@ func (op *Operations) LoadOperationsAtPositions(path string, positions []int) (m
 	}
 	defer file.Close()
 
-	reader := gozstd.NewReader(file)
-	defer reader.Close()
+	// ✅ Use abstracted streaming reader
+	reader, err := NewStreamingReader(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create reader: %w", err)
+	}
+	defer reader.Release()
 
 	bufPtr := scannerBufPool.Get().(*[]byte)
 	defer scannerBufPool.Put(bufPtr)
@@ -563,7 +578,7 @@ func (op *Operations) LoadOperationsAtPositions(path string, positions []int) (m
 
 		lineNum++
 
-		// Early exit if we passed the max position we need
+		// Early exit if we passed the max position
 		if lineNum > maxPos {
 			break
 		}
@@ -584,8 +599,12 @@ func (op *Operations) CalculateMetadataWithoutLoading(path string) (opCount int,
 	}
 	defer file.Close()
 
-	reader := gozstd.NewReader(file)
-	defer reader.Close()
+	// ✅ Use abstracted reader
+	reader, err := NewStreamingReader(file)
+	if err != nil {
+		return 0, 0, time.Time{}, time.Time{}, fmt.Errorf("failed to create reader: %w", err)
+	}
+	defer reader.Release()
 
 	scanner := bufio.NewScanner(reader)
 	buf := make([]byte, 64*1024)

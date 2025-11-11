@@ -11,6 +11,7 @@ require (
 
 require (
 	github.com/spf13/cobra v1.10.1
+	github.com/valyala/gozstd v1.23.2
 	golang.org/x/term v0.36.0
 )
 
