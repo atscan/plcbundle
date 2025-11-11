@@ -71,6 +71,7 @@ Documentation: https://tangled.org/@atscan.net/plcbundle`,
 	/*cmd.AddCommand(commands.NewWatchCommand())
 	cmd.AddCommand(commands.NewHealCommand())*/
 	cmd.AddCommand(commands.NewCleanCommand())
+	cmd.AddCommand(commands.NewMigrateCommand())
 
 	// Server
 	cmd.AddCommand(commands.NewServerCommand())
