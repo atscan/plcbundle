@@ -19,23 +19,23 @@ import (
 // ============================================================================
 
 type DIDActivity struct {
-	DID   string
-	Count int
+	DID   string `json:"did"`
+	Count int    `json:"count"`
 }
 
 type DomainCount struct {
-	Domain string
-	Count  int
+	Domain string `json:"domain"`
+	Count  int    `json:"count"`
 }
 
 type EndpointCount struct {
-	Endpoint string
-	Count    int
+	Endpoint string `json:"endpoint"`
+	Count    int    `json:"count"`
 }
 
 type TimeSlot struct {
-	Time  time.Time
-	Count int
+	Time  time.Time `json:"time"`
+	Count int       `json:"count"`
 }
 
 type inspectOptions struct {
@@ -51,87 +51,98 @@ type inspectOptions struct {
 
 type inspectResult struct {
 	// Metadata
-	Metadata *storage.BundleMetadata
+	Metadata *storage.BundleMetadata `json:"metadata,omitempty"`
 
 	// Basic stats
-	FilePath         string
-	FileSize         int64
-	HasMetadataFrame bool
-	HasFrameIndex    bool
+	FilePath         string `json:"file_path"`
+	FileSize         int64  `json:"file_size"`
+	HasMetadataFrame bool   `json:"has_metadata_frame"`
+	HasFrameIndex    bool   `json:"has_frame_index"`
 
 	// Operation analysis
-	TotalOps       int
-	NullifiedOps   int
-	ActiveOps      int
-	UniqueDIDs     int
-	OperationTypes map[string]int
+	TotalOps       int            `json:"total_ops"`
+	NullifiedOps   int            `json:"nullified_ops"`
+	ActiveOps      int            `json:"active_ops"`
+	UniqueDIDs     int            `json:"unique_dids"`
+	OperationTypes map[string]int `json:"operation_types"`
 
 	// DID patterns
-	TopDIDs      []DIDActivity
-	SingleOpDIDs int
-	MultiOpDIDs  int
+	TopDIDs      []DIDActivity `json:"top_dids"`
+	SingleOpDIDs int           `json:"single_op_dids"`
+	MultiOpDIDs  int           `json:"multi_op_dids"`
 
 	// Handle patterns
-	TotalHandles   int
-	TopDomains     []DomainCount
-	InvalidHandles int
+	TotalHandles   int           `json:"total_handles"`
+	TopDomains     []DomainCount `json:"top_domains"`
+	InvalidHandles int           `json:"invalid_handles"`
 
 	// Service patterns
-	TotalServices   int
-	UniqueEndpoints int
-	TopPDSEndpoints []EndpointCount
+	TotalServices   int             `json:"total_services"`
+	UniqueEndpoints int             `json:"unique_endpoints"`
+	TopPDSEndpoints []EndpointCount `json:"top_pds_endpoints"`
 
 	// Temporal
-	TimeDistribution []TimeSlot
-	AvgOpsPerMinute  float64
+	TimeDistribution *TimeDistributionSummary `json:"time_distribution,omitempty"`
+	AvgOpsPerMinute  float64                  `json:"avg_ops_per_minute"`
 
 	// Size analysis
-	AvgOpSize   int
-	MinOpSize   int
-	MaxOpSize   int
-	TotalOpSize int64
+	AvgOpSize   int   `json:"avg_op_size"`
+	MinOpSize   int   `json:"min_op_size"`
+	MaxOpSize   int   `json:"max_op_size"`
+	TotalOpSize int64 `json:"total_op_size"`
 
 	// Crypto verification
-	ContentHashValid    bool
-	CompressedHashValid bool
-	MetadataValid       bool
+	ContentHashValid    bool `json:"content_hash_valid"`
+	CompressedHashValid bool `json:"compressed_hash_valid"`
+	MetadataValid       bool `json:"metadata_valid"`
 
 	// Timing
-	LoadTime    time.Duration
-	AnalyzeTime time.Duration
-	VerifyTime  time.Duration
-	TotalTime   time.Duration
+	LoadTime    time.Duration `json:"load_time"`
+	AnalyzeTime time.Duration `json:"analyze_time"`
+	VerifyTime  time.Duration `json:"verify_time"`
+	TotalTime   time.Duration `json:"total_time"`
 }
 
 type bundleAnalysis struct {
-	TotalOps        int
-	NullifiedOps    int
-	ActiveOps       int
-	UniqueDIDs      int
-	OperationTypes  map[string]int
-	SingleOpDIDs    int
-	MultiOpDIDs     int
-	TotalHandles    int
-	InvalidHandles  int
-	TotalServices   int
-	UniqueEndpoints int
-	AvgOpsPerMinute float64
-	AvgOpSize       int
-	MinOpSize       int
-	MaxOpSize       int
-	TotalOpSize     int64
+	TotalOps        int            `json:"total_ops"`
+	NullifiedOps    int            `json:"nullified_ops"`
+	ActiveOps       int            `json:"active_ops"`
+	UniqueDIDs      int            `json:"unique_dids"`
+	OperationTypes  map[string]int `json:"operation_types"`
+	SingleOpDIDs    int            `json:"single_op_dids"`
+	MultiOpDIDs     int            `json:"multi_op_dids"`
+	TotalHandles    int            `json:"total_handles"`
+	InvalidHandles  int            `json:"invalid_handles"`
+	TotalServices   int            `json:"total_services"`
+	UniqueEndpoints int            `json:"unique_endpoints"`
+	AvgOpsPerMinute float64        `json:"avg_ops_per_minute"`
+	AvgOpSize       int            `json:"avg_op_size"`
+	MinOpSize       int            `json:"min_op_size"`
+	MaxOpSize       int            `json:"max_op_size"`
+	TotalOpSize     int64          `json:"total_op_size"`
 
-	// For top-N calculations
+	// For top-N calculations (unexported, won't appear in JSON)
 	didActivity    map[string]int
 	domainCounts   map[string]int
 	endpointCounts map[string]int
-	timeSlots      map[int64]int
+
+	// For time calculations
+	timeSlots map[int64]int
 
 	// Results
-	TopDIDs          []DIDActivity
-	TopDomains       []DomainCount
-	TopPDSEndpoints  []EndpointCount
-	TimeDistribution []TimeSlot
+	TopDIDs          []DIDActivity            `json:"top_dids"`
+	TopDomains       []DomainCount            `json:"top_domains"`
+	TopPDSEndpoints  []EndpointCount          `json:"top_pds_endpoints"`
+	TimeDistribution *TimeDistributionSummary `json:"time_distribution,omitempty"`
+}
+
+type TimeDistributionSummary struct {
+	EarliestOp  time.Time `json:"earliest_op"`
+	LatestOp    time.Time `json:"latest_op"`
+	TimeSpan    string    `json:"time_span"`
+	PeakHour    time.Time `json:"peak_hour"`
+	PeakHourOps int       `json:"peak_hour_ops"`
+	TotalHours  int       `json:"total_hours"`
 }
 
 // ============================================================================
@@ -433,7 +444,7 @@ func analyzeBundle(path string, opts inspectOptions) (*bundleAnalysis, error) {
 	analysis.UniqueEndpoints = len(analysis.endpointCounts)
 
 	// Time distribution
-	analysis.TimeDistribution = getTimeDistribution(analysis.timeSlots)
+	analysis.TimeDistribution = calculateTimeDistributionSummary(analysis.timeSlots)
 
 	// Calculate ops per minute
 	if len(operations) > 1 {
@@ -549,20 +560,55 @@ func getTopEndpoints(endpointCounts map[string]int, limit int) []EndpointCount {
 	return results
 }
 
-func getTimeDistribution(timeSlots map[int64]int) []TimeSlot {
-	var results []TimeSlot
-	for slot, count := range timeSlots {
-		results = append(results, TimeSlot{
-			Time:  time.Unix(slot*60, 0),
-			Count: count,
-		})
+func calculateTimeDistributionSummary(timeSlots map[int64]int) *TimeDistributionSummary {
+	if len(timeSlots) == 0 {
+		return nil
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Time.Before(results[j].Time)
-	})
+	var earliest, latest int64
+	var peakHour int64
+	var peakCount int
 
-	return results
+	// Group by hour and find stats
+	hourlySlots := make(map[int64]int)
+
+	for ts, count := range timeSlots {
+		// Track earliest/latest
+		if earliest == 0 || ts < earliest {
+			earliest = ts
+		}
+		if ts > latest {
+			latest = ts
+		}
+
+		// Group by hour
+		hour := (ts / 3600) * 3600 // Truncate to hour
+		hourlySlots[hour] += count
+	}
+
+	// Find peak hour
+	for hour, count := range hourlySlots {
+		if count > peakCount {
+			peakCount = count
+			peakHour = hour
+		}
+	}
+
+	// Calculate time span
+	duration := time.Unix(latest, 0).Sub(time.Unix(earliest, 0))
+	timeSpan := formatDuration(duration)
+
+	// Calculate total hours covered
+	totalHours := len(hourlySlots)
+
+	return &TimeDistributionSummary{
+		EarliestOp:  time.Unix(earliest, 0).UTC(),
+		LatestOp:    time.Unix(latest, 0).UTC(),
+		TimeSpan:    timeSpan,
+		PeakHour:    time.Unix(peakHour, 0).UTC(),
+		PeakHourOps: peakCount,
+		TotalHours:  totalHours,
+	}
 }
 
 // ============================================================================
@@ -588,14 +634,9 @@ func displayInspectHuman(result *inspectResult, _ *bundleAnalysis, opts inspectO
 		meta := result.Metadata
 		fmt.Printf("📋 Embedded Metadata (Skippable Frame)\n")
 		fmt.Printf("──────────────────────────────────────\n")
-		fmt.Printf("  Format:              %s (v%d)\n", meta.Format, meta.Version)
-		if meta.SpecURL != "" {
-			fmt.Printf("  Specification:       %s\n", meta.SpecURL)
-		}
+		fmt.Printf("  Format:              %s\n", meta.Format)
+		fmt.Printf("  Origin:              %s\n", meta.Origin)
 		fmt.Printf("  Bundle Number:       %06d\n", meta.BundleNumber)
-		if meta.Origin != "" {
-			fmt.Printf("  Origin:              %s\n", meta.Origin)
-		}
 		if meta.CreatedBy != "" {
 			fmt.Printf("  Created by:          %s\n", meta.CreatedBy)
 		}
@@ -621,10 +662,21 @@ func displayInspectHuman(result *inspectResult, _ *bundleAnalysis, opts inspectO
 		}
 
 		if len(meta.FrameOffsets) > 0 {
-			fmt.Printf("\n  Frame Index:         %d offsets (embedded)\n", len(meta.FrameOffsets))
-			firstDataOffset := meta.FrameOffsets[0]
-			fmt.Printf("    Metadata size:     %s\n", formatBytes(firstDataOffset))
-			fmt.Printf("    First data frame:  offset %d\n", firstDataOffset)
+			// Calculate metadata size (size of the metadata frame itself)
+			metadataSize := int64(0)
+			if result.HasMetadataFrame {
+				// Metadata is at the end of file, after all data frames
+				// Size = file size - last frame offset
+				if len(meta.FrameOffsets) > 0 {
+					lastFrameOffset := meta.FrameOffsets[len(meta.FrameOffsets)-1]
+					metadataSize = result.FileSize - lastFrameOffset
+				}
+			}
+
+			// Print with fixes
+			fmt.Printf("  Ops Frame Index:     %d offsets (embedded)\n", len(meta.FrameOffsets))
+			fmt.Printf("    Metadata size:     %s\n", formatBytes(metadataSize))
+			fmt.Printf("    Frame offsets:     %v\n", formatOffsetArray(meta.FrameOffsets, 5)) // Show first 5
 		}
 		fmt.Printf("\n")
 	}
@@ -733,28 +785,17 @@ func displayInspectHuman(result *inspectResult, _ *bundleAnalysis, opts inspectO
 	}
 
 	// Temporal analysis
-	fmt.Printf("⏱️  Temporal Distribution\n")
+	fmt.Printf("⏱️ Time Distribution\n")
 	fmt.Printf("───────────────────────\n")
-	if len(result.TimeDistribution) > 0 {
-		first := result.TimeDistribution[0]
-		last := result.TimeDistribution[len(result.TimeDistribution)-1]
-		duration := last.Time.Sub(first.Time)
-
-		fmt.Printf("  Start:               %s\n", first.Time.Format("2006-01-02 15:04:05"))
-		fmt.Printf("  End:                 %s\n", last.Time.Format("2006-01-02 15:04:05"))
-		fmt.Printf("  Duration:            %s\n", formatDuration(duration))
+	if result.TimeDistribution != nil {
+		td := result.TimeDistribution
+		fmt.Printf("  Earliest operation:  %s\n", td.EarliestOp.Format(time.RFC3339))
+		fmt.Printf("  Latest operation:    %s\n", td.LatestOp.Format(time.RFC3339))
+		fmt.Printf("  Time span:           %s\n", td.TimeSpan)
+		fmt.Printf("  Peak hour:           %s (%d ops)\n",
+			td.PeakHour.Format("2006-01-02 15:04"), td.PeakHourOps)
+		fmt.Printf("  Total active hours:  %d\n", td.TotalHours)
 		fmt.Printf("  Avg ops/minute:      %.1f\n", result.AvgOpsPerMinute)
-		fmt.Printf("  Time slots:          %d minutes\n", len(result.TimeDistribution))
-
-		// Find peak activity
-		maxSlot := result.TimeDistribution[0]
-		for _, slot := range result.TimeDistribution {
-			if slot.Count > maxSlot.Count {
-				maxSlot = slot
-			}
-		}
-		fmt.Printf("  Peak activity:       %d ops at %s\n",
-			maxSlot.Count, maxSlot.Time.Format("15:04"))
 	}
 	fmt.Printf("\n")
 
@@ -921,4 +962,19 @@ func resolveBundlePath(cmd *cobra.Command, input string) (path string, bundleNum
 	}
 
 	return "", 0, fmt.Errorf("invalid input: must be bundle number or file path")
+}
+
+func formatOffsetArray(offsets []int64, maxShow int) string {
+	if len(offsets) == 0 {
+		return "[]"
+	}
+
+	if len(offsets) <= maxShow {
+		return fmt.Sprintf("%v", offsets)
+	}
+
+	// Show first maxShow elements
+	shown := make([]int64, maxShow)
+	copy(shown, offsets[:maxShow])
+	return fmt.Sprintf("%v ... (%d more)", shown, len(offsets)-maxShow)
 }

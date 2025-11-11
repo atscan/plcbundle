@@ -23,18 +23,11 @@ const (
 // BundleMetadata - Self-describing bundle (content-focused, not container)
 type BundleMetadata struct {
 	// === Format Info ===
-	Version int    `json:"version"`  // Metadata schema version (1)
-	Format  string `json:"format"`   // "plcbundle-v1"
-	SpecURL string `json:"spec_url"` // "https://github.com/atscan-net/plcbundle"
+	Format string `json:"format"` // "plcbundle-v1"
 
 	// === Bundle Identity ===
-	BundleNumber int    `json:"bundle_number"` // Sequential bundle number
 	Origin       string `json:"origin"`        // Source PLC directory URL
-
-	// === Creation Provenance ===
-	CreatedAt     time.Time `json:"created_at"`                // When bundle was created
-	CreatedBy     string    `json:"created_by"`                // "plcbundle/v1.2.3"
-	CreatedByHost string    `json:"created_by_host,omitempty"` // Optional: hostname that created it
+	BundleNumber int    `json:"bundle_number"` // Sequential bundle number
 
 	// === Content Integrity ===
 	ContentHash string `json:"content_hash"`          // SHA256 of uncompressed JSONL content
@@ -54,6 +47,11 @@ type BundleMetadata struct {
 	// === Optional Context ===
 	Cursor string `json:"cursor,omitempty"` // PLC export cursor for this bundle
 	Notes  string `json:"notes,omitempty"`  // Optional description
+
+	// === Creation Provenance ===
+	CreatedAt     time.Time `json:"created_at"`                // When bundle was created
+	CreatedBy     string    `json:"created_by"`                // "plcbundle/v1.2.3"
+	CreatedByHost string    `json:"created_by_host,omitempty"` // Optional: hostname that created it
 }
 
 // Operations handles low-level bundle file operations
@@ -180,9 +178,7 @@ func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperatio
 
 	// 4. ✅ Build metadata with RELATIVE offsets
 	metadata := &BundleMetadata{
-		Version:        MetadataFormatVersion,
-		Format:         "plcbundle-v1",
-		SpecURL:        "https://github.com/atscan-net/plcbundle",
+		Format:         fmt.Sprintf("plcbundle-v%d", MetadataFormatVersion),
 		BundleNumber:   bundleInfo.BundleNumber,
 		Origin:         bundleInfo.Origin,
 		CreatedAt:      time.Now().UTC(),
