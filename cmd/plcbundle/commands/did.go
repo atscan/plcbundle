@@ -165,9 +165,8 @@ full scan (slow).`,
 
 func newDIDResolveCommand() *cobra.Command {
 	var (
-		verbose    bool
-		showTiming bool
-		raw        bool
+		verbose bool
+		raw     bool
 	)
 
 	cmd := &cobra.Command{
@@ -185,8 +184,8 @@ O(1) lookup of latest operation.`,
 		Example: `  # Resolve DID
   plcbundle did resolve did:plc:524tuhdhh3m7li5gycdn6boe
 
-  # Show timing breakdown
-  plcbundle did resolve did:plc:524tuhdhh3m7li5gycdn6boe --timing
+  # Show timings and other details
+  plcbundle did resolve did:plc:524tuhdhh3m7li5gycdn6boe --verbose
 
   # Get raw PLC state (not W3C format)
   plcbundle did resolve did:plc:524tuhdhh3m7li5gycdn6boe --raw
@@ -218,7 +217,7 @@ O(1) lookup of latest operation.`,
 
 			// Show resolution timing if it was a handle
 			if input != did {
-				if showTiming {
+				if verbose {
 					fmt.Fprintf(os.Stderr, "Handle resolution: %s → %s (%s)\n",
 						input, did, handleResolveTime)
 				} else {
@@ -226,11 +225,8 @@ O(1) lookup of latest operation.`,
 				}
 			}
 
-			if showTiming {
-				fmt.Fprintf(os.Stderr, "Resolving DID: %s\n", did)
-			}
-
 			if verbose {
+				fmt.Fprintf(os.Stderr, "Resolving DID: %s\n", did)
 				mgr.GetDIDIndex().SetVerbose(true)
 			}
 
@@ -240,7 +236,7 @@ O(1) lookup of latest operation.`,
 			}
 
 			// Display timing if requested
-			if showTiming {
+			if verbose {
 				if handleResolveTime > 0 {
 					fmt.Fprintf(os.Stderr, "Handle: %s | ", handleResolveTime)
 				}
@@ -264,7 +260,6 @@ O(1) lookup of latest operation.`,
 	}
 
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose debug output")
-	cmd.Flags().BoolVar(&showTiming, "timing", false, "Show timing breakdown")
 	cmd.Flags().BoolVar(&raw, "raw", false, "Output raw PLC state (not W3C document)")
 
 	return cmd

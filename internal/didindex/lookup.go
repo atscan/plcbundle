@@ -143,23 +143,23 @@ func (dim *Manager) GetDIDOperationsWithLocations(ctx context.Context, did strin
 
 	var results []OpLocationWithOperation
 	for bundleNum, locs := range bundleMap {
-		bundle, err := provider.LoadBundleForDIDIndex(ctx, int(bundleNum))
+		positions := make([]int, len(locs))
+		for i, l := range locs {
+			positions[i] = l.PositionInt()
+		}
+		opsMap, err := provider.LoadOperations(ctx, int(bundleNum), positions)
 		if err != nil {
 			dim.logger.Printf("Warning: failed to load bundle %d: %v", bundleNum, err)
 			continue
 		}
-
-		for _, loc := range locs {
-			if loc.PositionInt() >= len(bundle.Operations) {
-				continue
+		for i, l := range locs {
+			if op, ok := opsMap[positions[i]]; ok {
+				results = append(results, OpLocationWithOperation{
+					Operation: *op,
+					Bundle:    l.BundleInt(),
+					Position:  l.PositionInt(),
+				})
 			}
-
-			op := bundle.Operations[loc.Position()]
-			results = append(results, OpLocationWithOperation{
-				Operation: op,
-				Bundle:    loc.BundleInt(),
-				Position:  loc.PositionInt(),
-			})
 		}
 	}
 
