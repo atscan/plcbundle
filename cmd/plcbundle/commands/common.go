@@ -14,6 +14,7 @@ import (
 	"tangled.org/atscan.net/plcbundle/internal/didindex"
 	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 	internalsync "tangled.org/atscan.net/plcbundle/internal/sync"
+	"tangled.org/atscan.net/plcbundle/internal/types"
 )
 
 // BundleManager interface (for testing/mocking)
@@ -29,8 +30,8 @@ type BundleManager interface {
 	ValidateMempool() error
 	RefreshMempool() error
 	ClearMempool() error
-	FetchNextBundle(ctx context.Context, quiet bool) (*bundle.Bundle, error)
-	SaveBundle(ctx context.Context, b *bundle.Bundle, quiet bool) (time.Duration, error)
+	FetchNextBundle(ctx context.Context, verbose bool, quiet bool) (*bundle.Bundle, types.BundleProductionStats, error)
+	SaveBundle(ctx context.Context, b *bundle.Bundle, verbose bool, quiet bool, stats types.BundleProductionStats) (time.Duration, error)
 	SaveIndex() error
 	GetDIDIndexStats() map[string]interface{}
 	GetDIDIndex() *didindex.Manager
@@ -127,9 +128,12 @@ func getManager(opts *ManagerOptions) (*bundle.Manager, string, error) {
 	if opts.Cmd != nil {
 		globalVerbose, _ := opts.Cmd.Root().PersistentFlags().GetBool("verbose")
 		localVerbose, _ := opts.Cmd.Flags().GetBool("verbose")
+		globalQuiet, _ := opts.Cmd.Root().PersistentFlags().GetBool("quiet")
+		localQuiet, _ := opts.Cmd.Flags().GetBool("quiet")
 
 		// Use OR logic: verbose if EITHER flag is set
 		config.Verbose = globalVerbose || localVerbose
+		config.Quiet = globalQuiet || localQuiet
 	}
 
 	// Create PLC client if URL provided

@@ -215,16 +215,6 @@ O(1) lookup of latest operation.`,
 				return err
 			}
 
-			// Show resolution timing if it was a handle
-			if input != did {
-				if verbose {
-					fmt.Fprintf(os.Stderr, "Handle resolution: %s → %s (%s)\n",
-						input, did, handleResolveTime)
-				} else {
-					fmt.Fprintf(os.Stderr, "Resolved handle '%s' → %s\n", input, did)
-				}
-			}
-
 			if verbose {
 				fmt.Fprintf(os.Stderr, "Resolving DID: %s\n", did)
 				mgr.GetDIDIndex().SetVerbose(true)

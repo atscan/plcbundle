@@ -31,7 +31,7 @@ type SyncManager interface {
 	GetLastBundleNumber() int
 	GetMempoolCount() int
 	// Returns: bundleNumber, indexUpdateTime, error
-	FetchAndSaveNextBundle(ctx context.Context, quiet bool) (int, time.Duration, error)
+	FetchAndSaveNextBundle(ctx context.Context, verbose bool, quiet bool) (int, *types.BundleProductionStats, error)
 	SaveMempool() error
 }
 
@@ -50,7 +50,7 @@ func SyncOnce(ctx context.Context, mgr SyncManager, config *SyncLoopConfig, verb
 		mempoolBefore := mgr.GetMempoolCount()
 
 		// Attempt to fetch and save next bundle
-		bundleNum, indexTime, err := mgr.FetchAndSaveNextBundle(ctx, !verbose)
+		bundleNum, stats, err := mgr.FetchAndSaveNextBundle(ctx, verbose, false)
 
 		// Check if we made any progress
 		bundleAfter := mgr.GetLastBundleNumber()
@@ -71,7 +71,7 @@ func SyncOnce(ctx context.Context, mgr SyncManager, config *SyncLoopConfig, verb
 
 		// Success
 		fetchedCount++
-		totalIndexTime += indexTime
+		totalIndexTime += stats.IndexTime
 
 		// Callback if provided
 		if config.OnBundleSynced != nil {

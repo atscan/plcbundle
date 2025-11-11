@@ -128,6 +128,7 @@ type Config struct {
 	RebuildProgress   func(current, total int) // Progress callback for rebuild
 	Logger            types.Logger
 	Verbose           bool
+	Quiet             bool
 }
 
 // DefaultConfig returns default configuration
@@ -142,6 +143,7 @@ func DefaultConfig(bundleDir string) *Config {
 		RebuildProgress:   nil, // No progress callback by default
 		Logger:            nil,
 		Verbose:           false,
+		Quiet:             false,
 	}
 }
 

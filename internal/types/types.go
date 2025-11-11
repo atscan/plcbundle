@@ -1,5 +1,7 @@
 package types
 
+import "time"
+
 // Logger is a simple logging interface used throughout plcbundle
 type Logger interface {
 	Printf(format string, v ...interface{})
@@ -16,3 +18,11 @@ const (
 	// INDEX_VERSION is the current index format version
 	INDEX_VERSION = "1.0"
 )
+
+type BundleProductionStats struct {
+	TotalFetches  int
+	TotalDuration time.Duration
+	AvgPerFetch   float64
+	Throughput    float64
+	IndexTime     time.Duration
+}

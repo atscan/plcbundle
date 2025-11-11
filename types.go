@@ -40,7 +40,7 @@ type IndexStats struct {
 }
 
 // Helper to convert internal bundle to public
-func toBundlePublic(b interface{}) *Bundle {
+func toBundlePublic(_ interface{}) *Bundle {
 	// Implement conversion from internal bundle to public Bundle
 	return &Bundle{} // placeholder
 }

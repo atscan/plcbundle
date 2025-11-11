@@ -244,8 +244,10 @@ func (dim *Manager) UpdateIndexForBundle(ctx context.Context, bundle *BundleData
 	}
 
 	groupDuration := time.Since(groupStart)
-	dim.logger.Printf("  [DID Index] Grouped operations into %d shards in %s",
-		len(shardOps), groupDuration)
+	if dim.verbose {
+		dim.logger.Printf("  [DID Index] Grouped operations into %d shards in %s",
+			len(shardOps), groupDuration)
+	}
 
 	// STEP 2: Write ALL shards to .tmp files FIRST (PARALLEL)
 	writeStart := time.Now()
@@ -270,8 +272,10 @@ func (dim *Manager) UpdateIndexForBundle(ctx context.Context, bundle *BundleData
 	semaphore := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 
-	dim.logger.Printf("  [DID Index] Updating %d shards in parallel (%d workers)...",
-		len(shardOps), workers)
+	if dim.verbose {
+		dim.logger.Printf("  [DID Index] Updating %d shards in parallel (%d workers)...",
+			len(shardOps), workers)
+	}
 
 	// Process each shard in parallel
 	for shardNum, newOps := range shardOps {
@@ -316,8 +320,10 @@ func (dim *Manager) UpdateIndexForBundle(ctx context.Context, bundle *BundleData
 	close(errChan)
 
 	writeDuration := time.Since(writeStart)
-	dim.logger.Printf("  [DID Index] Wrote %d temp files in %s (%.1f shards/sec)",
-		len(tmpShards), writeDuration, float64(len(tmpShards))/writeDuration.Seconds())
+	if dim.verbose {
+		dim.logger.Printf("  [DID Index] Wrote %d temp files in %s (%.1f shards/sec)",
+			len(tmpShards), writeDuration, float64(len(tmpShards))/writeDuration.Seconds())
+	}
 
 	// Check for errors
 	if err := <-errChan; err != nil {
@@ -354,8 +360,10 @@ func (dim *Manager) UpdateIndexForBundle(ctx context.Context, bundle *BundleData
 	totalDuration := time.Since(totalStart)
 
 	// Summary log
-	dim.logger.Printf("  [DID Index] ✓ Bundle %06d indexed: +%d DIDs, %d shards updated in %s",
-		bundle.BundleNumber, deltaCount, len(tmpShards), totalDuration)
+	if dim.verbose {
+		dim.logger.Printf("  [DID Index] ✓ Bundle %06d indexed: +%d DIDs, %d shards updated in %s",
+			bundle.BundleNumber, deltaCount, len(tmpShards), totalDuration)
+	}
 
 	if dim.verbose {
 		dim.logger.Printf("    Breakdown: group=%s write=%s commit=%s config=%s",

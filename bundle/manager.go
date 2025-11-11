@@ -435,7 +435,9 @@ func (m *Manager) loadBundleFromDisk(_ context.Context, bundleNumber int) (*Bund
 }
 
 // SaveBundle saves a bundle to disk and updates the index
-func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (time.Duration, error) {
+func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, verbose bool, quiet bool, stats types.BundleProductionStats) (time.Duration, error) {
+
+	totalStart := time.Now()
 	if err := bundle.ValidateForSave(); err != nil {
 		return 0, fmt.Errorf("bundle validation failed: %w", err)
 	}
@@ -481,7 +483,9 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (t
 		Hostname:     hostname,
 	}
 
-	m.logger.Printf("DEBUG: Calling operations.SaveBundle with bundle=%d", bundleInfo.BundleNumber)
+	if m.config.Verbose {
+		m.logger.Printf("DEBUG: Calling operations.SaveBundle with bundle=%d", bundleInfo.BundleNumber)
+	}
 
 	// Save to disk with 3 parameters
 	uncompressedHash, compressedHash, uncompressedSize, compressedSize, err := m.operations.SaveBundle(path, bundle.Operations, bundleInfo)
@@ -490,8 +494,11 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (t
 		return 0, fmt.Errorf("failed to save bundle: %w", err)
 	}
 
-	m.logger.Printf("DEBUG: SaveBundle SUCCESS, setting bundle fields")
+	if m.config.Verbose {
+		m.logger.Printf("DEBUG: SaveBundle SUCCESS, setting bundle fields")
+	}
 
+	bundle.Hash = m.operations.CalculateChainHash(parent, bundle.ContentHash)
 	bundle.ContentHash = uncompressedHash
 	bundle.CompressedHash = compressedHash
 	bundle.UncompressedSize = uncompressedSize
@@ -499,12 +506,16 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (t
 	bundle.CreatedAt = time.Now().UTC()
 	bundle.Hash = m.operations.CalculateChainHash(parent, bundle.ContentHash)
 
-	m.logger.Printf("DEBUG: Adding bundle %d to index", bundle.BundleNumber)
+	if m.config.Verbose {
+		m.logger.Printf("DEBUG: Adding bundle %d to index", bundle.BundleNumber)
+	}
 
 	// Add to index
 	m.index.AddBundle(bundle.ToMetadata())
 
-	m.logger.Printf("DEBUG: Index now has %d bundles", m.index.Count())
+	if m.config.Verbose {
+		m.logger.Printf("DEBUG: Index now has %d bundles", m.index.Count())
+	}
 
 	// Save index
 	if err := m.SaveIndex(); err != nil {
@@ -512,7 +523,11 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (t
 		return 0, fmt.Errorf("failed to save index: %w", err)
 	}
 
-	m.logger.Printf("DEBUG: Index saved, last bundle = %d", m.index.GetLastBundle().BundleNumber)
+	if m.config.Verbose {
+		m.logger.Printf("DEBUG: Index saved, last bundle = %d", m.index.GetLastBundle().BundleNumber)
+	}
+
+	saveDuration := time.Since(totalStart)
 
 	// Clean up old mempool
 	oldMempoolFile := m.mempool.GetFilename()
@@ -539,10 +554,29 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (t
 			m.logger.Printf("Warning: failed to update DID index: %v", err)
 		} else {
 			indexUpdateDuration = time.Since(indexUpdateStart)
-			if !quiet {
+			if !quiet && m.config.Verbose {
 				m.logger.Printf("  [DID Index] Updated in %s", indexUpdateDuration)
 			}
 		}
+	}
+
+	if !quiet {
+		msg := fmt.Sprintf("→ Bundle %06d | %s | time: %s (%d reqs)",
+			bundle.BundleNumber,
+			bundle.Hash[0:7],
+			stats.TotalDuration.Round(time.Millisecond),
+			stats.TotalFetches,
+		)
+		if indexUpdateDuration > 0 {
+			msg += fmt.Sprintf(" | index: %s", indexUpdateDuration.Round(time.Millisecond))
+		}
+		m.logger.Println(msg)
+	}
+
+	if m.config.Verbose {
+		m.logger.Printf("DEBUG: Bundle done = %d, finish duration = %s",
+			m.index.GetLastBundle().BundleNumber,
+			saveDuration.Round(time.Millisecond))
 	}
 
 	return indexUpdateDuration, nil
@@ -1163,9 +1197,9 @@ func (m *Manager) VerifyChain(ctx context.Context) (*ChainVerificationResult, er
 }
 
 // FetchNextBundle fetches operations and creates a bundle, looping until caught up
-func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, error) {
+func (m *Manager) FetchNextBundle(ctx context.Context, verbose bool, quiet bool) (*Bundle, types.BundleProductionStats, error) {
 	if m.plcClient == nil {
-		return nil, fmt.Errorf("PLC client not configured")
+		return nil, types.BundleProductionStats{}, fmt.Errorf("PLC client not configured")
 	}
 
 	lastBundle := m.index.GetLastBundle()
@@ -1183,7 +1217,7 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		prevBundle, err := m.LoadBundle(ctx, lastBundle.BundleNumber)
 		if err == nil {
 			_, prevBoundaryCIDs = m.operations.GetBoundaryCIDs(prevBundle.Operations)
-			if !quiet {
+			if verbose {
 				m.logger.Printf("Loaded %d boundary CIDs from bundle %06d (at %s)",
 					len(prevBoundaryCIDs), lastBundle.BundleNumber,
 					lastBundle.EndTime.Format(time.RFC3339)[:19])
@@ -1196,8 +1230,8 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 	if m.mempool.Count() > 0 {
 		mempoolLastTime := m.mempool.GetLastTime()
 		if mempoolLastTime != "" {
-			if !quiet {
-				m.logger.Printf("Mempool has %d ops, resuming from %s",
+			if verbose {
+				m.logger.Printf("[DEBUG] Mempool has %d ops, resuming from %s",
 					m.mempool.Count(), mempoolLastTime[:19])
 			}
 			afterTime = mempoolLastTime
@@ -1207,16 +1241,16 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 			if len(mempoolOps) > 0 {
 				_, mempoolBoundaries := m.operations.GetBoundaryCIDs(mempoolOps)
 				prevBoundaryCIDs = mempoolBoundaries
-				if !quiet {
+				if verbose {
 					m.logger.Printf("Using %d boundary CIDs from mempool", len(prevBoundaryCIDs))
 				}
 			}
 		}
 	}
 
-	if !quiet {
-		m.logger.Printf("Preparing bundle %06d (mempool: %d ops)...", nextBundleNum, m.mempool.Count())
-		m.logger.Printf("Starting cursor: %s", afterTime)
+	if verbose {
+		m.logger.Printf("[DEBUG] Preparing bundle %06d (mempool: %d ops)...", nextBundleNum, m.mempool.Count())
+		m.logger.Printf("[DEBUG] Starting cursor: %s", afterTime)
 	}
 
 	totalFetches := 0
@@ -1239,7 +1273,7 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 			afterTime,
 			prevBoundaryCIDs,
 			needed,
-			quiet,
+			!verbose,
 			m.mempool,
 			totalFetches,
 		)
@@ -1257,8 +1291,8 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		// Stop if caught up or error
 		if err != nil || len(newOps) == 0 || gotIncompleteBatch {
 			caughtUp = true
-			if !quiet && totalFetches > 0 {
-				m.logger.Printf("  Caught up to latest PLC data")
+			if verbose && totalFetches > 0 {
+				m.logger.Printf("DEBUG: Caught up to latest PLC data")
 			}
 			break
 		}
@@ -1272,10 +1306,10 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 
 	if m.mempool.Count() < types.BUNDLE_SIZE {
 		if caughtUp {
-			return nil, fmt.Errorf("insufficient operations: have %d, need %d (caught up to latest PLC data)",
+			return nil, types.BundleProductionStats{}, fmt.Errorf("insufficient operations: have %d, need %d (caught up to latest PLC data)",
 				m.mempool.Count(), types.BUNDLE_SIZE)
 		} else {
-			return nil, fmt.Errorf("insufficient operations: have %d, need %d (max attempts reached)",
+			return nil, types.BundleProductionStats{}, fmt.Errorf("insufficient operations: have %d, need %d (max attempts reached)",
 				m.mempool.Count(), types.BUNDLE_SIZE)
 		}
 	}
@@ -1283,7 +1317,7 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 	// Create bundle
 	operations, err := m.mempool.Take(types.BUNDLE_SIZE)
 	if err != nil {
-		return nil, err
+		return nil, types.BundleProductionStats{}, err
 	}
 
 	syncBundle := internalsync.CreateBundle(nextBundleNum, operations, afterTime, prevBundleHash, m.operations)
@@ -1301,15 +1335,14 @@ func (m *Manager) FetchNextBundle(ctx context.Context, quiet bool) (*Bundle, err
 		CreatedAt:    syncBundle.CreatedAt,
 	}
 
-	if !quiet {
-		avgPerFetch := float64(types.BUNDLE_SIZE) / float64(totalFetches)
-		throughput := float64(types.BUNDLE_SIZE) / totalDuration.Seconds()
-		m.logger.Printf("✓ Bundle %06d ready (%d ops, %d DIDs) - %d fetches in %s (avg %.0f/fetch, %.0f ops/sec)",
-			bundle.BundleNumber, len(bundle.Operations), bundle.DIDCount,
-			totalFetches, totalDuration.Round(time.Millisecond), avgPerFetch, throughput)
+	stats := types.BundleProductionStats{
+		TotalFetches:  totalFetches,
+		TotalDuration: totalDuration,
+		AvgPerFetch:   float64(types.BUNDLE_SIZE) / float64(totalFetches),
+		Throughput:    float64(types.BUNDLE_SIZE) / totalDuration.Seconds(),
 	}
 
-	return bundle, nil
+	return bundle, stats, nil
 }
 
 // CloneFromRemote clones bundles from a remote endpoint
@@ -1443,18 +1476,19 @@ func (m *Manager) GetMempoolCount() int {
 }
 
 // FetchAndSaveNextBundle fetches and saves next bundle, returns bundle number and index time
-func (m *Manager) FetchAndSaveNextBundle(ctx context.Context, quiet bool) (int, time.Duration, error) {
-	bundle, err := m.FetchNextBundle(ctx, quiet)
+func (m *Manager) FetchAndSaveNextBundle(ctx context.Context, verbose bool, quiet bool) (int, *types.BundleProductionStats, error) {
+	bundle, stats, err := m.FetchNextBundle(ctx, verbose, quiet)
 	if err != nil {
-		return 0, 0, err
+		return 0, nil, err
 	}
 
-	indexTime, err := m.SaveBundle(ctx, bundle, quiet)
+	indexTime, err := m.SaveBundle(ctx, bundle, verbose, quiet, stats)
 	if err != nil {
-		return 0, 0, err
+		return 0, nil, err
 	}
+	stats.IndexTime = indexTime
 
-	return bundle.BundleNumber, indexTime, nil
+	return bundle.BundleNumber, &types.BundleProductionStats{}, nil
 }
 
 // RunSyncLoop runs continuous sync loop (delegates to internal/sync)
@@ -1577,7 +1611,9 @@ func (m *Manager) ResolveHandleOrDID(ctx context.Context, input string) (string,
 	}
 
 	resolveStart := time.Now()
-	m.logger.Printf("Resolving handle: %s", input)
+	if !m.config.Quiet {
+		m.logger.Printf("Resolving handle: %s", input)
+	}
 	did, err := m.handleResolver.ResolveHandle(ctx, input)
 	resolveTime := time.Since(resolveStart)
 
@@ -1585,7 +1621,9 @@ func (m *Manager) ResolveHandleOrDID(ctx context.Context, input string) (string,
 		return "", resolveTime, fmt.Errorf("failed to resolve handle '%s': %w", input, err)
 	}
 
-	m.logger.Printf("Resolved: %s → %s (in %s)", input, did, resolveTime)
+	if !m.config.Quiet {
+		m.logger.Printf("Resolved: %s → %s (in %s)", input, did, resolveTime)
+	}
 	return did, resolveTime, nil
 }
 

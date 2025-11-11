@@ -49,7 +49,7 @@ func (m *Manager) Close() error {
 
 // FetchNextBundle fetches the next bundle from PLC directory
 func (m *Manager) FetchNextBundle(ctx context.Context) (*Bundle, error) {
-	b, err := m.internal.FetchNextBundle(ctx, false)
+	b, _, err := m.internal.FetchNextBundle(ctx, false, false)
 	if err != nil {
 		return nil, err
 	}

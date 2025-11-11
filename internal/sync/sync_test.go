@@ -14,6 +14,7 @@ import (
 	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 	"tangled.org/atscan.net/plcbundle/internal/storage"
 	internalsync "tangled.org/atscan.net/plcbundle/internal/sync"
+	"tangled.org/atscan.net/plcbundle/internal/types"
 )
 
 type testLogger struct {
@@ -689,7 +690,7 @@ func (m *mockSyncManager) GetMempoolCount() int {
 	return m.mempoolCount
 }
 
-func (m *mockSyncManager) FetchAndSaveNextBundle(ctx context.Context, quiet bool) (int, time.Duration, error) {
+func (m *mockSyncManager) FetchAndSaveNextBundle(ctx context.Context, verbose bool, quiet bool) (int, *types.BundleProductionStats, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -701,11 +702,11 @@ func (m *mockSyncManager) FetchAndSaveNextBundle(ctx context.Context, quiet bool
 	if m.mempoolCount >= 10000 {
 		m.lastBundle++
 		m.mempoolCount -= 10000
-		return m.lastBundle, 10 * time.Millisecond, nil
+		return m.lastBundle, nil, nil
 	}
 
 	// Not enough ops
-	return 0, 0, fmt.Errorf("insufficient operations")
+	return 0, nil, fmt.Errorf("insufficient operations")
 }
 
 func (m *mockSyncManager) SaveMempool() error {
