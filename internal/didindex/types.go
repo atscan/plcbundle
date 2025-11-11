@@ -36,9 +36,8 @@ type Manager struct {
 	configPath string
 
 	// LRU cache for hot shards
-	shardCache        map[uint8]*mmapShard
+	shardCache        sync.Map
 	maxCache          int
-	cacheMu           sync.RWMutex
 	evictionThreshold int
 
 	config  *Config
@@ -53,8 +52,9 @@ type mmapShard struct {
 	shardNum    uint8
 	data        []byte
 	file        interface{} // *os.File (avoid import)
-	lastUsed    time.Time
+	lastUsed    int64
 	accessCount int64
+	refCount    int64
 }
 
 // Config stores index metadata

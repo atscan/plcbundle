@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -41,7 +42,6 @@ func NewManager(baseDir string, logger Logger) *Manager {
 		indexDir:          indexDir,
 		shardDir:          shardDir,
 		configPath:        configPath,
-		shardCache:        make(map[uint8]*mmapShard),
 		maxCache:          5,
 		evictionThreshold: 5,
 		config:            config,
@@ -51,14 +51,23 @@ func NewManager(baseDir string, logger Logger) *Manager {
 
 // Close unmaps all shards and cleans up
 func (dim *Manager) Close() error {
-	dim.cacheMu.Lock()
-	defer dim.cacheMu.Unlock()
+	// Mark all shards for eviction
+	var shards []*mmapShard
 
-	for _, shard := range dim.shardCache {
+	dim.shardCache.Range(func(key, value interface{}) bool {
+		shard := value.(*mmapShard)
+		shards = append(shards, shard)
+		dim.shardCache.Delete(key)
+		return true
+	})
+
+	// Wait for refcounts to drop to 0
+	for _, shard := range shards {
+		for atomic.LoadInt64(&shard.refCount) > 0 {
+			time.Sleep(1 * time.Millisecond)
+		}
 		dim.unmapShard(shard)
 	}
-
-	dim.shardCache = make(map[uint8]*mmapShard)
 
 	return nil
 }
@@ -69,22 +78,16 @@ func (dim *Manager) SetVerbose(verbose bool) {
 
 // GetDIDLocations returns all bundle+position locations for a DID
 func (dim *Manager) GetDIDLocations(did string) ([]OpLocation, error) {
-	dim.indexMu.RLock()
-	defer dim.indexMu.RUnlock()
-
-	// Validate and extract identifier
 	identifier, err := extractDIDIdentifier(did)
 	if err != nil {
 		return nil, err
 	}
 
-	// Calculate shard number
 	shardNum := dim.calculateShard(identifier)
 	if dim.verbose {
 		dim.logger.Printf("DEBUG: DID %s -> identifier '%s' -> shard %02x", did, identifier, shardNum)
 	}
 
-	// Load shard
 	shard, err := dim.loadShard(shardNum)
 	if err != nil {
 		if dim.verbose {
@@ -92,6 +95,9 @@ func (dim *Manager) GetDIDLocations(did string) ([]OpLocation, error) {
 		}
 		return nil, fmt.Errorf("failed to load shard %02x: %w", shardNum, err)
 	}
+
+	// CRITICAL: Release shard when done
+	defer dim.releaseShard(shard)
 
 	if shard.data == nil {
 		if dim.verbose {
@@ -104,21 +110,14 @@ func (dim *Manager) GetDIDLocations(did string) ([]OpLocation, error) {
 		dim.logger.Printf("DEBUG: Shard %02x loaded, size: %d bytes", shardNum, len(shard.data))
 	}
 
-	// Binary search
+	// ✅ Safe to read - refcount prevents eviction
 	locations := dim.searchShard(shard, identifier)
+
 	if dim.verbose {
 		dim.logger.Printf("DEBUG: Binary search found %d locations", len(locations))
 		if len(locations) > 0 {
 			dim.logger.Printf("DEBUG: Locations: %v", locations)
 		}
-	}
-
-	dim.cacheMu.RLock()
-	cacheSize := len(dim.shardCache)
-	dim.cacheMu.RUnlock()
-
-	if dim.verbose || cacheSize > dim.maxCache {
-		dim.logger.Printf("DEBUG: Shard cache size: %d/%d shards (after lookup)", cacheSize, dim.maxCache)
 	}
 
 	return locations, nil
@@ -134,35 +133,36 @@ func (dim *Manager) calculateShard(identifier string) uint8 {
 
 // loadShard loads a shard from cache or disk (with madvise optimization)
 func (dim *Manager) loadShard(shardNum uint8) (*mmapShard, error) {
-	dim.cacheMu.Lock()
-	defer dim.cacheMu.Unlock()
+	// Fast path: cache hit
+	if val, ok := dim.shardCache.Load(shardNum); ok {
+		shard := val.(*mmapShard)
 
-	// Check cache
-	if shard, exists := dim.shardCache[shardNum]; exists {
-		shard.lastUsed = time.Now()
-		shard.accessCount++ // Track for eviction
+		// Increment refcount BEFORE returning
+		atomic.AddInt64(&shard.refCount, 1)
+		atomic.StoreInt64(&shard.lastUsed, time.Now().Unix())
+		atomic.AddInt64(&shard.accessCount, 1)
+
 		return shard, nil
 	}
 
-	// Load from disk
+	// Cache miss - load from disk
 	shardPath := filepath.Join(dim.shardDir, fmt.Sprintf("%02x.idx", shardNum))
 
-	// Check if file exists
 	if _, err := os.Stat(shardPath); os.IsNotExist(err) {
+		// Empty shard - no refcount needed
 		return &mmapShard{
 			shardNum: shardNum,
 			data:     nil,
-			lastUsed: time.Now(),
+			lastUsed: time.Now().Unix(),
+			refCount: 0, // Not in cache
 		}, nil
 	}
 
-	// Open file
 	file, err := os.Open(shardPath)
 	if err != nil {
 		return nil, err
 	}
 
-	// Get file size
 	info, err := file.Stat()
 	if err != nil {
 		file.Close()
@@ -174,7 +174,8 @@ func (dim *Manager) loadShard(shardNum uint8) (*mmapShard, error) {
 		return &mmapShard{
 			shardNum: shardNum,
 			data:     nil,
-			lastUsed: time.Now(),
+			lastUsed: time.Now().Unix(),
+			refCount: 0,
 		}, nil
 	}
 
@@ -186,7 +187,6 @@ func (dim *Manager) loadShard(shardNum uint8) (*mmapShard, error) {
 		return nil, fmt.Errorf("mmap failed: %w", err)
 	}
 
-	// ✨ NEW: Apply madvise hints
 	if err := dim.applyMadviseHints(data, info.Size()); err != nil {
 		if dim.verbose {
 			dim.logger.Printf("DEBUG: madvise failed (non-fatal): %v", err)
@@ -197,17 +197,27 @@ func (dim *Manager) loadShard(shardNum uint8) (*mmapShard, error) {
 		shardNum:    shardNum,
 		data:        data,
 		file:        file,
-		lastUsed:    time.Now(),
+		lastUsed:    time.Now().Unix(),
 		accessCount: 1,
+		refCount:    1,
 	}
 
-	// Add to cache
-	dim.shardCache[shardNum] = shard
+	// Try to store
+	actual, loaded := dim.shardCache.LoadOrStore(shardNum, shard)
 
-	// Lazy eviction
-	if len(dim.shardCache) > dim.evictionThreshold {
-		dim.evictMultiple(len(dim.shardCache) - dim.maxCache)
+	if loaded {
+		// Someone else loaded it - cleanup ours
+		dim.unmapShard(shard)
+
+		actualShard := actual.(*mmapShard)
+		atomic.AddInt64(&actualShard.refCount, 1) // Increment their refcount
+		atomic.StoreInt64(&actualShard.lastUsed, time.Now().Unix())
+		atomic.AddInt64(&actualShard.accessCount, 1)
+		return actualShard, nil
 	}
+
+	// We stored it - maybe evict
+	go dim.evictIfNeeded() // Run async to avoid blocking
 
 	return shard, nil
 }
@@ -239,36 +249,6 @@ func (dim *Manager) applyMadviseHints(data []byte, fileSize int64) error {
 	}
 
 	return nil
-}
-
-// evictMultiple evicts multiple shards at once
-func (dim *Manager) evictMultiple(count int) {
-	if count <= 0 {
-		return
-	}
-
-	type entry struct {
-		num      uint8
-		lastUsed time.Time
-	}
-
-	entries := make([]entry, 0, len(dim.shardCache))
-	for num, shard := range dim.shardCache {
-		entries = append(entries, entry{num, shard.lastUsed})
-	}
-
-	// Sort by lastUsed (oldest first)
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].lastUsed.Before(entries[j].lastUsed)
-	})
-
-	// Evict oldest 'count' entries
-	for i := 0; i < count && i < len(entries); i++ {
-		if victim, exists := dim.shardCache[entries[i].num]; exists {
-			dim.unmapShard(victim)
-			delete(dim.shardCache, entries[i].num)
-		}
-	}
 }
 
 // searchShard performs optimized binary search using prefix index
@@ -478,20 +458,20 @@ func (dim *Manager) unmapShard(shard *mmapShard) {
 
 // GetStats returns index statistics
 func (dim *Manager) GetStats() map[string]interface{} {
-	dim.cacheMu.RLock()
-	defer dim.cacheMu.RUnlock()
+	cachedShards := make([]int, 0)
 
-	cachedShards := make([]int, 0, len(dim.shardCache))
-	for num := range dim.shardCache {
-		cachedShards = append(cachedShards, int(num))
-	}
+	dim.shardCache.Range(func(key, value interface{}) bool {
+		cachedShards = append(cachedShards, int(key.(uint8)))
+		return true
+	})
+
 	sort.Ints(cachedShards)
 
 	return map[string]interface{}{
 		"total_dids":    dim.config.TotalDIDs,
 		"last_bundle":   dim.config.LastBundle,
 		"shard_count":   dim.config.ShardCount,
-		"cached_shards": len(dim.shardCache),
+		"cached_shards": len(cachedShards),
 		"cache_limit":   dim.maxCache,
 		"cache_order":   cachedShards,
 		"updated_at":    dim.config.UpdatedAt,
@@ -506,30 +486,42 @@ func (dim *Manager) Exists() bool {
 
 // TrimCache trims cache to keep only most recent shard
 func (dim *Manager) TrimCache() {
-	dim.cacheMu.Lock()
-	defer dim.cacheMu.Unlock()
+	// Count current size
+	size := 0
+	dim.shardCache.Range(func(k, v interface{}) bool {
+		size++
+		return true
+	})
 
-	if len(dim.shardCache) <= 1 {
+	if size <= 1 {
 		return
 	}
 
-	// Find most recent shard to keep
-	var newestTime time.Time
+	// Find most recent shard
+	var newestTime int64
 	var keepNum uint8
-	for num, shard := range dim.shardCache {
-		if shard.lastUsed.After(newestTime) {
-			newestTime = shard.lastUsed
-			keepNum = num
-		}
-	}
 
-	// Evict all except the newest
-	for num, shard := range dim.shardCache {
-		if num != keepNum {
-			dim.unmapShard(shard)
-			delete(dim.shardCache, num)
+	dim.shardCache.Range(func(key, value interface{}) bool {
+		shard := value.(*mmapShard)
+		lastUsed := atomic.LoadInt64(&shard.lastUsed)
+		if lastUsed > newestTime {
+			newestTime = lastUsed
+			keepNum = key.(uint8)
 		}
-	}
+		return true
+	})
+
+	// Evict all except newest
+	dim.shardCache.Range(func(key, value interface{}) bool {
+		num := key.(uint8)
+		if num != keepNum {
+			if val, ok := dim.shardCache.LoadAndDelete(key); ok {
+				shard := val.(*mmapShard)
+				dim.unmapShard(shard)
+			}
+		}
+		return true
+	})
 }
 
 // GetConfig returns the index configuration
@@ -578,14 +570,15 @@ func (dim *Manager) DebugShard(shardNum uint8) error {
 	return nil
 }
 
-// invalidateShard removes a shard from cache
 func (dim *Manager) invalidateShard(shardNum uint8) {
-	dim.cacheMu.Lock()
-	defer dim.cacheMu.Unlock()
+	if val, ok := dim.shardCache.LoadAndDelete(shardNum); ok {
+		shard := val.(*mmapShard)
 
-	if cached, exists := dim.shardCache[shardNum]; exists {
-		dim.unmapShard(cached)
-		delete(dim.shardCache, shardNum)
+		for atomic.LoadInt64(&shard.refCount) > 0 {
+			time.Sleep(1 * time.Millisecond)
+		}
+
+		dim.unmapShard(shard)
 	}
 }
 
@@ -805,4 +798,70 @@ func loadIndexConfig(path string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+func (dim *Manager) evictIfNeeded() {
+	size := 0
+	dim.shardCache.Range(func(_, _ interface{}) bool {
+		size++
+		return true
+	})
+
+	if size <= dim.evictionThreshold {
+		return
+	}
+
+	type entry struct {
+		num      uint8
+		lastUsed int64
+		refCount int64
+	}
+
+	var entries []entry
+
+	dim.shardCache.Range(func(key, value interface{}) bool {
+		shard := value.(*mmapShard)
+		entries = append(entries, entry{
+			num:      key.(uint8),
+			lastUsed: atomic.LoadInt64(&shard.lastUsed),
+			refCount: atomic.LoadInt64(&shard.refCount),
+		})
+		return true
+	})
+
+	// Sort by lastUsed (oldest first)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].lastUsed < entries[j].lastUsed
+	})
+
+	// Evict oldest shards that are NOT in use
+	toEvict := size - dim.maxCache
+	evicted := 0
+
+	for i := 0; i < len(entries) && evicted < toEvict; i++ {
+		// Only evict if refCount == 0 (not in use)
+		if entries[i].refCount == 0 {
+			if val, ok := dim.shardCache.LoadAndDelete(entries[i].num); ok {
+				shard := val.(*mmapShard)
+
+				// Double-check refcount (race protection)
+				if atomic.LoadInt64(&shard.refCount) == 0 {
+					dim.unmapShard(shard)
+					evicted++
+				} else {
+					// Someone started using it - put it back
+					dim.shardCache.Store(entries[i].num, shard)
+				}
+			}
+		}
+	}
+}
+
+// releaseShard decrements reference count
+func (dim *Manager) releaseShard(shard *mmapShard) {
+	if shard == nil || shard.data == nil {
+		return
+	}
+
+	atomic.AddInt64(&shard.refCount, -1)
 }
