@@ -205,7 +205,7 @@ func (m *Manager) ScanDirectoryParallel(workers int, progressCallback func(curre
 			for num := range jobs {
 				path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", num))
 
-				// ✅ NEW: Stream metadata WITHOUT loading all operations
+				// Stream metadata WITHOUT loading all operations
 				meta, err := m.CalculateMetadataStreaming(num, path)
 				if err != nil {
 					results <- bundleResult{index: num, err: err}

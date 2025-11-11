@@ -33,7 +33,7 @@ func (l *testLogger) Println(v ...interface{}) {
 func TestStorageCompression(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger := &testLogger{t: t}
-	ops, err := storage.NewOperations(logger)
+	ops, err := storage.NewOperations(logger, false)
 	if err != nil {
 		t.Fatalf("NewOperations failed: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestStorageCompression(t *testing.T) {
 
 func TestStorageHashing(t *testing.T) {
 	logger := &testLogger{t: t}
-	ops, err := storage.NewOperations(logger)
+	ops, err := storage.NewOperations(logger, false)
 	if err != nil {
 		t.Fatalf("NewOperations failed: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestStorageHashing(t *testing.T) {
 func TestStorageConcurrency(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger := &testLogger{t: t}
-	ops, err := storage.NewOperations(logger)
+	ops, err := storage.NewOperations(logger, false)
 	if err != nil {
 		t.Fatalf("NewOperations failed: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestStorageConcurrency(t *testing.T) {
 func TestStorageEdgeCases(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger := &testLogger{t: t}
-	ops, err := storage.NewOperations(logger)
+	ops, err := storage.NewOperations(logger, false)
 	if err != nil {
 		t.Fatalf("NewOperations failed: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestStorageEdgeCases(t *testing.T) {
 
 func TestStorageBoundaryConditions(t *testing.T) {
 	logger := &testLogger{t: t}
-	ops, err := storage.NewOperations(logger)
+	ops, err := storage.NewOperations(logger, false)
 	if err != nil {
 		t.Fatalf("NewOperations failed: %v", err)
 	}
@@ -587,7 +587,7 @@ func TestStorageBoundaryConditions(t *testing.T) {
 
 func TestStorageSerialization(t *testing.T) {
 	logger := &testLogger{t: t}
-	ops, err := storage.NewOperations(logger)
+	ops, err := storage.NewOperations(logger, false)
 	if err != nil {
 		t.Fatalf("NewOperations failed: %v", err)
 	}
@@ -659,7 +659,7 @@ func TestStorageSerialization(t *testing.T) {
 func TestStorageUtilities(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger := &testLogger{t: t}
-	ops, err := storage.NewOperations(logger)
+	ops, err := storage.NewOperations(logger, false)
 	if err != nil {
 		t.Fatalf("NewOperations failed: %v", err)
 	}
@@ -737,7 +737,7 @@ func TestStorageUtilities(t *testing.T) {
 func TestStorageStreaming(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger := &testLogger{t: t}
-	ops, err := storage.NewOperations(logger)
+	ops, err := storage.NewOperations(logger, false)
 	if err != nil {
 		t.Fatalf("NewOperations failed: %v", err)
 	}
@@ -800,7 +800,7 @@ func TestStorageStreaming(t *testing.T) {
 func BenchmarkStorageOperations(b *testing.B) {
 	tmpDir := b.TempDir()
 	logger := &testLogger{t: &testing.T{}}
-	ops, _ := storage.NewOperations(logger)
+	ops, _ := storage.NewOperations(logger, false)
 	defer ops.Close()
 
 	operations := makeTestOperations(10000)

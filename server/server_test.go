@@ -989,7 +989,7 @@ func setupTestManager(t *testing.T) (*bundle.Manager, func()) {
 
 	// Create storage operations ONCE and reuse
 	logger := &testLogger{t: t}
-	storageOps, err := storage.NewOperations(logger)
+	storageOps, err := storage.NewOperations(logger, false)
 	if err != nil {
 		t.Fatalf("failed to create storage operations: %v", err)
 	}

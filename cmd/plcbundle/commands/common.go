@@ -123,11 +123,13 @@ func getManager(opts *ManagerOptions) (*bundle.Manager, string, error) {
 	config := bundle.DefaultConfig(absDir)
 	config.AutoInit = opts.AutoInit
 
-	// Set verbose from command if available
+	// Check BOTH global AND local verbose flags
 	if opts.Cmd != nil {
-		if verbose, err := opts.Cmd.Root().PersistentFlags().GetBool("verbose"); err == nil {
-			config.Verbose = verbose
-		}
+		globalVerbose, _ := opts.Cmd.Root().PersistentFlags().GetBool("verbose")
+		localVerbose, _ := opts.Cmd.Flags().GetBool("verbose")
+
+		// Use OR logic: verbose if EITHER flag is set
+		config.Verbose = globalVerbose || localVerbose
 	}
 
 	// Create PLC client if URL provided
@@ -146,7 +148,7 @@ func getManager(opts *ManagerOptions) (*bundle.Manager, string, error) {
 	// Set handle resolver URL from flag or option
 	handleResolverURL := opts.HandleResolverURL
 	if handleResolverURL == "" && opts.Cmd != nil {
-		handleResolverURL, _ = opts.Cmd.Root().PersistentFlags().GetString("handle-resolver") // ✅ Fixed flag name
+		handleResolverURL, _ = opts.Cmd.Root().PersistentFlags().GetString("handle-resolver")
 	}
 	// Only override default if explicitly provided
 	if handleResolverURL != "" {

@@ -131,7 +131,7 @@ func (m *Manager) streamBundleInfo(path string) (opCount, didCount int, startTim
 	}
 	defer file.Close()
 
-	// ✅ Use abstracted reader from storage package
+	// Use abstracted reader from storage package
 	reader, err := storage.NewStreamingReader(file)
 	if err != nil {
 		return 0, 0, time.Time{}, time.Time{}, fmt.Errorf("failed to create reader: %w", err)

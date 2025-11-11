@@ -148,7 +148,7 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 	hashChanges := make([]int, 0, len(needsMigration))
 
 	for i, bundleNum := range needsMigration {
-		// ✅ Pass version to migrateBundle
+		// Pass version to migrateBundle
 		if err := migrateBundle(dir, bundleNum, index, version, opts.verbose); err != nil {
 			failed++
 			if firstError == nil {
@@ -172,7 +172,7 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 	progress.Finish()
 	elapsed := time.Since(start)
 
-	// ✅ Update index with new compressed hashes
+	// Update index with new compressed hashes
 	if len(hashChanges) > 0 {
 		fmt.Printf("\nUpdating bundle index...\n")
 		updateStart := time.Now()
@@ -224,13 +224,6 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 		fmt.Printf("  Index updated: %d entries\n", len(hashChanges))
 		fmt.Printf("  Speed:        %.1f bundles/sec\n\n", float64(success)/elapsed.Seconds())
 
-		fmt.Printf("✨ New bundle format features:\n")
-		fmt.Printf("   • Embedded metadata (JSON in skippable frame)\n")
-		fmt.Printf("   • Frame offsets for instant random access\n")
-		fmt.Printf("   • Multi-frame compression (100 ops/frame)\n")
-		fmt.Printf("   • Self-contained (no .idx files)\n")
-		fmt.Printf("   • Provenance tracking (version, origin, creator)\n")
-		fmt.Printf("   • Compatible with standard zstd tools\n")
 	} else {
 		fmt.Printf("⚠️  Migration completed with errors\n")
 		fmt.Printf("  Success:  %d bundles\n", success)
@@ -274,7 +267,7 @@ func migrateBundle(dir string, bundleNum int, index *bundleindex.Index, version 
 	// 4. Get hostname (optional)
 	hostname, _ := os.Hostname()
 
-	// 5. ✅ Create BundleInfo for new format
+	// 5. Create BundleInfo for new format
 	bundleInfo := &storage.BundleInfo{
 		BundleNumber: meta.BundleNumber,
 		Origin:       index.Origin, // From index

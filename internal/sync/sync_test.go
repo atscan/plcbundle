@@ -61,7 +61,7 @@ func (m *mockMempool) Add(ops []plcclient.PLCOperation) (int, error) {
 		}
 	}
 
-	return addedCount, nil // ← Return actual added count
+	return addedCount, nil
 }
 
 func (m *mockMempool) Save() error {
@@ -113,7 +113,7 @@ func TestFetcherDeduplication(t *testing.T) {
 		defer client.Close()
 
 		logger := &testLogger{t: t}
-		ops, _ := storage.NewOperations(logger)
+		ops, _ := storage.NewOperations(logger, false)
 		defer ops.Close()
 
 		fetcher := internalsync.NewFetcher(client, ops, logger)
@@ -174,7 +174,7 @@ func TestFetcherDeduplication(t *testing.T) {
 		defer client.Close()
 
 		logger := &testLogger{t: t}
-		storageOps, _ := storage.NewOperations(logger)
+		storageOps, _ := storage.NewOperations(logger, false)
 		defer storageOps.Close()
 
 		fetcher := internalsync.NewFetcher(client, storageOps, logger)
@@ -242,7 +242,7 @@ func TestFetcherDeduplication(t *testing.T) {
 		defer client.Close()
 
 		logger := &testLogger{t: t}
-		storageOps, _ := storage.NewOperations(logger)
+		storageOps, _ := storage.NewOperations(logger, false)
 		defer storageOps.Close()
 
 		fetcher := internalsync.NewFetcher(client, storageOps, logger)
@@ -385,7 +385,7 @@ func TestFetcherMempoolIntegration(t *testing.T) {
 		defer client.Close()
 
 		logger := &testLogger{t: t}
-		storageOps, _ := storage.NewOperations(logger)
+		storageOps, _ := storage.NewOperations(logger, false)
 		defer storageOps.Close()
 
 		fetcher := internalsync.NewFetcher(client, storageOps, logger)
@@ -556,7 +556,7 @@ func TestSyncLoopBehavior(t *testing.T) {
 
 func TestBundlerCreateBundle(t *testing.T) {
 	logger := &testLogger{t: t}
-	storageOps, _ := storage.NewOperations(logger)
+	storageOps, _ := storage.NewOperations(logger, false)
 	defer storageOps.Close()
 
 	t.Run("BasicBundleCreation", func(t *testing.T) {

@@ -97,7 +97,7 @@ Use -v/--verbose to see detailed timing breakdown.`,
 
 			ctx := context.Background()
 
-			// ✅ Time the operation load
+			// Time the operation load
 			totalStart := time.Now()
 			op, err := mgr.LoadOperation(ctx, bundleNum, position)
 			totalDuration := time.Since(totalStart)
@@ -106,23 +106,13 @@ Use -v/--verbose to see detailed timing breakdown.`,
 				return err
 			}
 
-			// Output timing to stderr if verbose
 			if verbose {
 				globalPos := (bundleNum * 10000) + position
 
-				fmt.Fprintf(os.Stderr, "Operation Load Metrics\n")
-				fmt.Fprintf(os.Stderr, "══════════════════════\n\n")
-				fmt.Fprintf(os.Stderr, "  Location:       Bundle %06d, Position %04d\n", bundleNum, position)
-				fmt.Fprintf(os.Stderr, "  Global Position: %d\n", globalPos)
-				fmt.Fprintf(os.Stderr, "  Total Time:      %s\n", totalDuration)
-
-				// Calculate throughput
-				if len(op.RawJSON) > 0 {
-					mbPerSec := float64(len(op.RawJSON)) / totalDuration.Seconds() / (1024 * 1024)
-					fmt.Fprintf(os.Stderr, "  Data Size:       %d bytes\n", len(op.RawJSON))
-					fmt.Fprintf(os.Stderr, "  Throughput:      %.2f MB/s\n", mbPerSec)
-				}
-
+				// Log-style output (compact, single-line friendly)
+				fmt.Fprintf(os.Stderr, "[Load] Bundle %06d:%04d (pos=%d) in %s",
+					bundleNum, position, globalPos, totalDuration)
+				fmt.Fprintf(os.Stderr, " | %d bytes", len(op.RawJSON))
 				fmt.Fprintf(os.Stderr, "\n")
 			}
 
@@ -188,7 +178,7 @@ Displays operation in human-readable format with:
 
 			ctx := context.Background()
 
-			// ✅ Time the operation
+			// Time the operation
 			loadStart := time.Now()
 			op, err := mgr.LoadOperation(ctx, bundleNum, position)
 			loadDuration := time.Since(loadStart)
@@ -197,7 +187,7 @@ Displays operation in human-readable format with:
 				return err
 			}
 
-			// ✅ Time the parsing
+			// Time the parsing
 			parseStart := time.Now()
 			opData, parseErr := op.GetOperationData()
 			parseDuration := time.Since(parseStart)
@@ -417,7 +407,7 @@ func displayOperationWithTiming(bundleNum, position int, op *plcclient.PLCOperat
 	fmt.Printf("──────\n")
 	fmt.Printf("  %s\n\n", status)
 
-	// ✅ Performance metrics (always shown if verbose)
+	// Performance metrics (always shown if verbose)
 	if verbose {
 		totalTime := loadDuration + parseDuration
 

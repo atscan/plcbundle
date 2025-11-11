@@ -110,7 +110,7 @@ func (dim *Manager) GetDIDLocations(did string) ([]OpLocation, error) {
 		dim.logger.Printf("DEBUG: Shard %02x loaded, size: %d bytes", shardNum, len(shard.data))
 	}
 
-	// ✅ Safe to read - refcount prevents eviction
+	// Safe to read - refcount prevents eviction
 	locations := dim.searchShard(shard, identifier)
 
 	if dim.verbose {
@@ -428,7 +428,7 @@ func (dim *Manager) readLocations(data []byte, offset int) []OpLocation {
 	// Read locations
 	locations := make([]OpLocation, count)
 	for i := 0; i < int(count); i++ {
-		if offset+4 > len(data) { // ← 4 bytes now
+		if offset+4 > len(data) {
 			return locations[:i]
 		}
 
@@ -436,7 +436,7 @@ func (dim *Manager) readLocations(data []byte, offset int) []OpLocation {
 		packed := binary.LittleEndian.Uint32(data[offset : offset+4])
 		locations[i] = OpLocation(packed)
 
-		offset += 4 // ← 4 bytes
+		offset += 4
 	}
 
 	return locations
@@ -646,7 +646,7 @@ func (dim *Manager) writeShardToPath(path string, shardNum uint8, builder *Shard
 	for i, id := range identifiers {
 		offsetTable[i] = uint32(currentOffset)
 		locations := builder.entries[id]
-		entrySize := DID_IDENTIFIER_LEN + 2 + (len(locations) * 4) // ← 4 bytes
+		entrySize := DID_IDENTIFIER_LEN + 2 + (len(locations) * 4)
 		currentOffset += entrySize
 	}
 
@@ -688,7 +688,7 @@ func (dim *Manager) writeShardToPath(path string, shardNum uint8, builder *Shard
 		for _, loc := range locations {
 			// Write packed uint32 (global position + nullified bit)
 			binary.LittleEndian.PutUint32(buf[offset:offset+4], uint32(loc))
-			offset += 4 // ← 4 bytes per location
+			offset += 4
 		}
 	}
 

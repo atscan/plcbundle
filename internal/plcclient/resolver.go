@@ -176,7 +176,7 @@ func StateToDIDDocument(state *DIDState) *DIDDocument {
 	// Base contexts - ALWAYS include multikey (matches PLC directory behavior)
 	contexts := []string{
 		"https://www.w3.org/ns/did/v1",
-		"https://w3id.org/security/multikey/v1", // ← Always include this
+		"https://w3id.org/security/multikey/v1",
 	}
 
 	hasSecp256k1 := false
@@ -204,9 +204,9 @@ func StateToDIDDocument(state *DIDState) *DIDDocument {
 	doc := &DIDDocument{
 		Context:            contexts,
 		ID:                 state.DID,
-		AlsoKnownAs:        []string{},             // ← Empty slice
-		VerificationMethod: []VerificationMethod{}, // ← Empty slice
-		Service:            []Service{},            // ← Empty slice
+		AlsoKnownAs:        []string{},
+		VerificationMethod: []VerificationMethod{},
+		Service:            []Service{},
 	}
 
 	// Copy alsoKnownAs if present

@@ -39,24 +39,25 @@ type BundleMetadata struct {
 	StartTime      time.Time `json:"start_time"`      // First operation timestamp
 	EndTime        time.Time `json:"end_time"`        // Last operation timestamp
 
-	// === Frame Structure (for random access) ===
-	FrameCount   int     `json:"frame_count"`   // Number of zstd frames (usually 100)
-	FrameSize    int     `json:"frame_size"`    // Operations per frame (100)
-	FrameOffsets []int64 `json:"frame_offsets"` // Byte offsets of each frame
+	// === Creation Provenance ===
+	CreatedAt     time.Time `json:"created_at"`                // When bundle was created
+	CreatedBy     string    `json:"created_by"`                // "plcbundle/v1.2.3"
+	CreatedByHost string    `json:"created_by_host,omitempty"` // Optional: hostname that created it
 
 	// === Optional Context ===
 	Cursor string `json:"cursor,omitempty"` // PLC export cursor for this bundle
 	Notes  string `json:"notes,omitempty"`  // Optional description
 
-	// === Creation Provenance ===
-	CreatedAt     time.Time `json:"created_at"`                // When bundle was created
-	CreatedBy     string    `json:"created_by"`                // "plcbundle/v1.2.3"
-	CreatedByHost string    `json:"created_by_host,omitempty"` // Optional: hostname that created it
+	// === Frame Structure (for random access) ===
+	FrameCount   int     `json:"frame_count"`   // Number of zstd frames (usually 100)
+	FrameSize    int     `json:"frame_size"`    // Operations per frame (100)
+	FrameOffsets []int64 `json:"frame_offsets"` // Byte offsets of each frame
 }
 
 // Operations handles low-level bundle file operations
 type Operations struct {
-	logger Logger
+	logger  Logger
+	verbose bool
 }
 
 // Logger interface
@@ -65,8 +66,11 @@ type Logger interface {
 	Println(v ...interface{})
 }
 
-func NewOperations(logger Logger) (*Operations, error) {
-	return &Operations{logger: logger}, nil
+func NewOperations(logger Logger, verbose bool) (*Operations, error) {
+	return &Operations{
+		logger:  logger,
+		verbose: verbose,
+	}, nil
 }
 
 func (op *Operations) Close() {
@@ -166,7 +170,7 @@ func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperatio
 		compressedFrames = append(compressedFrames, compressedChunk)
 	}
 
-	// 3. ✅ Calculate RELATIVE offsets (relative to first data frame)
+	// 3. Calculate RELATIVE offsets (relative to first data frame)
 	relativeOffsets := make([]int64, len(compressedFrames)+1)
 	relativeOffsets[0] = 0
 
@@ -176,7 +180,7 @@ func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperatio
 		relativeOffsets[i+1] = cumulative
 	}
 
-	// 4. ✅ Build metadata with RELATIVE offsets
+	// 4. Build metadata with RELATIVE offsets
 	metadata := &BundleMetadata{
 		Format:         fmt.Sprintf("plcbundle-v%d", MetadataFormatVersion),
 		BundleNumber:   bundleInfo.BundleNumber,
@@ -191,7 +195,7 @@ func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperatio
 		FrameCount:     len(compressedFrames),
 		FrameSize:      FrameSize,
 		Cursor:         bundleInfo.Cursor,
-		FrameOffsets:   relativeOffsets, // ✅ RELATIVE to data start!
+		FrameOffsets:   relativeOffsets, // RELATIVE to data start!
 	}
 
 	if len(operations) > 0 {
@@ -212,7 +216,7 @@ func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperatio
 	}()
 
 	// Write metadata frame
-	if _, err := WriteMetadataFrame(finalFile, metadata); err != nil {
+	if _, err := op.WriteMetadataFrame(finalFile, metadata); err != nil {
 		return "", "", 0, 0, fmt.Errorf("failed to write metadata: %w", err)
 	}
 
@@ -246,7 +250,7 @@ func (op *Operations) LoadBundle(path string) ([]plcclient.PLCOperation, error) 
 	}
 	defer file.Close()
 
-	// ✅ Use abstracted streaming reader
+	// Use abstracted streaming reader
 	reader, err := NewStreamingReader(file)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create reader: %w", err)
@@ -283,7 +287,7 @@ func (op *Operations) StreamDecompressed(path string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("failed to open bundle: %w", err)
 	}
 
-	// ✅ Use abstracted reader
+	// Use abstracted reader
 	reader, err := NewStreamingReader(file)
 	if err != nil {
 		file.Close()
@@ -343,7 +347,7 @@ func (op *Operations) CalculateFileHashes(path string) (compressedHash string, c
 	compressedHash = op.Hash(compressedData)
 	compressedSize = int64(len(compressedData))
 
-	// ✅ Use abstracted decompression
+	// Use abstracted decompression
 	decompressed, err := DecompressAll(compressedData)
 	if err != nil {
 		return "", 0, "", 0, fmt.Errorf("failed to decompress: %w", err)
@@ -471,7 +475,7 @@ func (op *Operations) LoadOperationAtPosition(path string, position int) (*plccl
 		return nil, fmt.Errorf("invalid position: %d", position)
 	}
 
-	// ✅ Try multiple sources for frame index (no goto!)
+	// Try multiple sources for frame index (no goto!)
 	frameOffsets, err := op.loadFrameIndex(path)
 	if err != nil {
 		// No frame index available - use legacy full scan
@@ -488,16 +492,16 @@ func (op *Operations) LoadOperationAtPosition(path string, position int) (*plccl
 // loadFrameIndex loads frame offsets and converts to absolute positions
 func (op *Operations) loadFrameIndex(path string) ([]int64, error) {
 	// Try embedded metadata first
-	meta, err := ExtractMetadataFromFile(path)
+	meta, err := op.ExtractMetadataFromFile(path)
 	if err == nil && len(meta.FrameOffsets) > 0 {
-		// ✅ Convert relative offsets to absolute
+		// Convert relative offsets to absolute
 		// First, get metadata frame size by re-reading
 		file, _ := os.Open(path)
 		if file != nil {
 			defer file.Close()
 
 			// Read metadata frame to find where data starts
-			magic, data, readErr := ReadSkippableFrame(file)
+			magic, data, readErr := op.ReadSkippableFrame(file)
 			if readErr == nil && magic == SkippableMagicMetadata {
 				// Metadata frame size = 4 (magic) + 4 (size) + len(data)
 				metadataFrameSize := int64(8 + len(data))
@@ -542,12 +546,6 @@ func (op *Operations) loadOperationFromFrame(path string, position int, frameOff
 	endOffset := frameOffsets[frameIndex+1]
 	frameLength := endOffset - startOffset
 
-	// ✅ DEBUG
-	if op.logger != nil {
-		op.logger.Printf("DEBUG: Frame %d: offset %d-%d, length %d bytes",
-			frameIndex, startOffset, endOffset, frameLength)
-	}
-
 	if frameLength <= 0 || frameLength > 10*1024*1024 {
 		return nil, fmt.Errorf("invalid frame length: %d (offsets: %d-%d)",
 			frameLength, startOffset, endOffset)
@@ -560,26 +558,23 @@ func (op *Operations) loadOperationFromFrame(path string, position int, frameOff
 	defer bundleFile.Close()
 
 	compressedFrame := make([]byte, frameLength)
-	n, err := bundleFile.ReadAt(compressedFrame, startOffset)
+	_, err = bundleFile.ReadAt(compressedFrame, startOffset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame %d (offset %d, length %d): %w",
 			frameIndex, startOffset, frameLength, err)
 	}
 
-	if op.logger != nil {
-		op.logger.Printf("DEBUG: Read %d bytes from offset %d", n, startOffset)
-	}
-
 	// Decompress
 	decompressed, err := DecompressFrame(compressedFrame)
 	if err != nil {
-		// ✅ DEBUG: Show first few bytes to diagnose
 		if op.logger != nil {
 			preview := compressedFrame
 			if len(preview) > 16 {
 				preview = preview[:16]
 			}
-			op.logger.Printf("DEBUG: Failed frame data (first 16 bytes): % x", preview)
+			if op.verbose {
+				op.logger.Printf("DEBUG: Failed frame data (first 16 bytes): % x", preview)
+			}
 		}
 		return nil, fmt.Errorf("failed to decompress frame %d: %w", frameIndex, err)
 	}
@@ -617,7 +612,7 @@ func (op *Operations) loadOperationAtPositionLegacy(path string, position int) (
 	}
 	defer file.Close()
 
-	// ✅ Use abstracted streaming reader
+	// Use abstracted streaming reader
 	reader, err := NewStreamingReader(file)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create reader: %w", err)
@@ -675,7 +670,7 @@ func (op *Operations) LoadOperationsAtPositions(path string, positions []int) (m
 	}
 	defer file.Close()
 
-	// ✅ Use abstracted streaming reader
+	// Use abstracted streaming reader
 	reader, err := NewStreamingReader(file)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create reader: %w", err)
@@ -733,7 +728,7 @@ func (op *Operations) CalculateMetadataWithoutLoading(path string) (opCount int,
 	}
 	defer file.Close()
 
-	// ✅ Use abstracted reader
+	// Use abstracted reader
 	reader, err := NewStreamingReader(file)
 	if err != nil {
 		return 0, 0, time.Time{}, time.Time{}, fmt.Errorf("failed to create reader: %w", err)
@@ -777,7 +772,7 @@ func (op *Operations) CalculateMetadataWithoutLoading(path string) (opCount int,
 
 // ExtractBundleMetadata extracts metadata from bundle file without decompressing
 func (op *Operations) ExtractBundleMetadata(path string) (*BundleMetadata, error) {
-	meta, err := ExtractMetadataFromFile(path)
+	meta, err := op.ExtractMetadataFromFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract metadata: %w", err)
 	}
@@ -793,7 +788,7 @@ func (op *Operations) LoadBundleWithMetadata(path string) ([]plcclient.PLCOperat
 	defer file.Close()
 
 	// 1. Try to read metadata frame first
-	meta, err := ReadMetadataFrame(file)
+	meta, err := op.ReadMetadataFrame(file)
 	if err != nil {
 		// No metadata frame - fall back to regular load
 		file.Seek(0, io.SeekStart) // Reset to beginning

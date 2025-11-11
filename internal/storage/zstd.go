@@ -52,13 +52,11 @@ func WriteSkippableFrame(w io.Writer, magicNumber uint32, data []byte) (int64, e
 }
 
 // ReadSkippableFrame with debug
-func ReadSkippableFrame(r io.Reader) (uint32, []byte, error) {
+func (ops *Operations) ReadSkippableFrame(r io.Reader) (uint32, []byte, error) {
 	var magic uint32
 	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
 		return 0, nil, fmt.Errorf("failed to read magic: %w", err)
 	}
-
-	fmt.Fprintf(os.Stderr, "DEBUG: Read magic number: 0x%08X\n", magic)
 
 	if magic < 0x184D2A50 || magic > 0x184D2A5F {
 		return 0, nil, fmt.Errorf("not a skippable frame: magic=0x%08X (expected 0x184D2A50-0x184D2A5F)", magic)
@@ -69,20 +67,16 @@ func ReadSkippableFrame(r io.Reader) (uint32, []byte, error) {
 		return 0, nil, fmt.Errorf("failed to read frame size: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Frame size: %d bytes\n", frameSize)
-
 	data := make([]byte, frameSize)
 	if _, err := io.ReadFull(r, data); err != nil {
 		return 0, nil, fmt.Errorf("failed to read frame data: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Read %d bytes of frame data\n", len(data))
-
 	return magic, data, nil
 }
 
 // WriteMetadataFrame writes bundle metadata as skippable frame (compact JSON)
-func WriteMetadataFrame(w io.Writer, meta *BundleMetadata) (int64, error) {
+func (op *Operations) WriteMetadataFrame(w io.Writer, meta *BundleMetadata) (int64, error) {
 	jsonData, err := json.Marshal(meta)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal metadata: %w", err)
@@ -91,8 +85,8 @@ func WriteMetadataFrame(w io.Writer, meta *BundleMetadata) (int64, error) {
 }
 
 // ReadMetadataFrame reads bundle metadata from skippable frame
-func ReadMetadataFrame(r io.Reader) (*BundleMetadata, error) {
-	magic, data, err := ReadSkippableFrame(r)
+func (ops *Operations) ReadMetadataFrame(r io.Reader) (*BundleMetadata, error) {
+	magic, data, err := ops.ReadSkippableFrame(r)
 	if err != nil {
 		return nil, err
 	}
@@ -111,25 +105,23 @@ func ReadMetadataFrame(r io.Reader) (*BundleMetadata, error) {
 }
 
 // ExtractMetadataFromFile reads metadata without decompressing
-func ExtractMetadataFromFile(path string) (*BundleMetadata, error) {
+func (ops *Operations) ExtractMetadataFromFile(path string) (*BundleMetadata, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	// ✅ DEBUG: Check first bytes
+	// Check first bytes
 	header := make([]byte, 8)
 	if _, err := file.Read(header); err != nil {
 		return nil, fmt.Errorf("failed to read header: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG: First 8 bytes: % x\n", header)
-
 	// Seek back to start
 	file.Seek(0, io.SeekStart)
 
-	meta, err := ReadMetadataFrame(file)
+	meta, err := ops.ReadMetadataFrame(file)
 	if err != nil {
 		return nil, fmt.Errorf("no metadata frame found: %w", err)
 	}
@@ -138,8 +130,8 @@ func ExtractMetadataFromFile(path string) (*BundleMetadata, error) {
 }
 
 // ExtractFrameIndexFromFile now just reads from metadata
-func ExtractFrameIndexFromFile(path string) ([]int64, error) {
-	meta, err := ExtractMetadataFromFile(path)
+func (ops *Operations) ExtractFrameIndexFromFile(path string) ([]int64, error) {
+	meta, err := ops.ExtractMetadataFromFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -152,8 +144,8 @@ func ExtractFrameIndexFromFile(path string) ([]int64, error) {
 }
 
 // DebugFrameOffsets extracts and displays frame offset information
-func DebugFrameOffsets(path string) error {
-	meta, err := ExtractMetadataFromFile(path)
+func (ops *Operations) DebugFrameOffsets(path string) error {
+	meta, err := ops.ExtractMetadataFromFile(path)
 	if err != nil {
 		return fmt.Errorf("failed to extract metadata: %w", err)
 	}

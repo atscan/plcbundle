@@ -255,7 +255,8 @@ func runInspect(cmd *cobra.Command, input string, opts inspectOptions) error {
 	result.FileSize = info.Size()
 
 	// Check for frame index
-	ops := &storage.Operations{}
+	ops, _ := storage.NewOperations(nil, opts.verbose)
+
 	if _, err := ops.ExtractBundleMetadata(bundlePath); err == nil {
 		result.HasFrameIndex = true // Has embedded index
 	} else {
@@ -274,7 +275,8 @@ func runInspect(cmd *cobra.Command, input string, opts inspectOptions) error {
 		fmt.Fprintf(os.Stderr, "Reading embedded metadata...\n")
 		metaStart := time.Now()
 
-		ops := &storage.Operations{}
+		ops, _ := storage.NewOperations(nil, opts.verbose)
+
 		meta, err := ops.ExtractBundleMetadata(bundlePath)
 		if err != nil {
 			if opts.verbose {
@@ -329,7 +331,7 @@ func runInspect(cmd *cobra.Command, input string, opts inspectOptions) error {
 		fmt.Fprintf(os.Stderr, "Verifying cryptographic hashes...\n")
 		verifyStart := time.Now()
 
-		// ✅ Pass cmd parameter
+		// Pass cmd parameter
 		result.ContentHashValid, result.CompressedHashValid, result.MetadataValid =
 			verifyCrypto(cmd, bundlePath, result.Metadata, bundleNum, opts.verbose)
 
@@ -352,7 +354,7 @@ func runInspect(cmd *cobra.Command, input string, opts inspectOptions) error {
 // ============================================================================
 
 func analyzeBundle(path string, opts inspectOptions) (*bundleAnalysis, error) {
-	ops := &storage.Operations{}
+	ops, _ := storage.NewOperations(nil, opts.verbose)
 	operations, err := ops.LoadBundle(path)
 	if err != nil {
 		return nil, err
@@ -852,7 +854,7 @@ func displayInspectJSON(result *inspectResult) error {
 }
 
 func verifyCrypto(cmd *cobra.Command, path string, meta *storage.BundleMetadata, bundleNum int, verbose bool) (contentValid, compressedValid, metadataValid bool) {
-	ops := &storage.Operations{}
+	ops, _ := storage.NewOperations(nil, verbose)
 
 	// Calculate actual hashes from file
 	compHash, compSize, contentHash, contentSize, err := ops.CalculateFileHashes(path)
@@ -867,7 +869,7 @@ func verifyCrypto(cmd *cobra.Command, path string, meta *storage.BundleMetadata,
 	compressedValid = true
 	metadataValid = true
 
-	// ✅ Verify against embedded metadata if available
+	// Verify against embedded metadata if available
 	if meta != nil {
 		// Check content hash (this is in the metadata)
 		if meta.ContentHash != "" && meta.ContentHash != contentHash {
@@ -884,7 +886,7 @@ func verifyCrypto(cmd *cobra.Command, path string, meta *storage.BundleMetadata,
 			metadataValid = true
 		}
 
-		// ✅ Note: We don't check compressed hash/size because they're not in metadata
+		// Note: We don't check compressed hash/size because they're not in metadata
 		// (The file IS the compressed data, so it's redundant)
 
 		if verbose {
@@ -895,7 +897,7 @@ func verifyCrypto(cmd *cobra.Command, path string, meta *storage.BundleMetadata,
 		}
 	}
 
-	// ✅ Also verify against repository index if bundle number is known
+	// Also verify against repository index if bundle number is known
 	if bundleNum > 0 {
 		mgr, _, err := getManager(&ManagerOptions{Cmd: cmd})
 		if err == nil {

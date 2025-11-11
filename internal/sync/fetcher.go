@@ -48,7 +48,7 @@ func (f *Fetcher) FetchToMempool(
 
 	seenCIDs := make(map[string]bool)
 
-	// ✅ Initialize current boundaries from previous bundle (or empty if first fetch)
+	// Initialize current boundaries from previous bundle (or empty if first fetch)
 	currentBoundaryCIDs := prevBoundaryCIDs
 	if currentBoundaryCIDs == nil {
 		currentBoundaryCIDs = make(map[string]bool)
@@ -118,7 +118,7 @@ func (f *Fetcher) FetchToMempool(
 		originalBatchSize := len(batch)
 		totalReceived += originalBatchSize
 
-		// ✅ CRITICAL: Strip boundary duplicates using current boundaries
+		// CRITICAL: Strip boundary duplicates using current boundaries
 		batch = f.operations.StripBoundaryDuplicates(
 			batch,
 			currentAfter,
@@ -178,7 +178,7 @@ func (f *Fetcher) FetchToMempool(
 				}
 			}
 
-			// ✅ CRITICAL: Calculate NEW boundary CIDs from this fetch for next iteration
+			// CRITICAL: Calculate NEW boundary CIDs from this fetch for next iteration
 			if len(batch) > 0 {
 				boundaryTime, newBoundaryCIDs := f.operations.GetBoundaryCIDs(batch)
 				currentBoundaryCIDs = newBoundaryCIDs
@@ -202,7 +202,7 @@ func (f *Fetcher) FetchToMempool(
 			}
 			allNewOps = append(allNewOps, batchNewOps...)
 
-			// ✅ Still update boundaries even without mempool
+			// Still update boundaries even without mempool
 			if len(batch) > 0 {
 				boundaryTime, newBoundaryCIDs := f.operations.GetBoundaryCIDs(batch)
 				currentBoundaryCIDs = newBoundaryCIDs

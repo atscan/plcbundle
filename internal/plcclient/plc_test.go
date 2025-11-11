@@ -244,7 +244,7 @@ func BenchmarkSerializeJSONL(b *testing.B) {
 	}
 
 	logger := &benchLogger{}
-	operations, _ := storage.NewOperations(logger)
+	operations, _ := storage.NewOperations(logger, false)
 	defer operations.Close()
 
 	b.ResetTimer()

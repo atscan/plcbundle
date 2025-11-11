@@ -85,7 +85,7 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 	}
 
 	// Initialize operations handler
-	ops, err := storage.NewOperations(config.Logger)
+	ops, err := storage.NewOperations(config.Logger, config.Verbose)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize operations: %w", err)
 	}
@@ -471,7 +471,7 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (t
 	// Get hostname
 	hostname, _ := os.Hostname()
 
-	// ✅ Create BundleInfo
+	// Create BundleInfo
 	bundleInfo := &storage.BundleInfo{
 		BundleNumber: bundle.BundleNumber,
 		Origin:       origin,
@@ -483,7 +483,7 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (t
 
 	m.logger.Printf("DEBUG: Calling operations.SaveBundle with bundle=%d", bundleInfo.BundleNumber)
 
-	// ✅ Save to disk with 3 parameters
+	// Save to disk with 3 parameters
 	uncompressedHash, compressedHash, uncompressedSize, compressedSize, err := m.operations.SaveBundle(path, bundle.Operations, bundleInfo)
 	if err != nil {
 		m.logger.Printf("DEBUG: SaveBundle FAILED: %v", err)
@@ -1560,7 +1560,7 @@ func (m *Manager) ResolveHandleOrDID(ctx context.Context, input string) (string,
 		if err := plcclient.ValidateDIDFormat(input); err != nil {
 			return "", 0, err
 		}
-		return input, 0, nil // ✅ No resolution needed
+		return input, 0, nil // No resolution needed
 	}
 
 	// Support did:web too

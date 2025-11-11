@@ -176,12 +176,12 @@ func (dim *Manager) consolidateShard(shardNum uint8) (int64, error) {
 
 	type tempEntry struct {
 		identifier string
-		location   OpLocation // ← Single packed value
+		location   OpLocation
 	}
 
 	entries := make([]tempEntry, entryCount)
 	for i := 0; i < entryCount; i++ {
-		offset := i * 28 // ← 28 bytes
+		offset := i * 28
 		entries[i] = tempEntry{
 			identifier: string(data[offset : offset+24]),
 			location:   OpLocation(binary.LittleEndian.Uint32(data[offset+24 : offset+28])),

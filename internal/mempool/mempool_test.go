@@ -352,8 +352,7 @@ func TestMempoolPersistence(t *testing.T) {
 		m.Save()
 
 		// Add 10 more and save
-		// FIX: makeTestOperationsFrom(start, COUNT) - so we want (10, 10) not (10, 20)
-		ops2 := makeTestOperationsFrom(10, 10) // ← Changed from (10, 20)
+		ops2 := makeTestOperationsFrom(10, 10)
 		m.Add(ops2)
 		m.Save()
 

@@ -315,7 +315,7 @@ func TestOperations(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger := &testLogger{t: t}
 
-	ops, err := storage.NewOperations(logger)
+	ops, err := storage.NewOperations(logger, false)
 	if err != nil {
 		t.Fatalf("NewOperations failed: %v", err)
 	}
