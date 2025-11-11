@@ -40,6 +40,7 @@ type BundleManager interface {
 	GetDIDOperationsFromMempool(did string) ([]plcclient.PLCOperation, error)
 	GetLatestDIDOperation(ctx context.Context, did string) (*plcclient.PLCOperation, error)
 	LoadOperation(ctx context.Context, bundleNum, position int) (*plcclient.PLCOperation, error)
+	LoadOperations(ctx context.Context, bundleNumber int, positions []int) (map[int]*plcclient.PLCOperation, error)
 	CloneFromRemote(ctx context.Context, opts internalsync.CloneOptions) (*internalsync.CloneResult, error)
 	ResolveDID(ctx context.Context, did string) (*bundle.ResolveDIDResult, error)
 	RunSyncOnce(ctx context.Context, config *internalsync.SyncLoopConfig, verbose bool) (int, error)

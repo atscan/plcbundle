@@ -360,3 +360,74 @@ func (op *Operations) StripBoundaryDuplicates(operations []plcclient.PLCOperatio
 
 	return operations[startIdx:]
 }
+
+// LoadOperationsAtPositions loads multiple operations from a bundle in one pass
+func (op *Operations) LoadOperationsAtPositions(path string, positions []int) (map[int]*plcclient.PLCOperation, error) {
+	if len(positions) == 0 {
+		return make(map[int]*plcclient.PLCOperation), nil
+	}
+
+	// Create position set for fast lookup
+	posSet := make(map[int]bool)
+	maxPos := 0
+	for _, pos := range positions {
+		if pos < 0 {
+			continue
+		}
+		posSet[pos] = true
+		if pos > maxPos {
+			maxPos = pos
+		}
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	reader := gozstd.NewReader(file)
+	defer reader.Close()
+
+	bufPtr := scannerBufPool.Get().(*[]byte)
+	defer scannerBufPool.Put(bufPtr)
+
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(*bufPtr, 512*1024)
+
+	results := make(map[int]*plcclient.PLCOperation)
+	lineNum := 0
+
+	for scanner.Scan() {
+		// Early exit if we found everything
+		if len(results) == len(posSet) {
+			break
+		}
+
+		// Only parse if this position is requested
+		if posSet[lineNum] {
+			line := scanner.Bytes()
+			var operation plcclient.PLCOperation
+			if err := json.UnmarshalNoEscape(line, &operation); err != nil {
+				return nil, fmt.Errorf("failed to parse operation at position %d: %w", lineNum, err)
+			}
+
+			operation.RawJSON = make([]byte, len(line))
+			copy(operation.RawJSON, line)
+			results[lineNum] = &operation
+		}
+
+		lineNum++
+
+		// Early exit if we passed the max position we need
+		if lineNum > maxPos {
+			break
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scanner error: %w", err)
+	}
+
+	return results, nil
+}

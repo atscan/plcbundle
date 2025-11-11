@@ -838,6 +838,17 @@ func (m *Manager) LoadOperation(ctx context.Context, bundleNumber int, position 
 	return m.operations.LoadOperationAtPosition(path, position)
 }
 
+// LoadOperations loads multiple operations from a bundle efficiently
+func (m *Manager) LoadOperations(ctx context.Context, bundleNumber int, positions []int) (map[int]*plcclient.PLCOperation, error) {
+	// Build file path
+	path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", bundleNumber))
+	if !m.operations.FileExists(path) {
+		return nil, fmt.Errorf("bundle file not found: %s", path)
+	}
+
+	return m.operations.LoadOperationsAtPositions(path, positions)
+}
+
 // filterBundleFiles filters out files starting with . or _
 func filterBundleFiles(files []string) []string {
 	filtered := make([]string, 0, len(files))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 
 	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 )
@@ -216,4 +217,87 @@ func (dim *Manager) GetLatestDIDOperation(ctx context.Context, did string, provi
 
 	// Load ONLY the specific operation (efficient!)
 	return provider.LoadOperation(ctx, latestLoc.BundleInt(), latestLoc.PositionInt())
+}
+
+// BatchGetDIDLocations retrieves locations for multiple DIDs efficiently
+// Returns map[did][]OpLocation - only locations, no operation loading
+func (dim *Manager) BatchGetDIDLocations(dids []string) (map[string][]OpLocation, error) {
+	if !dim.Exists() {
+		return nil, fmt.Errorf("DID index not available")
+	}
+
+	// Group DIDs by shard to minimize shard loads
+	type shardQuery struct {
+		shardNum    uint8
+		identifiers []string
+		didMap      map[string]string // identifier -> original DID
+	}
+
+	shardQueries := make(map[uint8]*shardQuery)
+
+	for _, did := range dids {
+		identifier, err := extractDIDIdentifier(did)
+		if err != nil {
+			continue
+		}
+
+		shardNum := dim.calculateShard(identifier)
+
+		if shardQueries[shardNum] == nil {
+			shardQueries[shardNum] = &shardQuery{
+				shardNum:    shardNum,
+				identifiers: make([]string, 0),
+				didMap:      make(map[string]string),
+			}
+		}
+
+		sq := shardQueries[shardNum]
+		sq.identifiers = append(sq.identifiers, identifier)
+		sq.didMap[identifier] = did
+	}
+
+	if dim.verbose {
+		dim.logger.Printf("DEBUG: Batch lookup: %d DIDs across %d shards", len(dids), len(shardQueries))
+	}
+
+	// Process each shard (load once, search multiple times)
+	results := make(map[string][]OpLocation)
+	var mu sync.Mutex
+
+	var wg sync.WaitGroup
+	for _, sq := range shardQueries {
+		wg.Add(1)
+		go func(query *shardQuery) {
+			defer wg.Done()
+
+			// Load shard once
+			shard, err := dim.loadShard(query.shardNum)
+			if err != nil {
+				if dim.verbose {
+					dim.logger.Printf("DEBUG: Failed to load shard %02x: %v", query.shardNum, err)
+				}
+				return
+			}
+			defer dim.releaseShard(shard)
+
+			if shard.data == nil {
+				return
+			}
+
+			// Search for all identifiers in this shard
+			for _, identifier := range query.identifiers {
+				locations := dim.searchShard(shard, identifier)
+				if len(locations) > 0 {
+					originalDID := query.didMap[identifier]
+					mu.Lock()
+					results[originalDID] = locations
+					mu.Unlock()
+				}
+			}
+		}(sq)
+	}
+
+	wg.Wait()
+
+	return results, nil
 }

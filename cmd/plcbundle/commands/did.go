@@ -12,6 +12,7 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/spf13/cobra"
 	"tangled.org/atscan.net/plcbundle/cmd/plcbundle/ui"
+	"tangled.org/atscan.net/plcbundle/internal/didindex"
 	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 )
 
@@ -891,86 +892,227 @@ func batchLookup(mgr BundleManager, dids []string, output *os.File, _ int) error
 }
 
 func batchResolve(mgr BundleManager, dids []string, output *os.File, workers int) error {
-	progress := ui.NewProgressBar(len(dids))
 	ctx := context.Background()
+	overallStart := time.Now()
 
-	type resolveResult struct {
-		did string
-		doc *plcclient.DIDDocument
-		err error
+	// =================================================================
+	// PHASE 1: Batch lookup locations
+	// =================================================================
+	fmt.Fprintf(os.Stderr, "Phase 1/2: Looking up %d DID locations...\n", len(dids))
+	phase1Start := time.Now()
+
+	type didLocation struct {
+		did         string
+		bundle      int
+		position    int
+		fromMempool bool
+		mempoolOp   *plcclient.PLCOperation
+		err         error
 	}
 
-	// Now use it
-	jobs := make(chan string, len(dids))
-	results := make(chan resolveResult, len(dids))
+	locations := make([]didLocation, len(dids))
 
-	// Start worker pool
+	// Mempool check
+	for i, did := range dids {
+		if mempoolOp := findLatestInMempool(mgr, did); mempoolOp != nil {
+			locations[i] = didLocation{did: did, fromMempool: true, mempoolOp: mempoolOp}
+		}
+	}
+
+	// Batch index lookup
+	needsLookup := make([]string, 0)
+	lookupMap := make(map[string]int)
+	for i, did := range dids {
+		if !locations[i].fromMempool {
+			needsLookup = append(needsLookup, did)
+			lookupMap[did] = i
+		}
+	}
+
+	if len(needsLookup) > 0 {
+		batchResults, _ := mgr.GetDIDIndex().BatchGetDIDLocations(needsLookup)
+		for did, locs := range batchResults {
+			var latest *didindex.OpLocation
+			for i := range locs {
+				if !locs[i].Nullified() && (latest == nil || locs[i].IsAfter(*latest)) {
+					latest = &locs[i]
+				}
+			}
+
+			idx := lookupMap[did]
+			if latest != nil {
+				locations[idx] = didLocation{did: did, bundle: latest.BundleInt(), position: latest.PositionInt()}
+			} else {
+				locations[idx] = didLocation{did: did, err: fmt.Errorf("not found")}
+			}
+		}
+
+		for _, did := range needsLookup {
+			if idx := lookupMap[did]; locations[idx].bundle == 0 && locations[idx].err == nil {
+				locations[idx] = didLocation{did: did, err: fmt.Errorf("not found")}
+			}
+		}
+	}
+
+	phase1Duration := time.Since(phase1Start)
+	fmt.Fprintf(os.Stderr, "  ✓ %s\n\n", phase1Duration.Round(time.Millisecond))
+
+	// =================================================================
+	// PHASE 2: Group by bundle, load ops, resolve (MERGED, parallel)
+	// =================================================================
+	fmt.Fprintf(os.Stderr, "Phase 2/2: Loading and resolving (%d workers)...\n", workers)
+
+	// Group DIDs by bundle
+	type bundleGroup struct {
+		bundleNum int
+		dids      []int // indices into locations array
+	}
+
+	bundleMap := make(map[int][]int)
+	mempoolDIDs := make([]int, 0)
+	errorDIDs := make([]int, 0)
+
+	for i, loc := range locations {
+		if loc.err != nil {
+			errorDIDs = append(errorDIDs, i)
+		} else if loc.fromMempool {
+			mempoolDIDs = append(mempoolDIDs, i)
+		} else {
+			bundleMap[loc.bundle] = append(bundleMap[loc.bundle], i)
+		}
+	}
+
+	bundles := make([]bundleGroup, 0, len(bundleMap))
+	for bn, didIndices := range bundleMap {
+		bundles = append(bundles, bundleGroup{bundleNum: bn, dids: didIndices})
+	}
+
+	fmt.Fprintf(os.Stderr, "  %d bundles, %d mempool, %d errors\n",
+		len(bundles), len(mempoolDIDs), len(errorDIDs))
+
+	// Setup output
+	writer := bufio.NewWriterSize(output, 512*1024)
+	defer writer.Flush()
+
+	var (
+		resolved  int
+		failed    int
+		processed int
+		mu        sync.Mutex // Single lock for all counters
+	)
+
+	progress := ui.NewProgressBar(len(dids))
+
+	writeResult := func(doc *plcclient.DIDDocument, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		processed++
+		progress.Set(processed)
+
+		if err != nil {
+			failed++
+		} else {
+			resolved++
+			data, _ := json.Marshal(doc)
+			writer.Write(data)
+			writer.WriteByte('\n')
+			if resolved%100 == 0 {
+				writer.Flush()
+			}
+		}
+	}
+
+	// Process mempool DIDs (already have ops)
+	for _, idx := range mempoolDIDs {
+		loc := locations[idx]
+		doc, err := plcclient.ResolveDIDDocument(loc.did, []plcclient.PLCOperation{*loc.mempoolOp})
+		writeResult(doc, err)
+	}
+
+	// Process errors
+	for range errorDIDs {
+		writeResult(nil, fmt.Errorf("not found"))
+	}
+
+	// ✨ Process bundles in parallel - LoadOperations once per bundle
+	bundleJobs := make(chan bundleGroup, len(bundles))
 	var wg sync.WaitGroup
+
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for did := range jobs {
-				result, err := mgr.ResolveDID(ctx, did)
+
+			for job := range bundleJobs {
+				// Collect all positions needed from this bundle
+				positions := make([]int, len(job.dids))
+				for i, didIdx := range job.dids {
+					positions[i] = locations[didIdx].position
+				}
+
+				// ✨ Load operations once for this bundle
+				ops, err := mgr.LoadOperations(ctx, job.bundleNum, positions)
+
 				if err != nil {
-					results <- resolveResult{did: did, err: err}
-				} else {
-					results <- resolveResult{did: did, doc: result.Document}
+					// All DIDs from this bundle fail
+					for range job.dids {
+						writeResult(nil, err)
+					}
+					continue
+				}
+
+				// Resolve each DID using loaded operations
+				for i, didIdx := range job.dids {
+					loc := locations[didIdx]
+
+					if op, ok := ops[positions[i]]; ok {
+						doc, resolveErr := plcclient.ResolveDIDDocument(loc.did, []plcclient.PLCOperation{*op})
+						writeResult(doc, resolveErr)
+					} else {
+						writeResult(nil, fmt.Errorf("operation not loaded"))
+					}
 				}
 			}
 		}()
 	}
 
-	// Send jobs
-	for _, did := range dids {
-		jobs <- did
+	// Send bundle jobs
+	for _, bg := range bundles {
+		bundleJobs <- bg
 	}
-	close(jobs)
+	close(bundleJobs)
 
-	// Collect results in background
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// Process results
-	writer := bufio.NewWriterSize(output, 512*1024)
-	defer writer.Flush()
-
-	resolved := 0
-	failed := 0
-	processed := 0
-
-	for res := range results {
-		processed++
-
-		if res.err != nil {
-			failed++
-			if failed < 10 {
-				fmt.Fprintf(os.Stderr, "Failed to resolve %s: %v\n", res.did, res.err)
-			}
-		} else {
-			resolved++
-			data, _ := json.Marshal(res.doc)
-			writer.Write(data)
-			writer.WriteByte('\n')
-
-			if processed%100 == 0 {
-				writer.Flush()
-			}
-		}
-
-		progress.Set(processed)
-	}
-
+	wg.Wait()
 	writer.Flush()
 	progress.Finish()
 
+	totalDuration := time.Since(overallStart)
+
 	fmt.Fprintf(os.Stderr, "\n✓ Batch resolve complete\n")
-	fmt.Fprintf(os.Stderr, "  DIDs input: %d\n", len(dids))
-	fmt.Fprintf(os.Stderr, "  Resolved:   %d\n", resolved)
+	fmt.Fprintf(os.Stderr, "  Resolved:    %d/%d\n", resolved, len(dids))
 	if failed > 0 {
-		fmt.Fprintf(os.Stderr, "  Failed:     %d\n", failed)
+		fmt.Fprintf(os.Stderr, "  Failed:      %d\n", failed)
+	}
+	fmt.Fprintf(os.Stderr, "  Total:       %s (%.1f DIDs/sec)\n",
+		totalDuration.Round(time.Millisecond),
+		float64(resolved)/totalDuration.Seconds())
+
+	return nil
+}
+
+// Helper function to find latest non-nullified op in mempool
+func findLatestInMempool(mgr BundleManager, did string) *plcclient.PLCOperation {
+	ops, err := mgr.GetDIDOperationsFromMempool(did)
+	if err != nil || len(ops) == 0 {
+		return nil
+	}
+
+	// Search backwards from most recent
+	for i := len(ops) - 1; i >= 0; i-- {
+		if !ops[i].IsNullified() {
+			return &ops[i]
+		}
 	}
 
 	return nil
