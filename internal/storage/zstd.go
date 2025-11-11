@@ -1,12 +1,13 @@
 package storage
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"time"
+	"path/filepath"
 
 	"github.com/valyala/gozstd"
 )
@@ -16,63 +17,26 @@ import (
 // ============================================================================
 
 const (
-	CompressionLevel = 3
+	CompressionLevel = 2
 	FrameSize        = 100
 
-	// Skippable frame magic numbers (0x184D2A50 to 0x184D2A5F)
-	// We use 0x184D2A50 for bundle metadata
 	SkippableMagicMetadata = 0x184D2A50
 )
-
-// BundleMetadata is stored in skippable frame at start of bundle file
-type BundleMetadata struct {
-	Version      int    `json:"version"` // Metadata format version
-	BundleNumber int    `json:"bundle_number"`
-	Origin       string `json:"origin,omitempty"`
-
-	// Hashes
-	ContentHash    string `json:"content_hash"`
-	CompressedHash string `json:"compressed_hash"`
-	ParentHash     string `json:"parent_hash,omitempty"`
-
-	// Sizes
-	UncompressedSize int64 `json:"uncompressed_size"`
-	CompressedSize   int64 `json:"compressed_size"`
-
-	// Timestamps
-	StartTime time.Time `json:"start_time"`
-	EndTime   time.Time `json:"end_time"`
-	CreatedAt time.Time `json:"created_at"`
-
-	// Counts
-	OperationCount int `json:"operation_count"`
-	DIDCount       int `json:"did_count"`
-	FrameCount     int `json:"frame_count"`
-
-	// Additional info
-	Cursor string `json:"cursor,omitempty"`
-}
 
 // ============================================================================
 // SKIPPABLE FRAME FUNCTIONS
 // ============================================================================
 
 // WriteSkippableFrame writes a skippable frame with the given data
-// Returns the number of bytes written
 func WriteSkippableFrame(w io.Writer, magicNumber uint32, data []byte) (int64, error) {
-	// Skippable frame format:
-	// [4 bytes] Magic Number (0x184D2A5X)
-	// [4 bytes] Frame Size (little-endian uint32)
-	// [N bytes] Frame Data
-
 	frameSize := uint32(len(data))
 
-	// Write magic number
+	// Write magic number (little-endian)
 	if err := binary.Write(w, binary.LittleEndian, magicNumber); err != nil {
 		return 0, err
 	}
 
-	// Write frame size
+	// Write frame size (little-endian)
 	if err := binary.Write(w, binary.LittleEndian, frameSize); err != nil {
 		return 0, err
 	}
@@ -87,44 +51,42 @@ func WriteSkippableFrame(w io.Writer, magicNumber uint32, data []byte) (int64, e
 	return totalBytes, nil
 }
 
-// ReadSkippableFrame reads a skippable frame from the reader
-// Returns the magic number and data, or error if not a skippable frame
+// ReadSkippableFrame with debug
 func ReadSkippableFrame(r io.Reader) (uint32, []byte, error) {
-	// Read magic number
 	var magic uint32
 	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
-		return 0, nil, err
+		return 0, nil, fmt.Errorf("failed to read magic: %w", err)
 	}
 
-	// Verify it's a skippable frame (0x184D2A50 to 0x184D2A5F)
+	fmt.Fprintf(os.Stderr, "DEBUG: Read magic number: 0x%08X\n", magic)
+
 	if magic < 0x184D2A50 || magic > 0x184D2A5F {
-		return 0, nil, fmt.Errorf("not a skippable frame: magic=0x%08X", magic)
+		return 0, nil, fmt.Errorf("not a skippable frame: magic=0x%08X (expected 0x184D2A50-0x184D2A5F)", magic)
 	}
 
-	// Read frame size
 	var frameSize uint32
 	if err := binary.Read(r, binary.LittleEndian, &frameSize); err != nil {
-		return 0, nil, err
+		return 0, nil, fmt.Errorf("failed to read frame size: %w", err)
 	}
 
-	// Read frame data
+	fmt.Fprintf(os.Stderr, "DEBUG: Frame size: %d bytes\n", frameSize)
+
 	data := make([]byte, frameSize)
 	if _, err := io.ReadFull(r, data); err != nil {
-		return 0, nil, err
+		return 0, nil, fmt.Errorf("failed to read frame data: %w", err)
 	}
+
+	fmt.Fprintf(os.Stderr, "DEBUG: Read %d bytes of frame data\n", len(data))
 
 	return magic, data, nil
 }
 
-// WriteMetadataFrame writes bundle metadata as a skippable frame
+// WriteMetadataFrame writes bundle metadata as skippable frame (compact JSON)
 func WriteMetadataFrame(w io.Writer, meta *BundleMetadata) (int64, error) {
-	// Serialize metadata to JSON
 	jsonData, err := json.Marshal(meta)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal metadata: %w", err)
 	}
-
-	// Write as skippable frame
 	return WriteSkippableFrame(w, SkippableMagicMetadata, jsonData)
 }
 
@@ -148,7 +110,7 @@ func ReadMetadataFrame(r io.Reader) (*BundleMetadata, error) {
 	return &meta, nil
 }
 
-// ExtractMetadataFromFile reads just the metadata without decompressing the bundle
+// ExtractMetadataFromFile reads metadata without decompressing
 func ExtractMetadataFromFile(path string) (*BundleMetadata, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -156,7 +118,17 @@ func ExtractMetadataFromFile(path string) (*BundleMetadata, error) {
 	}
 	defer file.Close()
 
-	// Try to read skippable frame at start
+	// ✅ DEBUG: Check first bytes
+	header := make([]byte, 8)
+	if _, err := file.Read(header); err != nil {
+		return nil, fmt.Errorf("failed to read header: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "DEBUG: First 8 bytes: % x\n", header)
+
+	// Seek back to start
+	file.Seek(0, io.SeekStart)
+
 	meta, err := ReadMetadataFrame(file)
 	if err != nil {
 		return nil, fmt.Errorf("no metadata frame found: %w", err)
@@ -165,17 +137,92 @@ func ExtractMetadataFromFile(path string) (*BundleMetadata, error) {
 	return meta, nil
 }
 
+// ExtractFrameIndexFromFile now just reads from metadata
+func ExtractFrameIndexFromFile(path string) ([]int64, error) {
+	meta, err := ExtractMetadataFromFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(meta.FrameOffsets) == 0 {
+		return nil, fmt.Errorf("metadata has no frame offsets")
+	}
+
+	return meta.FrameOffsets, nil
+}
+
+// DebugFrameOffsets extracts and displays frame offset information
+func DebugFrameOffsets(path string) error {
+	meta, err := ExtractMetadataFromFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to extract metadata: %w", err)
+	}
+
+	fmt.Printf("Frame Offset Debug for: %s\n\n", filepath.Base(path))
+	fmt.Printf("Metadata:\n")
+	fmt.Printf("  Bundle: %d\n", meta.BundleNumber)
+	fmt.Printf("  Frames: %d\n", meta.FrameCount)
+	fmt.Printf("  Frame size: %d ops\n", meta.FrameSize)
+	fmt.Printf("  Total ops: %d\n", meta.OperationCount)
+
+	fmt.Printf("\nFrame Offsets (%d total):\n", len(meta.FrameOffsets))
+	for i, offset := range meta.FrameOffsets {
+		if i < len(meta.FrameOffsets)-1 {
+			nextOffset := meta.FrameOffsets[i+1]
+			frameSize := nextOffset - offset
+			fmt.Printf("  Frame %3d: offset %10d, size %10d bytes\n", i, offset, frameSize)
+		} else {
+			fmt.Printf("  End mark: offset %10d\n", offset)
+		}
+	}
+
+	// Try to verify first frame
+	fmt.Printf("\nVerifying first frame...\n")
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	if len(meta.FrameOffsets) < 2 {
+		return fmt.Errorf("not enough frame offsets")
+	}
+
+	startOffset := meta.FrameOffsets[0]
+	endOffset := meta.FrameOffsets[1]
+	frameLength := endOffset - startOffset
+
+	fmt.Printf("  Start: %d, End: %d, Length: %d\n", startOffset, endOffset, frameLength)
+
+	compressedFrame := make([]byte, frameLength)
+	_, err = file.ReadAt(compressedFrame, startOffset)
+	if err != nil {
+		return fmt.Errorf("failed to read: %w", err)
+	}
+
+	decompressed, err := DecompressFrame(compressedFrame)
+	if err != nil {
+		return fmt.Errorf("failed to decompress: %w", err)
+	}
+
+	fmt.Printf("  ✓ Decompressed: %d bytes\n", len(decompressed))
+
+	// Count lines
+	lines := bytes.Count(decompressed, []byte("\n"))
+	fmt.Printf("  ✓ Lines: %d\n", lines)
+
+	return nil
+}
+
 // ============================================================================
 // COMPRESSION/DECOMPRESSION
 // ============================================================================
 
-// CompressFrame compresses a single chunk of data into a zstd frame
 func CompressFrame(data []byte) ([]byte, error) {
 	compressed := gozstd.Compress(nil, data)
 	return compressed, nil
 }
 
-// DecompressAll decompresses all frames in the compressed data
 func DecompressAll(compressed []byte) ([]byte, error) {
 	decompressed, err := gozstd.Decompress(nil, compressed)
 	if err != nil {
@@ -184,18 +231,15 @@ func DecompressAll(compressed []byte) ([]byte, error) {
 	return decompressed, nil
 }
 
-// DecompressFrame decompresses a single frame
 func DecompressFrame(compressedFrame []byte) ([]byte, error) {
 	return gozstd.Decompress(nil, compressedFrame)
 }
 
-// NewStreamingReader creates a streaming decompressor
 func NewStreamingReader(r io.Reader) (StreamReader, error) {
 	reader := gozstd.NewReader(r)
 	return &gozstdReader{reader: reader}, nil
 }
 
-// NewStreamingWriter creates a streaming compressor at default level
 func NewStreamingWriter(w io.Writer) (StreamWriter, error) {
 	writer := gozstd.NewWriterLevel(w, CompressionLevel)
 	return &gozstdWriter{writer: writer}, nil

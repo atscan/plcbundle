@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -434,25 +435,12 @@ func (m *Manager) loadBundleFromDisk(_ context.Context, bundleNumber int) (*Bund
 }
 
 // SaveBundle saves a bundle to disk and updates the index
-// Returns the DID index update duration
 func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (time.Duration, error) {
 	if err := bundle.ValidateForSave(); err != nil {
 		return 0, fmt.Errorf("bundle validation failed: %w", err)
 	}
 
 	path := filepath.Join(m.config.BundleDir, fmt.Sprintf("%06d.jsonl.zst", bundle.BundleNumber))
-
-	// Save to disk
-	uncompressedHash, compressedHash, uncompressedSize, compressedSize, err := m.operations.SaveBundle(path, bundle.Operations)
-	if err != nil {
-		return 0, fmt.Errorf("failed to save bundle: %w", err)
-	}
-
-	bundle.ContentHash = uncompressedHash
-	bundle.CompressedHash = compressedHash
-	bundle.UncompressedSize = uncompressedSize
-	bundle.CompressedSize = compressedSize
-	bundle.CreatedAt = time.Now().UTC()
 
 	// Get parent
 	var parent string
@@ -466,17 +454,65 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (t
 			}
 		}
 	}
-
 	bundle.Parent = parent
+
+	// Get origin
+	origin := m.index.Origin
+	if m.plcClient != nil {
+		origin = m.plcClient.GetBaseURL()
+	}
+
+	// Get version
+	version := "dev"
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		version = info.Main.Version
+	}
+
+	// Get hostname
+	hostname, _ := os.Hostname()
+
+	// ✅ Create BundleInfo
+	bundleInfo := &storage.BundleInfo{
+		BundleNumber: bundle.BundleNumber,
+		Origin:       origin,
+		ParentHash:   parent,
+		Cursor:       bundle.Cursor,
+		CreatedBy:    fmt.Sprintf("plcbundle/%s", version),
+		Hostname:     hostname,
+	}
+
+	m.logger.Printf("DEBUG: Calling operations.SaveBundle with bundle=%d", bundleInfo.BundleNumber)
+
+	// ✅ Save to disk with 3 parameters
+	uncompressedHash, compressedHash, uncompressedSize, compressedSize, err := m.operations.SaveBundle(path, bundle.Operations, bundleInfo)
+	if err != nil {
+		m.logger.Printf("DEBUG: SaveBundle FAILED: %v", err)
+		return 0, fmt.Errorf("failed to save bundle: %w", err)
+	}
+
+	m.logger.Printf("DEBUG: SaveBundle SUCCESS, setting bundle fields")
+
+	bundle.ContentHash = uncompressedHash
+	bundle.CompressedHash = compressedHash
+	bundle.UncompressedSize = uncompressedSize
+	bundle.CompressedSize = compressedSize
+	bundle.CreatedAt = time.Now().UTC()
 	bundle.Hash = m.operations.CalculateChainHash(parent, bundle.ContentHash)
+
+	m.logger.Printf("DEBUG: Adding bundle %d to index", bundle.BundleNumber)
 
 	// Add to index
 	m.index.AddBundle(bundle.ToMetadata())
 
+	m.logger.Printf("DEBUG: Index now has %d bundles", m.index.Count())
+
 	// Save index
 	if err := m.SaveIndex(); err != nil {
+		m.logger.Printf("DEBUG: SaveIndex FAILED: %v", err)
 		return 0, fmt.Errorf("failed to save index: %w", err)
 	}
+
+	m.logger.Printf("DEBUG: Index saved, last bundle = %d", m.index.GetLastBundle().BundleNumber)
 
 	// Clean up old mempool
 	oldMempoolFile := m.mempool.GetFilename()
@@ -493,21 +529,16 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, quiet bool) (t
 		return 0, fmt.Errorf("failed to create new mempool: %w", err)
 	}
 
-	oldMempool := m.mempool
 	m.mempool = newMempool
 
-	oldMempool.Clear()
-
-	// ✨ Update DID index if enabled and track timing
+	// DID index update (if enabled)
 	var indexUpdateDuration time.Duration
 	if m.didIndex != nil && m.didIndex.Exists() {
 		indexUpdateStart := time.Now()
-
 		if err := m.updateDIDIndexForBundle(ctx, bundle); err != nil {
 			m.logger.Printf("Warning: failed to update DID index: %v", err)
 		} else {
 			indexUpdateDuration = time.Since(indexUpdateStart)
-
 			if !quiet {
 				m.logger.Printf("  [DID Index] Updated in %s", indexUpdateDuration)
 			}

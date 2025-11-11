@@ -1006,7 +1006,7 @@ func setupTestManager(t *testing.T) (*bundle.Manager, func()) {
 		path := filepath.Join(tmpDir, fmt.Sprintf("%06d.jsonl.zst", i))
 		ops := makeMinimalTestOperations(10000, i*10000) // Unique ops per bundle
 
-		contentHash, compHash, uncompSize, compSize, err := storageOps.SaveBundle(path, ops)
+		contentHash, compHash, uncompSize, compSize, err := storageOps.SaveBundle(path, ops, nil)
 		if err != nil {
 			t.Fatalf("failed to save test bundle %d: %v", i, err)
 		}

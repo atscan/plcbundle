@@ -348,7 +348,7 @@ func TestOperations(t *testing.T) {
 		path := filepath.Join(tmpDir, "test_bundle.jsonl.zst")
 
 		// Save
-		uncompHash, compHash, uncompSize, compSize, err := ops.SaveBundle(path, operations)
+		uncompHash, compHash, uncompSize, compSize, err := ops.SaveBundle(path, operations, nil)
 		if err != nil {
 			t.Fatalf("SaveBundle failed: %v", err)
 		}

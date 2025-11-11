@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"tangled.org/atscan.net/plcbundle/cmd/plcbundle/ui"
+	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
 	"tangled.org/atscan.net/plcbundle/internal/storage"
 )
 
@@ -88,7 +89,6 @@ type migrationOptions struct {
 func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 	fmt.Printf("Scanning for legacy bundles in: %s\n\n", dir)
 
-	// Find bundles needing migration
 	index := mgr.GetIndex()
 	bundles := index.GetBundles()
 
@@ -97,15 +97,20 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 		return nil
 	}
 
+	// Get plcbundle version
+	version := GetVersion()
+
 	var needsMigration []int
 	var totalSize int64
 
+	ops := &storage.Operations{}
 	for _, meta := range bundles {
 		bundlePath := filepath.Join(dir, fmt.Sprintf("%06d.jsonl.zst", meta.BundleNumber))
-		idxPath := bundlePath + ".idx"
 
-		// Check if .idx file exists
-		if _, err := os.Stat(idxPath); os.IsNotExist(err) || opts.force {
+		// Check if already has embedded metadata
+		_, err := ops.ExtractBundleMetadata(bundlePath)
+
+		if err != nil || opts.force {
 			needsMigration = append(needsMigration, meta.BundleNumber)
 			totalSize += meta.CompressedSize
 		}
@@ -117,30 +122,17 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 		return nil
 	}
 
-	// Display migration plan
+	// Display plan
 	fmt.Printf("Migration Plan\n")
 	fmt.Printf("══════════════\n\n")
 	fmt.Printf("  Bundles to migrate: %d\n", len(needsMigration))
 	fmt.Printf("  Total size:         %s\n", formatBytes(totalSize))
 	fmt.Printf("  Workers:            %d\n", opts.workers)
+	fmt.Printf("  plcbundle version:  %s\n", version)
 	fmt.Printf("\n")
-
-	if len(needsMigration) <= 20 {
-		fmt.Printf("  Bundles: ")
-		for i, num := range needsMigration {
-			if i > 0 {
-				fmt.Printf(", ")
-			}
-			fmt.Printf("%06d", num)
-		}
-		fmt.Printf("\n\n")
-	} else {
-		fmt.Printf("  Range: %06d - %06d\n\n", needsMigration[0], needsMigration[len(needsMigration)-1])
-	}
 
 	if opts.dryRun {
 		fmt.Printf("💡 This is a dry-run. No files will be modified.\n")
-		fmt.Printf("   Run without --dry-run to perform migration.\n")
 		return nil
 	}
 
@@ -153,9 +145,11 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 	success := 0
 	failed := 0
 	var firstError error
+	hashChanges := make([]int, 0, len(needsMigration))
 
 	for i, bundleNum := range needsMigration {
-		if err := migrateBundle(dir, bundleNum, opts.verbose); err != nil {
+		// ✅ Pass version to migrateBundle
+		if err := migrateBundle(dir, bundleNum, index, version, opts.verbose); err != nil {
 			failed++
 			if firstError == nil {
 				firstError = err
@@ -165,6 +159,8 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 			}
 		} else {
 			success++
+			hashChanges = append(hashChanges, bundleNum)
+
 			if opts.verbose {
 				fmt.Fprintf(os.Stderr, "✓ Migrated bundle %06d\n", bundleNum)
 			}
@@ -176,12 +172,65 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 	progress.Finish()
 	elapsed := time.Since(start)
 
+	// ✅ Update index with new compressed hashes
+	if len(hashChanges) > 0 {
+		fmt.Printf("\nUpdating bundle index...\n")
+		updateStart := time.Now()
+
+		updated := 0
+		for _, bundleNum := range hashChanges {
+			bundlePath := filepath.Join(dir, fmt.Sprintf("%06d.jsonl.zst", bundleNum))
+
+			// Recalculate hashes
+			compHash, compSize, contentHash, contentSize, err := ops.CalculateFileHashes(bundlePath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  ⚠️  Failed to hash bundle %06d: %v\n", bundleNum, err)
+				continue
+			}
+
+			// Get and update metadata
+			bundleMeta, err := index.GetBundle(bundleNum)
+			if err != nil {
+				continue
+			}
+
+			// Verify content hash unchanged
+			if bundleMeta.ContentHash != contentHash {
+				fmt.Fprintf(os.Stderr, "  ⚠️  Content hash changed for %06d (unexpected!)\n", bundleNum)
+			}
+
+			// Update compressed info (this changed due to skippable frames)
+			bundleMeta.CompressedHash = compHash
+			bundleMeta.CompressedSize = compSize
+			bundleMeta.UncompressedSize = contentSize
+
+			index.AddBundle(bundleMeta)
+			updated++
+		}
+
+		// Save index
+		if err := mgr.SaveIndex(); err != nil {
+			fmt.Fprintf(os.Stderr, "  ⚠️  Failed to save index: %v\n", err)
+		} else {
+			fmt.Printf("  ✓ Updated %d entries in %s\n", updated, time.Since(updateStart).Round(time.Millisecond))
+		}
+	}
+
 	// Summary
 	fmt.Printf("\n")
 	if failed == 0 {
 		fmt.Printf("✓ Migration complete in %s\n", elapsed.Round(time.Millisecond))
-		fmt.Printf("  Migrated: %d bundles\n", success)
-		fmt.Printf("  Speed:    %.1f bundles/sec\n", float64(success)/elapsed.Seconds())
+		fmt.Printf("  Migrated:     %d bundles\n", success)
+		fmt.Printf("  Index updated: %d entries\n", len(hashChanges))
+		fmt.Printf("  Speed:        %.1f bundles/sec\n\n", float64(success)/elapsed.Seconds())
+
+		fmt.Printf("✨ New bundle format features:\n")
+		fmt.Printf("   • Embedded metadata (JSON in skippable frame)\n")
+		fmt.Printf("   • Frame offsets for instant random access\n")
+		fmt.Printf("   • Multi-frame compression (100 ops/frame)\n")
+		fmt.Printf("   • Self-contained (no .idx files)\n")
+		fmt.Printf("   • Provenance tracking (version, origin, creator)\n")
+		fmt.Printf("   • Compatible with standard zstd tools\n")
 	} else {
 		fmt.Printf("⚠️  Migration completed with errors\n")
 		fmt.Printf("  Success:  %d bundles\n", success)
@@ -196,12 +245,17 @@ func runMigration(mgr BundleManager, dir string, opts migrationOptions) error {
 	return nil
 }
 
-func migrateBundle(dir string, bundleNum int, verbose bool) error {
+func migrateBundle(dir string, bundleNum int, index *bundleindex.Index, version string, verbose bool) error {
 	bundlePath := filepath.Join(dir, fmt.Sprintf("%06d.jsonl.zst", bundleNum))
-	idxPath := bundlePath + ".idx"
 	backupPath := bundlePath + ".bak"
 
-	// 1. Load the bundle using legacy method (full decompression)
+	// 1. Get metadata from index
+	meta, err := index.GetBundle(bundleNum)
+	if err != nil {
+		return fmt.Errorf("bundle not in index: %w", err)
+	}
+
+	// 2. Load the bundle using old format
 	ops := &storage.Operations{}
 	operations, err := ops.LoadBundle(bundlePath)
 	if err != nil {
@@ -212,33 +266,60 @@ func migrateBundle(dir string, bundleNum int, verbose bool) error {
 		fmt.Fprintf(os.Stderr, "  Loaded %d operations\n", len(operations))
 	}
 
-	// 2. Backup original file
+	// 3. Backup original file
 	if err := os.Rename(bundlePath, backupPath); err != nil {
 		return fmt.Errorf("failed to backup: %w", err)
 	}
 
-	// 3. Save using new multi-frame format
-	contentHash, compHash, contentSize, compSize, err := ops.SaveBundle(bundlePath, operations)
+	// 4. Get hostname (optional)
+	hostname, _ := os.Hostname()
+
+	// 5. ✅ Create BundleInfo for new format
+	bundleInfo := &storage.BundleInfo{
+		BundleNumber: meta.BundleNumber,
+		Origin:       index.Origin, // From index
+		ParentHash:   meta.Parent,
+		Cursor:       meta.Cursor,
+		CreatedBy:    fmt.Sprintf("plcbundle/%s", version),
+		Hostname:     hostname,
+	}
+
+	// 6. Save using new format (with skippable frame metadata)
+	contentHash, compHash, contentSize, compSize, err := ops.SaveBundle(bundlePath, operations, bundleInfo)
 	if err != nil {
 		// Restore backup on failure
 		os.Rename(backupPath, bundlePath)
 		return fmt.Errorf("failed to save: %w", err)
 	}
 
-	// 4. Verify .idx file was created
-	if _, err := os.Stat(idxPath); os.IsNotExist(err) {
-		// Restore backup if .idx wasn't created
+	// 7. Verify embedded metadata was created
+	embeddedMeta, err := ops.ExtractBundleMetadata(bundlePath)
+	if err != nil {
 		os.Remove(bundlePath)
 		os.Rename(backupPath, bundlePath)
-		return fmt.Errorf("frame index not created")
+		return fmt.Errorf("embedded metadata not created: %w", err)
 	}
 
-	// 5. Cleanup backup
+	// 8. Verify frame offsets are present
+	if len(embeddedMeta.FrameOffsets) == 0 {
+		os.Remove(bundlePath)
+		os.Rename(backupPath, bundlePath)
+		return fmt.Errorf("frame offsets missing in metadata")
+	}
+
+	// 9. Verify content hash matches (should be unchanged)
+	if contentHash != meta.ContentHash {
+		fmt.Fprintf(os.Stderr, "  ⚠️  Content hash changed (unexpected): %s → %s\n",
+			meta.ContentHash[:12], contentHash[:12])
+	}
+
+	// 10. Cleanup backup
 	os.Remove(backupPath)
 
 	if verbose {
-		fmt.Fprintf(os.Stderr, "  Content: %s (%s)\n", contentHash[:12], formatBytes(contentSize))
-		fmt.Fprintf(os.Stderr, "  Compressed: %s (%s)\n", compHash[:12], formatBytes(compSize))
+		fmt.Fprintf(os.Stderr, "  Content hash: %s (%s)\n", contentHash[:12], formatBytes(contentSize))
+		fmt.Fprintf(os.Stderr, "  New compressed hash: %s (%s)\n", compHash[:12], formatBytes(compSize))
+		fmt.Fprintf(os.Stderr, "  Frames: %d (embedded in metadata)\n", len(embeddedMeta.FrameOffsets)-1)
 	}
 
 	return nil

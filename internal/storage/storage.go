@@ -16,6 +16,46 @@ import (
 	"tangled.org/atscan.net/plcbundle/internal/plcclient"
 )
 
+const (
+	MetadataFormatVersion = 1
+)
+
+// BundleMetadata - Self-describing bundle (content-focused, not container)
+type BundleMetadata struct {
+	// === Format Info ===
+	Version int    `json:"version"`  // Metadata schema version (1)
+	Format  string `json:"format"`   // "plcbundle-v1"
+	SpecURL string `json:"spec_url"` // "https://github.com/atscan-net/plcbundle"
+
+	// === Bundle Identity ===
+	BundleNumber int    `json:"bundle_number"` // Sequential bundle number
+	Origin       string `json:"origin"`        // Source PLC directory URL
+
+	// === Creation Provenance ===
+	CreatedAt     time.Time `json:"created_at"`                // When bundle was created
+	CreatedBy     string    `json:"created_by"`                // "plcbundle/v1.2.3"
+	CreatedByHost string    `json:"created_by_host,omitempty"` // Optional: hostname that created it
+
+	// === Content Integrity ===
+	ContentHash string `json:"content_hash"`          // SHA256 of uncompressed JSONL content
+	ParentHash  string `json:"parent_hash,omitempty"` // Hash of previous bundle (chain)
+
+	// === Content Description ===
+	OperationCount int       `json:"operation_count"` // Always 10000 for complete bundles
+	DIDCount       int       `json:"did_count"`       // Unique DIDs in this bundle
+	StartTime      time.Time `json:"start_time"`      // First operation timestamp
+	EndTime        time.Time `json:"end_time"`        // Last operation timestamp
+
+	// === Frame Structure (for random access) ===
+	FrameCount   int     `json:"frame_count"`   // Number of zstd frames (usually 100)
+	FrameSize    int     `json:"frame_size"`    // Operations per frame (100)
+	FrameOffsets []int64 `json:"frame_offsets"` // Byte offsets of each frame
+
+	// === Optional Context ===
+	Cursor string `json:"cursor,omitempty"` // PLC export cursor for this bundle
+	Notes  string `json:"notes,omitempty"`  // Optional description
+}
+
 // Operations handles low-level bundle file operations
 type Operations struct {
 	logger Logger
@@ -33,6 +73,16 @@ func NewOperations(logger Logger) (*Operations, error) {
 
 func (op *Operations) Close() {
 	// Nothing to close
+}
+
+// BundleInfo contains info needed to create metadata
+type BundleInfo struct {
+	BundleNumber int
+	Origin       string
+	ParentHash   string
+	Cursor       string
+	CreatedBy    string // "plcbundle/v1.2.3"
+	Hostname     string // Optional
 }
 
 // ========================================
@@ -86,39 +136,22 @@ func (op *Operations) ParseJSONL(data []byte) ([]plcclient.PLCOperation, error) 
 // FILE OPERATIONS (using zstd abstraction)
 // ========================================
 
-// SaveBundle saves operations to disk with embedded metadata
-func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperation) (string, string, int64, int64, error) {
-	// 1. Serialize all operations once
+// SaveBundle saves operations with metadata containing RELATIVE frame offsets
+func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperation, bundleInfo *BundleInfo) (string, string, int64, int64, error) {
+	// 1. Calculate content
 	jsonlData := op.SerializeJSONL(operations)
 	contentSize := int64(len(jsonlData))
 	contentHash := op.Hash(jsonlData)
+	dids := op.ExtractUniqueDIDs(operations)
 
-	// 2. Create the destination file
-	bundleFile, err := os.Create(path)
-	if err != nil {
-		return "", "", 0, 0, fmt.Errorf("could not create bundle file: %w", err)
-	}
-	defer bundleFile.Close()
-
-	// ✅ 3. Write metadata as skippable frame FIRST (placeholder - will update later)
-	// We write a placeholder now and update after we know the compressed size
-	placeholderMeta := &BundleMetadata{
-		Version:          1,
-		BundleNumber:     0, // Will be set by caller
-		UncompressedSize: contentSize,
-		OperationCount:   len(operations),
-		FrameCount:       (len(operations) + FrameSize - 1) / FrameSize,
-		CreatedAt:        time.Now().UTC(),
+	hostnameHash := ""
+	if bundleInfo.Hostname != "" {
+		hostnameHash = op.Hash([]byte(bundleInfo.Hostname))[:16] // First 16 chars (64 bits)
 	}
 
-	metadataStart, err := WriteMetadataFrame(bundleFile, placeholderMeta)
-	if err != nil {
-		return "", "", 0, 0, fmt.Errorf("failed to write metadata frame: %w", err)
-	}
+	// 2. Compress all frames
+	compressedFrames := make([][]byte, 0)
 
-	frameOffsets := []int64{metadataStart} // First data frame starts after metadata
-
-	// 4. Write data frames
 	for i := 0; i < len(operations); i += FrameSize {
 		end := i + FrameSize
 		if end > len(operations) {
@@ -127,54 +160,86 @@ func (op *Operations) SaveBundle(path string, operations []plcclient.PLCOperatio
 		opChunk := operations[i:end]
 		chunkJsonlData := op.SerializeJSONL(opChunk)
 
-		// Compress this chunk
 		compressedChunk, err := CompressFrame(chunkJsonlData)
 		if err != nil {
 			return "", "", 0, 0, fmt.Errorf("failed to compress frame: %w", err)
 		}
 
-		// Write frame to file
-		_, err = bundleFile.Write(compressedChunk)
+		compressedFrames = append(compressedFrames, compressedChunk)
+	}
+
+	// 3. ✅ Calculate RELATIVE offsets (relative to first data frame)
+	relativeOffsets := make([]int64, len(compressedFrames)+1)
+	relativeOffsets[0] = 0
+
+	cumulative := int64(0)
+	for i, frame := range compressedFrames {
+		cumulative += int64(len(frame))
+		relativeOffsets[i+1] = cumulative
+	}
+
+	// 4. ✅ Build metadata with RELATIVE offsets
+	metadata := &BundleMetadata{
+		Version:        MetadataFormatVersion,
+		Format:         "plcbundle-v1",
+		SpecURL:        "https://github.com/atscan-net/plcbundle",
+		BundleNumber:   bundleInfo.BundleNumber,
+		Origin:         bundleInfo.Origin,
+		CreatedAt:      time.Now().UTC(),
+		CreatedBy:      bundleInfo.CreatedBy,
+		CreatedByHost:  hostnameHash,
+		ContentHash:    contentHash,
+		ParentHash:     bundleInfo.ParentHash,
+		OperationCount: len(operations),
+		DIDCount:       len(dids),
+		FrameCount:     len(compressedFrames),
+		FrameSize:      FrameSize,
+		Cursor:         bundleInfo.Cursor,
+		FrameOffsets:   relativeOffsets, // ✅ RELATIVE to data start!
+	}
+
+	if len(operations) > 0 {
+		metadata.StartTime = operations[0].CreatedAt
+		metadata.EndTime = operations[len(operations)-1].CreatedAt
+	}
+
+	// 5. Write final file
+	finalFile, err := os.Create(path)
+	if err != nil {
+		return "", "", 0, 0, fmt.Errorf("failed to create file: %w", err)
+	}
+	defer func() {
+		finalFile.Close()
 		if err != nil {
+			os.Remove(path)
+		}
+	}()
+
+	// Write metadata frame
+	if _, err := WriteMetadataFrame(finalFile, metadata); err != nil {
+		return "", "", 0, 0, fmt.Errorf("failed to write metadata: %w", err)
+	}
+
+	// Write all data frames
+	for _, frame := range compressedFrames {
+		if _, err := finalFile.Write(frame); err != nil {
 			return "", "", 0, 0, fmt.Errorf("failed to write frame: %w", err)
 		}
-
-		// Get current offset for next frame
-		currentOffset, err := bundleFile.Seek(0, io.SeekCurrent)
-		if err != nil {
-			return "", "", 0, 0, fmt.Errorf("failed to get file offset: %w", err)
-		}
-
-		if end < len(operations) {
-			frameOffsets = append(frameOffsets, currentOffset)
-		}
 	}
 
-	// 5. Get final file size
-	finalSize, _ := bundleFile.Seek(0, io.SeekCurrent)
-	frameOffsets = append(frameOffsets, finalSize)
+	finalFile.Sync()
+	finalFile.Close()
 
-	// 6. Sync to disk
-	if err := bundleFile.Sync(); err != nil {
-		return "", "", 0, 0, fmt.Errorf("failed to sync file: %w", err)
-	}
-
-	// 7. Save frame index (still useful for random access)
-	indexPath := path + ".idx"
-	indexData, _ := json.Marshal(frameOffsets)
-	if err := os.WriteFile(indexPath, indexData, 0644); err != nil {
-		os.Remove(path)
-		return "", "", 0, 0, fmt.Errorf("failed to write frame index: %w", err)
-	}
-
-	// 8. Calculate compressed hash
+	// 6. Hash
 	compressedData, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", 0, 0, fmt.Errorf("failed to re-read bundle for hashing: %w", err)
+		return "", "", 0, 0, err
 	}
 	compressedHash := op.Hash(compressedData)
 
-	return contentHash, compressedHash, contentSize, finalSize, nil
+	os.Remove(path + ".idx")
+
+	return contentHash, compressedHash, contentSize, int64(len(compressedData)), nil
 }
 
 // LoadBundle loads a compressed bundle
@@ -410,27 +475,65 @@ func (op *Operations) LoadOperationAtPosition(path string, position int) (*plccl
 		return nil, fmt.Errorf("invalid position: %d", position)
 	}
 
-	indexPath := path + ".idx"
+	// ✅ Try multiple sources for frame index (no goto!)
+	frameOffsets, err := op.loadFrameIndex(path)
+	if err != nil {
+		// No frame index available - use legacy full scan
+		if op.logger != nil {
+			op.logger.Printf("No frame index found for %s, using legacy scan", filepath.Base(path))
+		}
+		return op.loadOperationAtPositionLegacy(path, position)
+	}
 
-	// 1. Try to load frame index
+	// We have frame index - use it for fast random access
+	return op.loadOperationFromFrame(path, position, frameOffsets)
+}
+
+// loadFrameIndex loads frame offsets and converts to absolute positions
+func (op *Operations) loadFrameIndex(path string) ([]int64, error) {
+	// Try embedded metadata first
+	meta, err := ExtractMetadataFromFile(path)
+	if err == nil && len(meta.FrameOffsets) > 0 {
+		// ✅ Convert relative offsets to absolute
+		// First, get metadata frame size by re-reading
+		file, _ := os.Open(path)
+		if file != nil {
+			defer file.Close()
+
+			// Read metadata frame to find where data starts
+			magic, data, readErr := ReadSkippableFrame(file)
+			if readErr == nil && magic == SkippableMagicMetadata {
+				// Metadata frame size = 4 (magic) + 4 (size) + len(data)
+				metadataFrameSize := int64(8 + len(data))
+
+				// Convert relative to absolute
+				absoluteOffsets := make([]int64, len(meta.FrameOffsets))
+				for i, relOffset := range meta.FrameOffsets {
+					absoluteOffsets[i] = metadataFrameSize + relOffset
+				}
+
+				return absoluteOffsets, nil
+			}
+		}
+	}
+
+	// Fallback to external .idx file
+	indexPath := path + ".idx"
 	indexData, err := os.ReadFile(indexPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Fallback to legacy full scan
-			if op.logger != nil {
-				op.logger.Printf("Frame index not found for %s, using legacy scan", filepath.Base(path))
-			}
-			return op.loadOperationAtPositionLegacy(path, position)
-		}
-		return nil, fmt.Errorf("could not read frame index: %w", err)
+		return nil, fmt.Errorf("no frame index available: %w", err)
 	}
 
-	var frameOffsets []int64
-	if err := json.Unmarshal(indexData, &frameOffsets); err != nil {
-		return nil, fmt.Errorf("could not parse frame index: %w", err)
+	var offsets []int64
+	if err := json.Unmarshal(indexData, &offsets); err != nil {
+		return nil, fmt.Errorf("invalid frame index: %w", err)
 	}
 
-	// 2. Calculate target frame
+	return offsets, nil
+}
+
+// loadOperationFromFrame loads operation using frame index
+func (op *Operations) loadOperationFromFrame(path string, position int, frameOffsets []int64) (*plcclient.PLCOperation, error) {
 	frameIndex := position / FrameSize
 	lineInFrame := position % FrameSize
 
@@ -439,13 +542,19 @@ func (op *Operations) LoadOperationAtPosition(path string, position int) (*plccl
 			position, frameIndex, len(frameOffsets)-1)
 	}
 
-	// 3. Read the specific frame from file
 	startOffset := frameOffsets[frameIndex]
 	endOffset := frameOffsets[frameIndex+1]
 	frameLength := endOffset - startOffset
 
-	if frameLength <= 0 {
-		return nil, fmt.Errorf("invalid frame length: %d", frameLength)
+	// ✅ DEBUG
+	if op.logger != nil {
+		op.logger.Printf("DEBUG: Frame %d: offset %d-%d, length %d bytes",
+			frameIndex, startOffset, endOffset, frameLength)
+	}
+
+	if frameLength <= 0 || frameLength > 10*1024*1024 {
+		return nil, fmt.Errorf("invalid frame length: %d (offsets: %d-%d)",
+			frameLength, startOffset, endOffset)
 	}
 
 	bundleFile, err := os.Open(path)
@@ -455,18 +564,31 @@ func (op *Operations) LoadOperationAtPosition(path string, position int) (*plccl
 	defer bundleFile.Close()
 
 	compressedFrame := make([]byte, frameLength)
-	_, err = bundleFile.ReadAt(compressedFrame, startOffset)
+	n, err := bundleFile.ReadAt(compressedFrame, startOffset)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read frame %d: %w", frameIndex, err)
+		return nil, fmt.Errorf("failed to read frame %d (offset %d, length %d): %w",
+			frameIndex, startOffset, frameLength, err)
 	}
 
-	// 4. ✅ Decompress this single frame
+	if op.logger != nil {
+		op.logger.Printf("DEBUG: Read %d bytes from offset %d", n, startOffset)
+	}
+
+	// Decompress
 	decompressed, err := DecompressFrame(compressedFrame)
 	if err != nil {
+		// ✅ DEBUG: Show first few bytes to diagnose
+		if op.logger != nil {
+			preview := compressedFrame
+			if len(preview) > 16 {
+				preview = preview[:16]
+			}
+			op.logger.Printf("DEBUG: Failed frame data (first 16 bytes): % x", preview)
+		}
 		return nil, fmt.Errorf("failed to decompress frame %d: %w", frameIndex, err)
 	}
 
-	// 5. Scan the decompressed data to find the target line
+	// Scan to find the line
 	scanner := bufio.NewScanner(bytes.NewReader(decompressed))
 	lineNum := 0
 

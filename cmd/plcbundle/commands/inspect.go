@@ -244,9 +244,15 @@ func runInspect(cmd *cobra.Command, input string, opts inspectOptions) error {
 	result.FileSize = info.Size()
 
 	// Check for frame index
-	indexPath := bundlePath + ".idx"
-	if _, err := os.Stat(indexPath); err == nil {
-		result.HasFrameIndex = true
+	ops := &storage.Operations{}
+	if _, err := ops.ExtractBundleMetadata(bundlePath); err == nil {
+		result.HasFrameIndex = true // Has embedded index
+	} else {
+		// Check for external .idx file (legacy)
+		indexPath := bundlePath + ".idx"
+		if _, err := os.Stat(indexPath); err == nil {
+			result.HasFrameIndex = true
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "Inspecting: %s\n", filepath.Base(bundlePath))
@@ -563,7 +569,7 @@ func getTimeDistribution(timeSlots map[int64]int) []TimeSlot {
 // DISPLAY FUNCTIONS
 // ============================================================================
 
-func displayInspectHuman(result *inspectResult, analysis *bundleAnalysis, opts inspectOptions) error {
+func displayInspectHuman(result *inspectResult, _ *bundleAnalysis, opts inspectOptions) error {
 	fmt.Printf("\n")
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 	fmt.Printf("                    Bundle Deep Inspection\n")
@@ -582,30 +588,43 @@ func displayInspectHuman(result *inspectResult, analysis *bundleAnalysis, opts i
 		meta := result.Metadata
 		fmt.Printf("📋 Embedded Metadata (Skippable Frame)\n")
 		fmt.Printf("──────────────────────────────────────\n")
+		fmt.Printf("  Format:              %s (v%d)\n", meta.Format, meta.Version)
+		if meta.SpecURL != "" {
+			fmt.Printf("  Specification:       %s\n", meta.SpecURL)
+		}
 		fmt.Printf("  Bundle Number:       %06d\n", meta.BundleNumber)
 		if meta.Origin != "" {
 			fmt.Printf("  Origin:              %s\n", meta.Origin)
 		}
-		fmt.Printf("  Operations:          %s\n", formatNumber(meta.OperationCount))
-		fmt.Printf("  DIDs:                %s unique\n", formatNumber(meta.DIDCount))
-		fmt.Printf("  Frames:              %d\n", meta.FrameCount)
-		fmt.Printf("  Uncompressed:        %s\n", formatBytes(meta.UncompressedSize))
-		fmt.Printf("  Compressed:          %s (%.2fx)\n",
-			formatBytes(meta.CompressedSize),
-			float64(meta.UncompressedSize)/float64(meta.CompressedSize))
-		fmt.Printf("  Timespan:            %s → %s\n",
+		if meta.CreatedBy != "" {
+			fmt.Printf("  Created by:          %s\n", meta.CreatedBy)
+		}
+		if meta.CreatedByHost != "" {
+			fmt.Printf("  Created on:          %s\n", meta.CreatedByHost)
+		}
+		fmt.Printf("  Created at:          %s\n", meta.CreatedAt.Format("2006-01-02 15:04:05 MST"))
+
+		fmt.Printf("\n  Content:\n")
+		fmt.Printf("    Operations:        %s\n", formatNumber(meta.OperationCount))
+		fmt.Printf("    Unique DIDs:       %s\n", formatNumber(meta.DIDCount))
+		fmt.Printf("    Frames:            %d × %d ops\n", meta.FrameCount, meta.FrameSize)
+		fmt.Printf("    Timespan:          %s → %s\n",
 			meta.StartTime.Format("2006-01-02 15:04:05"),
 			meta.EndTime.Format("2006-01-02 15:04:05"))
-		fmt.Printf("  Duration:            %s\n",
+		fmt.Printf("    Duration:          %s\n",
 			formatDuration(meta.EndTime.Sub(meta.StartTime)))
 
-		if meta.ContentHash != "" {
-			fmt.Printf("\n  Hashes:\n")
-			fmt.Printf("    Content:           %s\n", meta.ContentHash[:16]+"...")
-			fmt.Printf("    Compressed:        %s\n", meta.CompressedHash[:16]+"...")
-			if meta.ParentHash != "" {
-				fmt.Printf("    Parent:            %s\n", meta.ParentHash[:16]+"...")
-			}
+		fmt.Printf("\n  Integrity:\n")
+		fmt.Printf("    Content hash:      %s\n", meta.ContentHash)
+		if meta.ParentHash != "" {
+			fmt.Printf("    Parent hash:       %s\n", meta.ParentHash)
+		}
+
+		if len(meta.FrameOffsets) > 0 {
+			fmt.Printf("\n  Frame Index:         %d offsets (embedded)\n", len(meta.FrameOffsets))
+			firstDataOffset := meta.FrameOffsets[0]
+			fmt.Printf("    Metadata size:     %s\n", formatBytes(firstDataOffset))
+			fmt.Printf("    First data frame:  offset %d\n", firstDataOffset)
 		}
 		fmt.Printf("\n")
 	}
@@ -794,7 +813,7 @@ func displayInspectJSON(result *inspectResult) error {
 func verifyCrypto(cmd *cobra.Command, path string, meta *storage.BundleMetadata, bundleNum int, verbose bool) (contentValid, compressedValid, metadataValid bool) {
 	ops := &storage.Operations{}
 
-	// Calculate actual hashes
+	// Calculate actual hashes from file
 	compHash, compSize, contentHash, contentSize, err := ops.CalculateFileHashes(path)
 	if err != nil {
 		if verbose {
@@ -807,8 +826,9 @@ func verifyCrypto(cmd *cobra.Command, path string, meta *storage.BundleMetadata,
 	compressedValid = true
 	metadataValid = true
 
-	// Verify against embedded metadata if available
+	// ✅ Verify against embedded metadata if available
 	if meta != nil {
+		// Check content hash (this is in the metadata)
 		if meta.ContentHash != "" && meta.ContentHash != contentHash {
 			contentValid = false
 			if verbose {
@@ -818,43 +838,51 @@ func verifyCrypto(cmd *cobra.Command, path string, meta *storage.BundleMetadata,
 			}
 		}
 
-		if meta.CompressedHash != "" && meta.CompressedHash != compHash {
-			compressedValid = false
-			if verbose {
-				fmt.Fprintf(os.Stderr, "  ✗ Compressed hash mismatch!\n")
-			}
+		if meta.OperationCount > 0 {
+			// We can't verify this without loading, so skip
+			metadataValid = true
 		}
 
-		if meta.UncompressedSize != contentSize {
-			metadataValid = false
-			if verbose {
-				fmt.Fprintf(os.Stderr, "  ✗ Uncompressed size mismatch: meta=%d, actual=%d\n",
-					meta.UncompressedSize, contentSize)
-			}
-		}
+		// ✅ Note: We don't check compressed hash/size because they're not in metadata
+		// (The file IS the compressed data, so it's redundant)
 
-		if meta.CompressedSize != compSize {
-			metadataValid = false
-			if verbose {
-				fmt.Fprintf(os.Stderr, "  ✗ Compressed size mismatch: meta=%d, actual=%d\n",
-					meta.CompressedSize, compSize)
-			}
+		if verbose {
+			fmt.Fprintf(os.Stderr, "  Embedded metadata:\n")
+			fmt.Fprintf(os.Stderr, "    Content hash: %s\n", meta.ContentHash[:16]+"...")
+			fmt.Fprintf(os.Stderr, "    Operations: %d\n", meta.OperationCount)
+			fmt.Fprintf(os.Stderr, "    DIDs: %d\n", meta.DIDCount)
 		}
 	}
 
-	// Also verify against repository index if bundle number is known
+	// ✅ Also verify against repository index if bundle number is known
 	if bundleNum > 0 {
-		mgr, _, err := getManager(nil)
+		mgr, _, err := getManager(&ManagerOptions{Cmd: cmd})
 		if err == nil {
 			defer mgr.Close()
 
 			ctx := context.Background()
 			vr, err := mgr.VerifyBundle(ctx, bundleNum)
-			if err == nil {
-				contentValid = contentValid && vr.Valid
-				compressedValid = compressedValid && vr.HashMatch
+			if err == nil && vr != nil {
+				// Index verification
+				indexContentValid := vr.Valid
+				indexHashMatch := vr.HashMatch
+
+				if verbose {
+					fmt.Fprintf(os.Stderr, "  Repository index:\n")
+					fmt.Fprintf(os.Stderr, "    Content valid: %v\n", indexContentValid)
+					fmt.Fprintf(os.Stderr, "    Hash match: %v\n", indexHashMatch)
+				}
+
+				contentValid = contentValid && indexContentValid
+				compressedValid = compressedValid && indexHashMatch
 			}
 		}
+	}
+
+	if verbose {
+		fmt.Fprintf(os.Stderr, "  Calculated hashes:\n")
+		fmt.Fprintf(os.Stderr, "    Content: %s (%s)\n", contentHash[:16]+"...", formatBytes(contentSize))
+		fmt.Fprintf(os.Stderr, "    Compressed: %s (%s)\n", compHash[:16]+"...", formatBytes(compSize))
 	}
 
 	return contentValid, compressedValid, metadataValid

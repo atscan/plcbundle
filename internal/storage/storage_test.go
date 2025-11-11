@@ -62,7 +62,7 @@ func TestStorageCompression(t *testing.T) {
 				path := filepath.Join(tmpDir, tt.name+".jsonl.zst")
 
 				// Save
-				_, _, _, _, err := ops.SaveBundle(path, original)
+				_, _, _, _, err := ops.SaveBundle(path, original, nil)
 				if err != nil {
 					t.Fatalf("SaveBundle failed: %v", err)
 				}
@@ -98,7 +98,7 @@ func TestStorageCompression(t *testing.T) {
 		operations := makeTestOperations(10000)
 		path := filepath.Join(tmpDir, "compression_test.jsonl.zst")
 
-		_, _, uncompSize, compSize, err := ops.SaveBundle(path, operations)
+		_, _, uncompSize, compSize, err := ops.SaveBundle(path, operations, nil)
 		if err != nil {
 			t.Fatalf("SaveBundle failed: %v", err)
 		}
@@ -119,7 +119,7 @@ func TestStorageCompression(t *testing.T) {
 		operations := makeTestOperations(100)
 		path := filepath.Join(tmpDir, "integrity_test.jsonl.zst")
 
-		contentHash, compHash, _, _, err := ops.SaveBundle(path, operations)
+		contentHash, compHash, _, _, err := ops.SaveBundle(path, operations, nil)
 		if err != nil {
 			t.Fatalf("SaveBundle failed: %v", err)
 		}
@@ -250,7 +250,7 @@ func TestStorageConcurrency(t *testing.T) {
 		// Create test bundle
 		operations := makeTestOperations(10000)
 		path := filepath.Join(tmpDir, "parallel_test.jsonl.zst")
-		_, _, _, _, err := ops.SaveBundle(path, operations)
+		_, _, _, _, err := ops.SaveBundle(path, operations, nil)
 		if err != nil {
 			t.Fatalf("SaveBundle failed: %v", err)
 		}
@@ -286,7 +286,7 @@ func TestStorageConcurrency(t *testing.T) {
 		// Critical test - this is heavily used by DID lookups
 		operations := makeTestOperations(10000)
 		path := filepath.Join(tmpDir, "position_test.jsonl.zst")
-		_, _, _, _, err := ops.SaveBundle(path, operations)
+		_, _, _, _, err := ops.SaveBundle(path, operations, nil)
 		if err != nil {
 			t.Fatalf("SaveBundle failed: %v", err)
 		}
@@ -321,7 +321,7 @@ func TestStorageConcurrency(t *testing.T) {
 	t.Run("ConcurrentHashVerification", func(t *testing.T) {
 		operations := makeTestOperations(1000)
 		path := filepath.Join(tmpDir, "verify_test.jsonl.zst")
-		_, compHash, _, _, err := ops.SaveBundle(path, operations)
+		_, compHash, _, _, err := ops.SaveBundle(path, operations, nil)
 		if err != nil {
 			t.Fatalf("SaveBundle failed: %v", err)
 		}
@@ -371,7 +371,7 @@ func TestStorageEdgeCases(t *testing.T) {
 	t.Run("TruncatedFile", func(t *testing.T) {
 		operations := makeTestOperations(100)
 		path := filepath.Join(tmpDir, "truncated.jsonl.zst")
-		ops.SaveBundle(path, operations)
+		ops.SaveBundle(path, operations, nil)
 
 		// Read and truncate
 		data, _ := os.ReadFile(path)
@@ -389,7 +389,7 @@ func TestStorageEdgeCases(t *testing.T) {
 
 		// Manually compress invalid data
 		operations := makeTestOperations(10)
-		ops.SaveBundle(path, operations) // Create valid file first
+		ops.SaveBundle(path, operations, nil) // Create valid file first
 
 		// Now corrupt it with invalid JSON
 		// This is hard to test properly since SaveBundle enforces valid data
@@ -410,7 +410,7 @@ func TestStorageEdgeCases(t *testing.T) {
 	t.Run("InvalidPosition", func(t *testing.T) {
 		operations := makeTestOperations(100)
 		path := filepath.Join(tmpDir, "position_test.jsonl.zst")
-		ops.SaveBundle(path, operations)
+		ops.SaveBundle(path, operations, nil)
 
 		// Negative position
 		_, err := ops.LoadOperationAtPosition(path, -1)
@@ -746,7 +746,7 @@ func TestStorageStreaming(t *testing.T) {
 	t.Run("StreamRaw", func(t *testing.T) {
 		operations := makeTestOperations(100)
 		path := filepath.Join(tmpDir, "stream_raw.jsonl.zst")
-		_, _, _, _, err := ops.SaveBundle(path, operations)
+		_, _, _, _, err := ops.SaveBundle(path, operations, nil)
 		if err != nil {
 			t.Fatalf("SaveBundle failed: %v", err)
 		}
@@ -772,7 +772,7 @@ func TestStorageStreaming(t *testing.T) {
 	t.Run("StreamDecompressed", func(t *testing.T) {
 		operations := makeTestOperations(100)
 		path := filepath.Join(tmpDir, "stream_decomp.jsonl.zst")
-		ops.SaveBundle(path, operations)
+		ops.SaveBundle(path, operations, nil)
 
 		reader, err := ops.StreamDecompressed(path)
 		if err != nil {
@@ -808,13 +808,13 @@ func BenchmarkStorageOperations(b *testing.B) {
 	b.Run("SaveBundle", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			path := filepath.Join(tmpDir, fmt.Sprintf("bench_%d.jsonl.zst", i))
-			ops.SaveBundle(path, operations)
+			ops.SaveBundle(path, operations, nil)
 		}
 	})
 
 	// Create bundle for read benchmarks
 	testPath := filepath.Join(tmpDir, "bench_read.jsonl.zst")
-	ops.SaveBundle(testPath, operations)
+	ops.SaveBundle(testPath, operations, nil)
 
 	b.Run("LoadBundle", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
