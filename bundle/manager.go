@@ -587,7 +587,7 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, verbose bool, 
 	}
 
 	if !quiet {
-		msg := fmt.Sprintf("→ Bundle %06d | %s | time: %s (%d reqs)",
+		msg := fmt.Sprintf("→ Bundle %06d | %s | fetch: %s (%d reqs)",
 			bundle.BundleNumber,
 			bundle.Hash[0:7],
 			stats.TotalDuration.Round(time.Millisecond),
@@ -1401,7 +1401,6 @@ func (m *Manager) CloneFromRemote(ctx context.Context, opts internalsync.CloneOp
 // ResolveDID resolves a DID to its current document with detailed timing metrics
 func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult, error) {
 	if err := plcclient.ValidateDIDFormat(did); err != nil {
-		// Track error
 		atomic.AddInt64(&m.resolverStats.errors, 1)
 		return nil, err
 	}
@@ -1409,9 +1408,8 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 	result := &ResolveDIDResult{}
 	totalStart := time.Now()
 
-	// STEP 1: Check mempool first (most recent data) - OPTIMIZED
+	// STEP 1: Check mempool first
 	mempoolStart := time.Now()
-
 	var latestMempoolOp *plcclient.PLCOperation
 	if m.mempool != nil {
 		latestMempoolOp = m.mempool.FindLatestDIDOperation(did)
@@ -1427,12 +1425,11 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 		}
 
 		result.Document = doc
+		result.LatestOperation = latestMempoolOp // NEW: Include the operation
 		result.Source = "mempool"
 		result.TotalTime = time.Since(totalStart)
 
-		// Record stats
 		m.recordResolverTiming(result, nil)
-
 		return result, nil
 	}
 
@@ -1493,12 +1490,11 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 	}
 
 	result.Document = doc
+	result.LatestOperation = op // NEW: Include the operation
 	result.Source = "bundle"
 	result.TotalTime = time.Since(totalStart)
 
-	// Record stats
 	m.recordResolverTiming(result, nil)
-
 	return result, nil
 }
 
@@ -1841,4 +1837,8 @@ func (m *Manager) ResetResolverStats() {
 
 	m.resolverStats.recentTimes = make([]resolverTiming, m.resolverStats.recentSize)
 	m.resolverStats.recentIdx = 0
+}
+
+func (m *Manager) SetQuiet(quiet bool) {
+	m.config.Quiet = quiet
 }

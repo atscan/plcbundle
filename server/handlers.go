@@ -74,9 +74,12 @@ func (s *Server) handleRoot() http.HandlerFunc {
 		sb.WriteString("immutable, cryptographically-chained bundles of 10,000 operations.\n\n")
 		sb.WriteString("More info: https://tangled.org/@atscan.net/plcbundle\n\n")
 
+		origin := s.manager.GetPLCOrigin()
+
 		if bundleCount > 0 {
 			sb.WriteString("Bundles\n")
 			sb.WriteString("━━━━━━━\n")
+			sb.WriteString(fmt.Sprintf("  Origin:        %s\n", origin))
 			sb.WriteString(fmt.Sprintf("  Bundle count:  %d\n", bundleCount))
 
 			firstBundle := stats["first_bundle"].(int)
@@ -111,13 +114,11 @@ func (s *Server) handleRoot() http.HandlerFunc {
 			mempoolStats := s.manager.GetMempoolStats()
 			count := mempoolStats["count"].(int)
 			targetBundle := mempoolStats["target_bundle"].(int)
-			canCreate := mempoolStats["can_create_bundle"].(bool)
 
-			sb.WriteString("\nMempool Stats\n")
-			sb.WriteString("━━━━━━━━━━━━━\n")
+			sb.WriteString("\nMempool\n")
+			sb.WriteString("━━━━━━━\n")
 			sb.WriteString(fmt.Sprintf("  Target bundle:     %d\n", targetBundle))
 			sb.WriteString(fmt.Sprintf("  Operations:        %d / %d\n", count, types.BUNDLE_SIZE))
-			sb.WriteString(fmt.Sprintf("  Can create bundle: %v\n", canCreate))
 
 			if count > 0 {
 				progress := float64(count) / float64(types.BUNDLE_SIZE) * 100
@@ -142,39 +143,36 @@ func (s *Server) handleRoot() http.HandlerFunc {
 			}
 		}
 
-		if didStats := s.manager.GetDIDIndexStats(); didStats["exists"].(bool) {
-			sb.WriteString("\nDID Index\n")
-			sb.WriteString("━━━━━━━━━\n")
+		if s.config.EnableResolver {
+
+			sb.WriteString("\nResolver\n")
+			sb.WriteString("━━━━━━━━\n")
 			sb.WriteString("  Status:        enabled\n")
 
-			indexedDIDs := didStats["indexed_dids"].(int64)
-			mempoolDIDs := didStats["mempool_dids"].(int64)
-			totalDIDs := didStats["total_dids"].(int64)
+			if didStats := s.manager.GetDIDIndexStats(); didStats["exists"].(bool) {
+				indexedDIDs := didStats["indexed_dids"].(int64)
+				mempoolDIDs := didStats["mempool_dids"].(int64)
+				totalDIDs := didStats["total_dids"].(int64)
 
-			if mempoolDIDs > 0 {
-				sb.WriteString(fmt.Sprintf("  Total DIDs:    %s (%s indexed + %s mempool)\n",
-					formatNumber(int(totalDIDs)),
-					formatNumber(int(indexedDIDs)),
-					formatNumber(int(mempoolDIDs))))
-			} else {
-				sb.WriteString(fmt.Sprintf("  Total DIDs:    %s\n", formatNumber(int(totalDIDs))))
+				if mempoolDIDs > 0 {
+					sb.WriteString(fmt.Sprintf("  Total DIDs:    %s (%s indexed + %s mempool)\n",
+						formatNumber(int(totalDIDs)),
+						formatNumber(int(indexedDIDs)),
+						formatNumber(int(mempoolDIDs))))
+				} else {
+					sb.WriteString(fmt.Sprintf("  Total DIDs:    %s\n", formatNumber(int(totalDIDs))))
+				}
 			}
-
-			sb.WriteString(fmt.Sprintf("  Cached shards: %d / %d\n",
-				didStats["cached_shards"], didStats["cache_limit"]))
 			sb.WriteString("\n")
 		}
 
 		sb.WriteString("Server Stats\n")
 		sb.WriteString("━━━━━━━━━━━━\n")
-		sb.WriteString(fmt.Sprintf("  Version:       %s\n", s.config.Version))
-		if origin := s.manager.GetPLCOrigin(); origin != "" {
-			sb.WriteString(fmt.Sprintf("  Origin:        %s\n", origin))
-		}
-		sb.WriteString(fmt.Sprintf("  Sync mode:     %v\n", s.config.SyncMode))
-		sb.WriteString(fmt.Sprintf("  WebSocket:     %v\n", s.config.EnableWebSocket))
-		sb.WriteString(fmt.Sprintf("  Resolver:      %v\n", s.config.EnableResolver))
-		sb.WriteString(fmt.Sprintf("  Uptime:        %s\n", time.Since(s.startTime).Round(time.Second)))
+		sb.WriteString(fmt.Sprintf("  Version:           %s\n", s.config.Version))
+		sb.WriteString(fmt.Sprintf("  Sync mode:         %v\n", s.config.SyncMode))
+		sb.WriteString(fmt.Sprintf("  WebSocket:         %v\n", s.config.EnableWebSocket))
+		sb.WriteString(fmt.Sprintf("  Handle Resolver:   %v\n", s.manager.GetHandleResolver().GetBaseURL()))
+		sb.WriteString(fmt.Sprintf("  Uptime:            %s\n", time.Since(s.startTime).Round(time.Second)))
 
 		sb.WriteString("\n\nAPI Endpoints\n")
 		sb.WriteString("━━━━━━━━━━━━━\n")
@@ -193,15 +191,6 @@ func (s *Server) handleRoot() http.HandlerFunc {
 			sb.WriteString("  GET  /:did                    DID Document (W3C format)\n")
 			sb.WriteString("  GET  /:did/data               PLC State (raw format)\n")
 			sb.WriteString("  GET  /:did/log/audit          Operation history\n")
-
-			didStats := s.manager.GetDIDIndexStats()
-			if didStats["exists"].(bool) {
-				sb.WriteString(fmt.Sprintf("\n  Index: %s DIDs indexed\n",
-					formatNumber(int(didStats["total_dids"].(int64)))))
-			} else {
-				sb.WriteString("\n  ⚠️  Index: not built (will use slow scan)\n")
-			}
-			sb.WriteString("\n")
 		}
 
 		if s.config.EnableWebSocket {
@@ -684,32 +673,49 @@ func (s *Server) handleDIDRouting(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 
 	parts := strings.SplitN(path, "/", 2)
-	did := parts[0]
+	input := parts[0] // Could be DID or handle
 
-	if !strings.HasPrefix(did, "did:plc:") {
-		sendJSON(w, 404, map[string]string{"error": "not found"})
-		return
-	}
+	// Accept both DIDs and handles
+	// DIDs: did:plc:*, did:web:*
+	// Handles: tree.fail, ngerakines.me, etc.
 
 	if len(parts) == 1 {
-		s.handleDIDDocument(did)(w, r)
+		s.handleDIDDocument(input)(w, r)
 	} else if parts[1] == "data" {
-		s.handleDIDData(did)(w, r)
+		s.handleDIDData(input)(w, r)
 	} else if parts[1] == "log/audit" {
-		s.handleDIDAuditLog(did)(w, r)
+		s.handleDIDAuditLog(input)(w, r)
 	} else {
 		sendJSON(w, 404, map[string]string{"error": "not found"})
 	}
 }
 
-func (s *Server) handleDIDDocument(did string) http.HandlerFunc {
+func (s *Server) handleDIDDocument(input string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// OPTIONS already handled by middleware, but extra safety check
 		if r.Method == "OPTIONS" {
 			return
 		}
 
-		// Track only actual GET requests
+		// Resolve handle to DID
+		did, handleResolveTime, err := s.manager.ResolveHandleOrDID(r.Context(), input)
+		if err != nil {
+			if strings.Contains(err.Error(), "appears to be a handle") {
+				sendJSON(w, 400, map[string]string{
+					"error": "Handle resolver not configured",
+					"hint":  "Start server with --handle-resolver flag",
+				})
+			} else {
+				sendJSON(w, 400, map[string]string{"error": err.Error()})
+			}
+			return
+		}
+
+		resolvedHandle := ""
+		if handleResolveTime > 0 {
+			resolvedHandle = input
+		}
+
+		// Single call gets both document AND operation metadata
 		result, err := s.manager.ResolveDID(r.Context(), did)
 		if err != nil {
 			if strings.Contains(err.Error(), "deactivated") {
@@ -722,27 +728,37 @@ func (s *Server) handleDIDDocument(did string) http.HandlerFunc {
 			return
 		}
 
-		// Add timing headers in MILLISECONDS
-		w.Header().Set("X-Resolution-Time-Ms", fmt.Sprintf("%.3f", float64(result.TotalTime.Microseconds())/1000.0))
-		w.Header().Set("X-Resolution-Source", result.Source)
-		w.Header().Set("X-Mempool-Time-Ms", fmt.Sprintf("%.3f", float64(result.MempoolTime.Microseconds())/1000.0))
+		// Early ETag check - operation is already in result.LatestOperation
+		if result.LatestOperation != nil {
+			etag := fmt.Sprintf(`"%s"`, result.LatestOperation.CID)
 
-		if result.Source == "bundle" {
-			w.Header().Set("X-Bundle-Number", fmt.Sprintf("%d", result.BundleNumber))
-			w.Header().Set("X-Bundle-Position", fmt.Sprintf("%d", result.Position))
-			w.Header().Set("X-Index-Time-Ms", fmt.Sprintf("%.3f", float64(result.IndexTime.Microseconds())/1000.0))
-			w.Header().Set("X-Load-Time-Ms", fmt.Sprintf("%.3f", float64(result.LoadOpTime.Microseconds())/1000.0))
+			if match := r.Header.Get("If-None-Match"); match != "" {
+				// Strip quotes if present
+				matchClean := strings.Trim(match, `"`)
+				if matchClean == result.LatestOperation.CID {
+					// Set minimal headers for 304 response
+					w.Header().Set("ETag", etag)
+					w.Header().Set("Cache-Control", "public, max-age=300")
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+			}
 		}
+
+		// Set all headers (now with result.LatestOperation available)
+		setDIDDocumentHeaders(w, r, did, resolvedHandle, result, handleResolveTime)
 
 		w.Header().Set("Content-Type", "application/did+ld+json")
 		sendJSON(w, 200, result.Document)
 	}
 }
 
-func (s *Server) handleDIDData(did string) http.HandlerFunc {
+func (s *Server) handleDIDData(input string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := plcclient.ValidateDIDFormat(did); err != nil {
-			sendJSON(w, 400, map[string]string{"error": "Invalid DID format"})
+		// Resolve handle to DID
+		did, _, err := s.manager.ResolveHandleOrDID(r.Context(), input)
+		if err != nil {
+			sendJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
 
@@ -771,10 +787,12 @@ func (s *Server) handleDIDData(did string) http.HandlerFunc {
 	}
 }
 
-func (s *Server) handleDIDAuditLog(did string) http.HandlerFunc {
+func (s *Server) handleDIDAuditLog(input string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := plcclient.ValidateDIDFormat(did); err != nil {
-			sendJSON(w, 400, map[string]string{"error": "Invalid DID format"})
+		// Resolve handle to DID
+		did, _, err := s.manager.ResolveHandleOrDID(r.Context(), input)
+		if err != nil {
+			sendJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
 

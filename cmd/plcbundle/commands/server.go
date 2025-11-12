@@ -131,6 +131,7 @@ For one-time sync, use 'plcbundle sync' command instead.`,
 			if syncMode {
 				go runServerSyncLoop(ctx, mgr, syncInterval, maxBundles, verbose)
 			}
+			mgr.SetQuiet(true)
 
 			// Create and start HTTP server
 			serverConfig := &server.Config{

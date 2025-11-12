@@ -197,15 +197,16 @@ func (b *Bundle) ToMetadata() *bundleindex.BundleMetadata {
 
 // ResolveDIDResult contains DID resolution with timing metrics
 type ResolveDIDResult struct {
-	Document       *plcclient.DIDDocument
-	MempoolTime    time.Duration
-	IndexTime      time.Duration
-	LoadOpTime     time.Duration
-	TotalTime      time.Duration
-	ResolvedHandle string
-	Source         string // "mempool" or "bundle"
-	BundleNumber   int    // if from bundle
-	Position       int    // if from bundle
+	Document        *plcclient.DIDDocument
+	LatestOperation *plcclient.PLCOperation
+	MempoolTime     time.Duration
+	IndexTime       time.Duration
+	LoadOpTime      time.Duration
+	TotalTime       time.Duration
+	ResolvedHandle  string
+	Source          string // "mempool" or "bundle"
+	BundleNumber    int    // if from bundle
+	Position        int    // if from bundle
 }
 
 type resolverTiming struct {

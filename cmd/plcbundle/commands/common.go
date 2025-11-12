@@ -50,6 +50,7 @@ type BundleManager interface {
 	ScanDirectoryParallel(workers int, progressCallback func(current, total int, bytesProcessed int64)) (*bundle.DirectoryScanResult, error)
 	LoadBundleForDIDIndex(ctx context.Context, bundleNumber int) (*didindex.BundleData, error)
 	ResolveHandleOrDID(ctx context.Context, input string) (string, time.Duration, error)
+	SetQuiet(quiet bool)
 }
 
 // PLCOperationWithLocation wraps operation with location info
