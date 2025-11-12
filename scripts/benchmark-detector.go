@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	gozstd "github.com/DataDog/zstd"
 	"github.com/goccy/go-json"
+	"github.com/valyala/gozstd"
 )
 
 // Minimal operation struct
