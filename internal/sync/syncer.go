@@ -96,20 +96,20 @@ func SyncOnce(ctx context.Context, mgr SyncManager, config *SyncLoopConfig, verb
 
 		if fetchedCount > 0 {
 			if totalIndexTime > 10*time.Millisecond {
-				config.Logger.Printf("[Sync] ✓ Bundle %06d | Synced: %d | Mempool: %d (+%d) | %s (index: %s)",
+				config.Logger.Printf("[Sync] ✓ Bundle %06d | synced: %d | mempool: %d (+%d) | time: %s (index: %s)",
 					currentBundle, fetchedCount, mempoolAfter, addedOps,
 					duration.Round(time.Millisecond), totalIndexTime.Round(time.Millisecond))
 			} else {
-				config.Logger.Printf("[Sync] ✓ Bundle %06d | Synced: %d | Mempool: %d (+%d) | %s",
+				config.Logger.Printf("[Sync] ✓ Bundle %06d | synced: %d | mempool: %d (+%d) | time: %s",
 					currentBundle, fetchedCount, mempoolAfter, addedOps, duration.Round(time.Millisecond))
 			}
 		} else if addedOps > 0 {
 			// No bundles but added to mempool
-			config.Logger.Printf("[Sync] ✓ Bundle %06d | Mempool: %d (+%d) | %s",
+			config.Logger.Printf("[Sync] ✓ Bundle %06d | mempool: %d (+%d) | time: %s",
 				currentBundle, mempoolAfter, addedOps, duration.Round(time.Millisecond))
 		} else {
 			// Already up to date
-			config.Logger.Printf("[Sync] ✓ Bundle %06d | Up to date | %s",
+			config.Logger.Printf("[Sync] ✓ Bundle %06d | up to date | time: %s",
 				currentBundle, duration.Round(time.Millisecond))
 		}
 	}
