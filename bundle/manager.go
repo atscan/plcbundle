@@ -56,7 +56,7 @@ type Manager struct {
 	cacheMu      sync.RWMutex
 	maxCacheSize int
 
-	// NEW: Resolver performance tracking
+	// Resolver performance tracking
 	resolverStats struct {
 		sync.Mutex
 		totalResolutions int64
@@ -596,6 +596,7 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, verbose bool, 
 		if indexUpdateDuration > 0 {
 			msg += fmt.Sprintf(" | index: %s", indexUpdateDuration.Round(time.Millisecond))
 		}
+		msg += fmt.Sprintf(" | %s", formatTimeDistance(time.Since(bundle.EndTime)))
 		m.logger.Println(msg)
 	}
 
@@ -1425,7 +1426,7 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 		}
 
 		result.Document = doc
-		result.LatestOperation = latestMempoolOp // NEW: Include the operation
+		result.LatestOperation = latestMempoolOp
 		result.Source = "mempool"
 		result.TotalTime = time.Since(totalStart)
 
@@ -1490,7 +1491,7 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 	}
 
 	result.Document = doc
-	result.LatestOperation = op // NEW: Include the operation
+	result.LatestOperation = op
 	result.Source = "bundle"
 	result.TotalTime = time.Since(totalStart)
 

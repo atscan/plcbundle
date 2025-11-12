@@ -113,7 +113,7 @@ type DirectoryScanResult struct {
 	LastBundle        int
 	MissingGaps       []int
 	TotalSize         int64 // Compressed size
-	TotalUncompressed int64 // Uncompressed size (NEW)
+	TotalUncompressed int64
 	IndexUpdated      bool
 }
 

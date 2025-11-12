@@ -472,7 +472,7 @@ func (s *Server) handleStatus() http.HandlerFunc {
 				didIndex.TotalLookups = totalLookups
 			}
 
-			// NEW: Lookup performance metrics
+			// Lookup performance metrics
 			if avgTime, ok := didStats["avg_lookup_time_ms"].(float64); ok {
 				didIndex.AvgLookupTimeMs = avgTime
 			}

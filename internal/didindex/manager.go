@@ -283,7 +283,7 @@ func (dim *Manager) searchShard(shard *mmapShard, identifier string) []OpLocatio
 	// Determine search range using prefix index
 	left, right := 0, int(entryCount)
 
-	// NEW: Use prefix index to narrow range (only for v3+)
+	// Use prefix index to narrow range (only for v3+)
 	if version >= 3 && len(identifier) > 0 {
 		prefixByte := identifier[0]
 		prefixIndexPos := 32 + (int(prefixByte) * 4)
