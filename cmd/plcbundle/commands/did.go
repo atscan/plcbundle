@@ -99,15 +99,9 @@ full scan (slow).`,
 
 			// Resolve handle to DID with timing
 			ctx := context.Background()
-			did, handleResolveTime, err := mgr.ResolveHandleOrDID(ctx, input)
+			did, _, err := mgr.ResolveHandleOrDID(ctx, input)
 			if err != nil {
 				return err
-			}
-
-			// Show what we resolved to (if it was a handle)
-			if input != did && !showJSON {
-				fmt.Fprintf(os.Stderr, "Resolved handle '%s' → %s (in %s)\n\n",
-					input, did, handleResolveTime)
 			}
 
 			stats := mgr.GetDIDIndexStats()
@@ -1283,15 +1277,7 @@ func displayLookupResults(did string, opsWithLoc []PLCOperationWithLocation, mem
 		}
 	}
 
-	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 	fmt.Printf("✓ Lookup complete in %s\n", totalElapsed)
-	if stats["exists"].(bool) {
-		fmt.Printf("  Method: DID index (fast)\n")
-	} else {
-		fmt.Printf("  Method: Full scan (slow)\n")
-	}
-	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
-
 	return nil
 }
 

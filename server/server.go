@@ -69,6 +69,7 @@ func (s *Server) createHandler() http.Handler {
 	mux.HandleFunc("GET /bundle/{number}", s.handleBundle())
 	mux.HandleFunc("GET /data/{number}", s.handleBundleData())
 	mux.HandleFunc("GET /jsonl/{number}", s.handleBundleJSONL())
+	mux.HandleFunc("GET /op/{pointer}", s.handleOperation())
 	mux.HandleFunc("GET /status", s.handleStatus())
 	mux.HandleFunc("GET /debug/memory", s.handleDebugMemory())
 

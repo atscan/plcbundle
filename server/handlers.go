@@ -183,6 +183,7 @@ func (s *Server) handleRoot() http.HandlerFunc {
 		sb.WriteString("  GET  /bundle/:number      Bundle metadata (JSON)\n")
 		sb.WriteString("  GET  /data/:number        Raw bundle (zstd compressed)\n")
 		sb.WriteString("  GET  /jsonl/:number       Decompressed JSONL stream\n")
+		sb.WriteString("  GET  /op/:pointer         Get single operation\n")
 		sb.WriteString("  GET  /status              Server status\n")
 		sb.WriteString("  GET  /mempool             Mempool operations (JSONL)\n")
 
@@ -232,6 +233,7 @@ func (s *Server) handleRoot() http.HandlerFunc {
 		sb.WriteString(fmt.Sprintf("  curl %s/bundle/1\n", baseURL))
 		sb.WriteString(fmt.Sprintf("  curl %s/data/42 -o 000042.jsonl.zst\n", baseURL))
 		sb.WriteString(fmt.Sprintf("  curl %s/jsonl/1\n", baseURL))
+		sb.WriteString(fmt.Sprintf("  curl %s/op/0\n", baseURL))
 
 		if s.config.EnableWebSocket {
 			sb.WriteString(fmt.Sprintf("  websocat %s/ws\n", wsURL))
@@ -600,4 +602,160 @@ func (s *Server) handleDIDAuditLog(did string) http.HandlerFunc {
 		auditLog := plcclient.FormatAuditLog(operations)
 		sendJSON(w, 200, auditLog)
 	}
+}
+
+// handleOperation gets a single operation with detailed timing headers
+func (s *Server) handleOperation() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		pointer := r.PathValue("pointer")
+
+		// Parse pointer format: "bundle:position" or global position
+		bundleNum, position, err := parseOperationPointer(pointer)
+		if err != nil {
+			sendJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+
+		// Validate position range
+		if position < 0 || position >= types.BUNDLE_SIZE {
+			sendJSON(w, 400, map[string]string{
+				"error": fmt.Sprintf("Position must be 0-%d", types.BUNDLE_SIZE-1),
+			})
+			return
+		}
+
+		// Time the entire request
+		totalStart := time.Now()
+
+		// Time the operation load
+		loadStart := time.Now()
+		op, err := s.manager.LoadOperation(r.Context(), bundleNum, position)
+		loadDuration := time.Since(loadStart)
+
+		if err != nil {
+			if strings.Contains(err.Error(), "not in index") ||
+				strings.Contains(err.Error(), "not found") {
+				sendJSON(w, 404, map[string]string{"error": "Operation not found"})
+			} else {
+				sendJSON(w, 500, map[string]string{"error": err.Error()})
+			}
+			return
+		}
+
+		totalDuration := time.Since(totalStart)
+
+		// Calculate global position
+		globalPos := (bundleNum * types.BUNDLE_SIZE) + position
+
+		// Calculate operation age
+		opAge := time.Since(op.CreatedAt)
+
+		// Set response headers with useful metadata
+		setOperationHeaders(w, op, bundleNum, position, globalPos, loadDuration, totalDuration, opAge)
+
+		// Send raw JSON if available (faster, preserves exact format)
+		if len(op.RawJSON) > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(op.RawJSON)
+		} else {
+			sendJSON(w, 200, op)
+		}
+	}
+}
+
+// parseOperationPointer parses pointer in format "bundle:position" or global position
+func parseOperationPointer(pointer string) (bundleNum, position int, err error) {
+	// Check if it's the "bundle:position" format
+	if strings.Contains(pointer, ":") {
+		parts := strings.Split(pointer, ":")
+		if len(parts) != 2 {
+			return 0, 0, fmt.Errorf("invalid pointer format: use 'bundle:position' or global position")
+		}
+
+		bundleNum, err = strconv.Atoi(parts[0])
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid bundle number: %w", err)
+		}
+
+		position, err = strconv.Atoi(parts[1])
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid position: %w", err)
+		}
+
+		if bundleNum < 1 {
+			return 0, 0, fmt.Errorf("bundle number must be >= 1")
+		}
+
+		return bundleNum, position, nil
+	}
+
+	// Parse as global position
+	globalPos, err := strconv.Atoi(pointer)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid position: must be number or 'bundle:position' format")
+	}
+
+	if globalPos < 0 {
+		return 0, 0, fmt.Errorf("global position must be >= 0")
+	}
+
+	// Handle small numbers as shorthand for bundle 1
+	if globalPos < types.BUNDLE_SIZE {
+		return 1, globalPos, nil
+	}
+
+	// Convert global position to bundle + position
+	bundleNum = globalPos / types.BUNDLE_SIZE
+	position = globalPos % types.BUNDLE_SIZE
+
+	// Minimum bundle number is 1
+	if bundleNum < 1 {
+		bundleNum = 1
+	}
+
+	return bundleNum, position, nil
+}
+
+// setOperationHeaders sets useful response headers
+func setOperationHeaders(
+	w http.ResponseWriter,
+	op *plcclient.PLCOperation,
+	bundleNum, position, globalPos int,
+	loadDuration, totalDuration, opAge time.Duration,
+) {
+	// === Location Information ===
+	w.Header().Set("X-Bundle-Number", fmt.Sprintf("%d", bundleNum))
+	w.Header().Set("X-Position", fmt.Sprintf("%d", position))
+	w.Header().Set("X-Global-Position", fmt.Sprintf("%d", globalPos))
+	w.Header().Set("X-Pointer", fmt.Sprintf("%d:%d", bundleNum, position))
+
+	// === Operation Metadata ===
+	w.Header().Set("X-Operation-DID", op.DID)
+	w.Header().Set("X-Operation-CID", op.CID)
+	w.Header().Set("X-Operation-Created", op.CreatedAt.Format(time.RFC3339))
+	w.Header().Set("X-Operation-Age-Seconds", fmt.Sprintf("%d", int(opAge.Seconds())))
+
+	// Nullification status
+	if op.IsNullified() {
+		w.Header().Set("X-Operation-Nullified", "true")
+		if nullCID := op.GetNullifyingCID(); nullCID != "" {
+			w.Header().Set("X-Operation-Nullified-By", nullCID)
+		}
+	} else {
+		w.Header().Set("X-Operation-Nullified", "false")
+	}
+
+	// === Size Information ===
+	if len(op.RawJSON) > 0 {
+		w.Header().Set("X-Operation-Size", fmt.Sprintf("%d", len(op.RawJSON)))
+	}
+
+	// === Performance Metrics (in milliseconds with precision) ===
+	w.Header().Set("X-Load-Time-Ms", fmt.Sprintf("%.3f", float64(loadDuration.Microseconds())/1000.0))
+	w.Header().Set("X-Total-Time-Ms", fmt.Sprintf("%.3f", float64(totalDuration.Microseconds())/1000.0))
+
+	// === Caching Hints ===
+	// Set cache control (operations are immutable once bundled)
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("ETag", op.CID) // CID is perfect for ETag
 }
