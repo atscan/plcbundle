@@ -112,7 +112,7 @@ func runSingleSync(ctx context.Context, mgr *bundle.Manager, maxBundles int, ver
 	}
 
 	// Call manager method (not internal directly)
-	synced, err := mgr.RunSyncOnce(ctx, config, verbose)
+	synced, err := mgr.RunSyncOnce(ctx, config)
 	if err != nil {
 		return err
 	}

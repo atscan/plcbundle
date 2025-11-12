@@ -999,3 +999,69 @@ func (dim *Manager) ResetPerformanceStats() {
 	dim.recentLookupIdx = 0
 	dim.lookupTimeLock.Unlock()
 }
+
+// NeedsRebuild checks if index needs rebuilding and returns reason
+func (dim *Manager) NeedsRebuild(bundleProvider BundleIndexProvider) (bool, string) {
+	// Check if index exists
+	if !dim.Exists() {
+		return true, "index does not exist"
+	}
+
+	// Get repository state
+	bundles := bundleProvider.GetBundles()
+	if len(bundles) == 0 {
+		return false, "" // No bundles, no need to rebuild
+	}
+
+	lastBundleInRepo := bundles[len(bundles)-1].BundleNumber
+
+	// Check version
+	if dim.config.Version != DIDINDEX_VERSION {
+		return true, fmt.Sprintf("index version outdated (v%d, need v%d)",
+			dim.config.Version, DIDINDEX_VERSION)
+	}
+
+	// Check if index is behind
+	if dim.config.LastBundle < lastBundleInRepo {
+		bundlesBehind := lastBundleInRepo - dim.config.LastBundle
+
+		// Smart logic: only rebuild if significantly behind
+		// Otherwise can do incremental update
+		if bundlesBehind > 100 {
+			return true, fmt.Sprintf("index significantly behind (%d bundles)", bundlesBehind)
+		}
+
+		return false, fmt.Sprintf("index slightly behind (%d bundles) - can update incrementally", bundlesBehind)
+	}
+
+	// Check if index is ahead (corruption indicator)
+	if dim.config.LastBundle > lastBundleInRepo {
+		return true, fmt.Sprintf("index is ahead of repository (has %d, repo has %d) - likely corrupted",
+			dim.config.LastBundle, lastBundleInRepo)
+	}
+
+	// Index is up to date
+	return false, ""
+}
+
+// ShouldUpdateIncrementally checks if incremental update is appropriate
+func (dim *Manager) ShouldUpdateIncrementally(bundleProvider BundleIndexProvider) (bool, int) {
+	if !dim.Exists() {
+		return false, 0
+	}
+
+	bundles := bundleProvider.GetBundles()
+	if len(bundles) == 0 {
+		return false, 0
+	}
+
+	lastBundleInRepo := bundles[len(bundles)-1].BundleNumber
+	bundlesBehind := lastBundleInRepo - dim.config.LastBundle
+
+	// Only do incremental if behind by less than 100 bundles
+	if bundlesBehind > 0 && bundlesBehind <= 100 {
+		return true, bundlesBehind
+	}
+
+	return false, 0
+}

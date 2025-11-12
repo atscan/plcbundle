@@ -238,7 +238,7 @@ func exportBundles(ctx context.Context, mgr BundleManager, opts exportOptions) e
 		}
 
 		var err error
-		fetchedCount, err = mgr.RunSyncOnce(ctx, config, opts.verbose)
+		fetchedCount, err = mgr.RunSyncOnce(ctx, config)
 		if err != nil {
 			return err
 		}

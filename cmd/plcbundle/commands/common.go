@@ -31,7 +31,7 @@ type BundleManager interface {
 	RefreshMempool() error
 	ClearMempool() error
 	FetchNextBundle(ctx context.Context, verbose bool, quiet bool) (*bundle.Bundle, types.BundleProductionStats, error)
-	SaveBundle(ctx context.Context, b *bundle.Bundle, verbose bool, quiet bool, stats types.BundleProductionStats) (time.Duration, error)
+	SaveBundle(ctx context.Context, bundle *bundle.Bundle, verbose bool, quiet bool, stats types.BundleProductionStats, skipDIDIndex bool) (time.Duration, error)
 	SaveIndex() error
 	GetDIDIndexStats() map[string]interface{}
 	GetDIDIndex() *didindex.Manager
@@ -44,7 +44,7 @@ type BundleManager interface {
 	LoadOperations(ctx context.Context, bundleNumber int, positions []int) (map[int]*plcclient.PLCOperation, error)
 	CloneFromRemote(ctx context.Context, opts internalsync.CloneOptions) (*internalsync.CloneResult, error)
 	ResolveDID(ctx context.Context, did string) (*bundle.ResolveDIDResult, error)
-	RunSyncOnce(ctx context.Context, config *internalsync.SyncLoopConfig, verbose bool) (int, error)
+	RunSyncOnce(ctx context.Context, config *internalsync.SyncLoopConfig) (int, error)
 	RunSyncLoop(ctx context.Context, config *internalsync.SyncLoopConfig) error
 	GetBundleIndex() didindex.BundleIndexProvider
 	ScanDirectoryParallel(workers int, progressCallback func(current, total int, bytesProcessed int64)) (*bundle.DirectoryScanResult, error)

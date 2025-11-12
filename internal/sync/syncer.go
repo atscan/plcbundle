@@ -15,14 +15,18 @@ type SyncLoopConfig struct {
 	Verbose        bool
 	Logger         types.Logger
 	OnBundleSynced func(bundleNum int, fetchedCount int, mempoolCount int, duration time.Duration, indexTime time.Duration)
+	SkipDIDIndex   bool
+	Quiet          bool
 }
 
 // DefaultSyncLoopConfig returns default configuration
 func DefaultSyncLoopConfig() *SyncLoopConfig {
 	return &SyncLoopConfig{
-		Interval:   1 * time.Minute,
-		MaxBundles: 0,
-		Verbose:    false,
+		Interval:     1 * time.Minute,
+		MaxBundles:   0,
+		Verbose:      false,
+		SkipDIDIndex: false,
+		Quiet:        false,
 	}
 }
 
@@ -31,12 +35,14 @@ type SyncManager interface {
 	GetLastBundleNumber() int
 	GetMempoolCount() int
 	// Returns: bundleNumber, indexUpdateTime, error
-	FetchAndSaveNextBundle(ctx context.Context, verbose bool, quiet bool) (int, *types.BundleProductionStats, error)
+	FetchAndSaveNextBundle(ctx context.Context, verbose bool, quiet bool, skipDIDIndex bool) (int, *types.BundleProductionStats, error)
 	SaveMempool() error
+	BuildDIDIndex(ctx context.Context, progressCallback func(current, total int)) error
+	UpdateDIDIndexSmart(ctx context.Context, progressCallback func(current, total int)) error
 }
 
 // SyncOnce performs a single sync cycle - fetches until caught up
-func SyncOnce(ctx context.Context, mgr SyncManager, config *SyncLoopConfig, verbose bool) (int, error) {
+func SyncOnce(ctx context.Context, mgr SyncManager, config *SyncLoopConfig) (int, error) {
 	cycleStart := time.Now()
 	startMempool := mgr.GetMempoolCount()
 
@@ -50,7 +56,7 @@ func SyncOnce(ctx context.Context, mgr SyncManager, config *SyncLoopConfig, verb
 		mempoolBefore := mgr.GetMempoolCount()
 
 		// Attempt to fetch and save next bundle
-		bundleNum, stats, err := mgr.FetchAndSaveNextBundle(ctx, verbose, false)
+		bundleNum, stats, err := mgr.FetchAndSaveNextBundle(ctx, config.Verbose, config.Quiet, config.SkipDIDIndex)
 
 		// Check if we made any progress
 		bundleAfter := mgr.GetLastBundleNumber()
@@ -136,11 +142,13 @@ func RunSyncLoop(ctx context.Context, mgr SyncManager, config *SyncLoopConfig) e
 		config.Logger.Printf("[Sync] Initial sync starting...")
 	}
 
-	synced, err := SyncOnce(ctx, mgr, config, config.Verbose)
+	config.SkipDIDIndex = true
+	synced, err := SyncOnce(ctx, mgr, config)
 	if err != nil {
 		return err
 	}
 	bundlesSynced += synced
+	mgr.UpdateDIDIndexSmart(ctx, nil)
 
 	// Check if reached limit
 	if config.MaxBundles > 0 && bundlesSynced >= config.MaxBundles {
@@ -167,7 +175,7 @@ func RunSyncLoop(ctx context.Context, mgr SyncManager, config *SyncLoopConfig) e
 
 		case <-ticker.C:
 			// Each tick, do one sync cycle (which fetches until caught up)
-			synced, err := SyncOnce(ctx, mgr, config, config.Verbose)
+			synced, err := SyncOnce(ctx, mgr, config)
 			if err != nil {
 				if config.Logger != nil {
 					config.Logger.Printf("[Sync] Error: %v", err)

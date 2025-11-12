@@ -458,13 +458,14 @@ func TestSyncLoopBehavior(t *testing.T) {
 
 		logger := &testLogger{t: t}
 		config := &internalsync.SyncLoopConfig{
-			MaxBundles: 0,
-			Verbose:    false,
-			Logger:     logger,
+			MaxBundles:   0,
+			Verbose:      false,
+			Logger:       logger,
+			SkipDIDIndex: false,
 		}
 
 		// First sync should detect "caught up" when no progress
-		synced, err := internalsync.SyncOnce(context.Background(), mockMgr, config, false)
+		synced, err := internalsync.SyncOnce(context.Background(), mockMgr, config)
 
 		if err != nil {
 			t.Fatalf("SyncOnce failed: %v", err)
@@ -484,13 +485,14 @@ func TestSyncLoopBehavior(t *testing.T) {
 
 		logger := &testLogger{t: t}
 		config := &internalsync.SyncLoopConfig{
-			MaxBundles: 3,
-			Verbose:    false,
-			Logger:     logger,
+			MaxBundles:   3,
+			Verbose:      false,
+			Logger:       logger,
+			SkipDIDIndex: false,
 		}
 
 		ctx := context.Background()
-		synced, err := internalsync.SyncOnce(ctx, mockMgr, config, false)
+		synced, err := internalsync.SyncOnce(ctx, mockMgr, config)
 
 		if err != nil {
 			t.Fatalf("SyncOnce failed: %v", err)
@@ -511,10 +513,11 @@ func TestSyncLoopBehavior(t *testing.T) {
 
 		logger := &testLogger{t: t}
 		config := &internalsync.SyncLoopConfig{
-			Interval:   100 * time.Millisecond,
-			MaxBundles: 0,
-			Verbose:    false,
-			Logger:     logger,
+			Interval:     100 * time.Millisecond,
+			MaxBundles:   0,
+			Verbose:      false,
+			Logger:       logger,
+			SkipDIDIndex: false,
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -684,13 +687,25 @@ func (m *mockSyncManager) GetLastBundleNumber() int {
 	return m.lastBundle
 }
 
+func (m *mockSyncManager) UpdateDIDIndexSmart(ctx context.Context, progressCallback func(current, total int)) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return nil
+}
+
+func (m *mockSyncManager) BuildDIDIndex(ctx context.Context, progressCallback func(current, total int)) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return nil
+}
+
 func (m *mockSyncManager) GetMempoolCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.mempoolCount
 }
 
-func (m *mockSyncManager) FetchAndSaveNextBundle(ctx context.Context, verbose bool, quiet bool) (int, *types.BundleProductionStats, error) {
+func (m *mockSyncManager) FetchAndSaveNextBundle(ctx context.Context, verbose bool, quiet bool, skipDIDIndex bool) (int, *types.BundleProductionStats, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

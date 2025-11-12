@@ -461,7 +461,7 @@ func (m *Manager) loadBundleFromDisk(_ context.Context, bundleNumber int) (*Bund
 }
 
 // SaveBundle saves a bundle to disk and updates the index
-func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, verbose bool, quiet bool, stats types.BundleProductionStats) (time.Duration, error) {
+func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, verbose bool, quiet bool, stats types.BundleProductionStats, skipDIDIndex bool) (time.Duration, error) {
 
 	totalStart := time.Now()
 	if err := bundle.ValidateForSave(); err != nil {
@@ -574,7 +574,7 @@ func (m *Manager) SaveBundle(ctx context.Context, bundle *Bundle, verbose bool, 
 
 	// DID index update (if enabled)
 	var indexUpdateDuration time.Duration
-	if m.didIndex != nil && m.didIndex.Exists() {
+	if !skipDIDIndex && m.didIndex != nil && m.didIndex.Exists() {
 		indexUpdateStart := time.Now()
 		if err := m.updateDIDIndexForBundle(ctx, bundle); err != nil {
 			m.logger.Printf("Warning: failed to update DID index: %v", err)
@@ -1513,14 +1513,13 @@ func (m *Manager) GetMempoolCount() int {
 	return m.mempool.Count()
 }
 
-// FetchAndSaveNextBundle fetches and saves next bundle, returns bundle number and index time
-func (m *Manager) FetchAndSaveNextBundle(ctx context.Context, verbose bool, quiet bool) (int, *types.BundleProductionStats, error) {
+func (m *Manager) FetchAndSaveNextBundle(ctx context.Context, verbose bool, quiet bool, skipDIDIndex bool) (int, *types.BundleProductionStats, error) {
 	bundle, stats, err := m.FetchNextBundle(ctx, verbose, quiet)
 	if err != nil {
 		return 0, nil, err
 	}
 
-	indexTime, err := m.SaveBundle(ctx, bundle, verbose, quiet, stats)
+	indexTime, err := m.SaveBundle(ctx, bundle, verbose, quiet, stats, skipDIDIndex)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -1536,65 +1535,16 @@ func (m *Manager) RunSyncLoop(ctx context.Context, config *internalsync.SyncLoop
 }
 
 // RunSyncOnce performs a single sync cycle
-func (m *Manager) RunSyncOnce(ctx context.Context, config *internalsync.SyncLoopConfig, verbose bool) (int, error) {
+func (m *Manager) RunSyncOnce(ctx context.Context, config *internalsync.SyncLoopConfig) (int, error) {
 	// Manager itself implements the SyncManager interface
-	return internalsync.SyncOnce(ctx, m, config, verbose)
+	return internalsync.SyncOnce(ctx, m, config)
 }
 
 // EnsureDIDIndex ensures DID index is built and up-to-date
 // Returns true if index was built/rebuilt, false if already up-to-date
 func (m *Manager) EnsureDIDIndex(ctx context.Context, progressCallback func(current, total int)) (bool, error) {
-	bundleCount := m.index.Count()
-	didStats := m.GetDIDIndexStats()
-
-	if bundleCount == 0 {
-		return false, nil
-	}
-
-	needsBuild := false
-	reason := ""
-
-	if !didStats["exists"].(bool) {
-		needsBuild = true
-		reason = "index does not exist"
-	} else {
-		// Check version
-		if m.didIndex != nil {
-			config := m.didIndex.GetConfig()
-			if config.Version != didindex.DIDINDEX_VERSION {
-				needsBuild = true
-				reason = fmt.Sprintf("index version outdated (v%d, need v%d)",
-					config.Version, didindex.DIDINDEX_VERSION)
-			} else {
-				// Check if index is behind bundles
-				lastBundle := m.index.GetLastBundle()
-				if lastBundle != nil && config.LastBundle < lastBundle.BundleNumber {
-					needsBuild = true
-					reason = fmt.Sprintf("index is behind (bundle %d, need %d)",
-						config.LastBundle, lastBundle.BundleNumber)
-				}
-			}
-		}
-	}
-
-	if !needsBuild {
-		return false, nil
-	}
-
 	// Build index
-	m.logger.Printf("Building DID index (%s)", reason)
-	m.logger.Printf("This may take several minutes...")
-
-	if err := m.BuildDIDIndex(ctx, progressCallback); err != nil {
-		return false, fmt.Errorf("failed to build DID index: %w", err)
-	}
-
-	// Verify index consistency
-	m.logger.Printf("Verifying index consistency...")
-	if err := m.didIndex.VerifyAndRepairIndex(ctx, m); err != nil {
-		return false, fmt.Errorf("index verification/repair failed: %w", err)
-	}
-
+	m.UpdateDIDIndexSmart(ctx, progressCallback)
 	return true, nil
 }
 
@@ -1842,4 +1792,88 @@ func (m *Manager) ResetResolverStats() {
 
 func (m *Manager) SetQuiet(quiet bool) {
 	m.config.Quiet = quiet
+}
+
+// ShouldRebuildDIDIndex checks if DID index needs rebuilding
+// Returns: (needsRebuild bool, reason string, canUpdateIncrementally bool)
+func (m *Manager) ShouldRebuildDIDIndex() (bool, string, bool) {
+	if m.didIndex == nil {
+		return false, "DID index disabled", false
+	}
+
+	needsRebuild, reason := m.didIndex.NeedsRebuild(m.GetBundleIndex())
+
+	if needsRebuild {
+		return true, reason, false
+	}
+
+	// Check if incremental update is better
+	canIncremental, behindBy := m.didIndex.ShouldUpdateIncrementally(m.GetBundleIndex())
+	if canIncremental {
+		return false, fmt.Sprintf("can update incrementally (%d bundles)", behindBy), true
+	}
+
+	return false, "index is up to date", false
+}
+
+// UpdateDIDIndexSmart updates DID index intelligently (rebuild vs incremental)
+func (m *Manager) UpdateDIDIndexSmart(ctx context.Context, progressCallback func(current, total int)) error {
+	needsRebuild, reason, canIncremental := m.ShouldRebuildDIDIndex()
+
+	if !needsRebuild && !canIncremental {
+		if m.config.Verbose {
+			m.logger.Printf("DID index is up to date")
+		}
+		return nil
+	}
+
+	if needsRebuild {
+		m.logger.Printf("Rebuilding DID index: %s", reason)
+		return m.BuildDIDIndex(ctx, progressCallback)
+	}
+
+	if canIncremental {
+		m.logger.Printf("Updating DID index incrementally: %s", reason)
+		return m.updateDIDIndexIncremental(ctx, progressCallback)
+	}
+
+	return nil
+}
+
+// updateDIDIndexIncremental updates index for missing bundles only
+func (m *Manager) updateDIDIndexIncremental(ctx context.Context, progressCallback func(current, total int)) error {
+	config := m.didIndex.GetConfig()
+	lastBundle := m.index.GetLastBundle()
+
+	if lastBundle == nil || config.LastBundle >= lastBundle.BundleNumber {
+		return nil
+	}
+
+	start := config.LastBundle + 1
+	end := lastBundle.BundleNumber
+	total := end - start + 1
+
+	m.logger.Printf("Updating DID index for bundles %d-%d (%d bundles)", start, end, total)
+
+	for bundleNum := start; bundleNum <= end; bundleNum++ {
+		bundle, err := m.LoadBundle(ctx, bundleNum)
+		if err != nil {
+			return fmt.Errorf("failed to load bundle %d: %w", bundleNum, err)
+		}
+
+		bundleData := &didindex.BundleData{
+			BundleNumber: bundle.BundleNumber,
+			Operations:   bundle.Operations,
+		}
+
+		if err := m.didIndex.UpdateIndexForBundle(ctx, bundleData); err != nil {
+			return fmt.Errorf("failed to update bundle %d: %w", bundleNum, err)
+		}
+
+		if progressCallback != nil {
+			progressCallback(bundleNum-start+1, total)
+		}
+	}
+
+	return nil
 }
