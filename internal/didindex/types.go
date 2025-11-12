@@ -39,12 +39,22 @@ type Manager struct {
 	shardCache        sync.Map
 	maxCache          int
 	evictionThreshold int
+	cacheHits         int64 // atomic counter
+	cacheMisses       int64 // atomic counter
 
 	config  *Config
 	logger  Logger
 	verbose bool
 
 	indexMu sync.RWMutex
+
+	// Performance tracking
+	totalLookups     int64 // Total number of lookups
+	totalLookupTime  int64 // Total time in microseconds
+	lookupTimeLock   sync.Mutex
+	recentLookups    []int64 // Circular buffer for recent lookup times (microseconds)
+	recentLookupIdx  int
+	recentLookupSize int
 }
 
 // mmapShard represents a memory-mapped shard file

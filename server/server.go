@@ -8,25 +8,6 @@ import (
 	"tangled.org/atscan.net/plcbundle/bundle"
 )
 
-// Server serves bundle data over HTTP
-type Server struct {
-	manager    *bundle.Manager
-	addr       string
-	config     *Config
-	startTime  time.Time
-	httpServer *http.Server
-}
-
-// Config configures the server
-type Config struct {
-	Addr            string
-	SyncMode        bool
-	SyncInterval    time.Duration
-	EnableWebSocket bool
-	EnableResolver  bool
-	Version         string
-}
-
 // New creates a new HTTP server
 func New(manager *bundle.Manager, config *Config) *Server {
 	if config.Version == "" {
@@ -50,16 +31,6 @@ func New(manager *bundle.Manager, config *Config) *Server {
 	return s
 }
 
-// ListenAndServe starts the HTTP server
-func (s *Server) ListenAndServe() error {
-	return s.httpServer.ListenAndServe()
-}
-
-// Shutdown gracefully shuts down the server
-func (s *Server) Shutdown(ctx context.Context) error {
-	return s.httpServer.Shutdown(ctx)
-}
-
 // createHandler creates the HTTP handler with all routes
 func (s *Server) createHandler() http.Handler {
 	mux := http.NewServeMux()
@@ -72,6 +43,8 @@ func (s *Server) createHandler() http.Handler {
 	mux.HandleFunc("GET /op/{pointer}", s.handleOperation())
 	mux.HandleFunc("GET /status", s.handleStatus())
 	mux.HandleFunc("GET /debug/memory", s.handleDebugMemory())
+	mux.HandleFunc("GET /debug/didindex", s.handleDebugDIDIndex())
+	mux.HandleFunc("GET /debug/resolver", s.handleDebugResolver())
 
 	// WebSocket
 	if s.config.EnableWebSocket {
@@ -100,7 +73,20 @@ func (s *Server) createHandler() http.Handler {
 		sendJSON(w, 404, map[string]string{"error": "not found"})
 	})
 
-	return corsMiddleware(mux)
+	// Apply middleware in correct order:
+	handler := corsMiddleware(mux)
+
+	return handler
+}
+
+// ListenAndServe starts the HTTP server
+func (s *Server) ListenAndServe() error {
+	return s.httpServer.ListenAndServe()
+}
+
+// Shutdown gracefully shuts down the server
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.httpServer.Shutdown(ctx)
 }
 
 // GetStartTime returns when the server started
@@ -108,7 +94,7 @@ func (s *Server) GetStartTime() time.Time {
 	return s.startTime
 }
 
-// Add this method to Server
+// Handler returns the configured HTTP handler
 func (s *Server) Handler() http.Handler {
 	return s.createHandler()
 }

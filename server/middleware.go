@@ -15,23 +15,23 @@ func corsMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Normal CORS handling
+		// Set CORS headers for all requests
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-
-		if requestedHeaders := r.Header.Get("Access-Control-Request-Headers"); requestedHeaders != "" {
-			w.Header().Set("Access-Control-Allow-Headers", requestedHeaders)
-		} else {
-			w.Header().Set("Access-Control-Allow-Headers", "*")
-		}
-
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.Header().Set("Access-Control-Expose-Headers",
+			"X-Bundle-Number, X-Position, X-Global-Position, X-Pointer, "+
+				"X-Operation-DID, X-Operation-CID, X-Load-Time-Ms, X-Total-Time-Ms, "+
+				"X-Resolution-Time-Ms, X-Resolution-Source, X-Index-Time-Ms")
 
+		// Handle OPTIONS preflight - return immediately WITHOUT calling handler
 		if r.Method == "OPTIONS" {
-			w.WriteHeader(204)
-			return
+			w.WriteHeader(http.StatusNoContent) // 204
+			return                              // STOP HERE - don't call next
 		}
 
+		// Only call handler for non-OPTIONS requests
 		next.ServeHTTP(w, r)
 	})
 }

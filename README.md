@@ -126,7 +126,7 @@ bundle, _ := mgr.FetchNext(context.Background())
 
 ```bash
 # Fetch bundles from plc.directory
-plcbundle fetch
+plcbundle sync
 
 # Clone from remote
 plcbundle clone https://plc.example.com

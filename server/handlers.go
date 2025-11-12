@@ -340,6 +340,7 @@ func (s *Server) handleStatus() http.HandlerFunc {
 				UptimeSeconds:    int(time.Since(s.startTime).Seconds()),
 				SyncMode:         s.config.SyncMode,
 				WebSocketEnabled: s.config.EnableWebSocket,
+				ResolverEnabled:  s.config.EnableResolver,
 				Origin:           s.manager.GetPLCOrigin(),
 			},
 			Bundles: BundleStatus{
@@ -348,6 +349,10 @@ func (s *Server) handleStatus() http.HandlerFunc {
 				UncompressedSize: indexStats["total_uncompressed_size"].(int64),
 				UpdatedAt:        indexStats["updated_at"].(time.Time),
 			},
+		}
+
+		if resolver := s.manager.GetHandleResolver(); resolver != nil {
+			response.Server.HandleResolver = resolver.GetBaseURL()
 		}
 
 		if s.config.SyncMode && s.config.SyncInterval > 0 {
@@ -425,6 +430,185 @@ func (s *Server) handleStatus() http.HandlerFunc {
 				}
 
 				response.Mempool = mempool
+			}
+		}
+
+		// DID Index stats
+		didStats := s.manager.GetDIDIndexStats()
+		if didStats["enabled"].(bool) {
+			didIndex := &DIDIndexStatus{
+				Enabled:      true,
+				Exists:       didStats["exists"].(bool),
+				TotalDIDs:    didStats["total_dids"].(int64),
+				IndexedDIDs:  didStats["indexed_dids"].(int64),
+				LastBundle:   didStats["last_bundle"].(int),
+				ShardCount:   didStats["shard_count"].(int),
+				CachedShards: didStats["cached_shards"].(int),
+				CacheLimit:   didStats["cache_limit"].(int),
+				UpdatedAt:    didStats["updated_at"].(time.Time),
+			}
+
+			// Mempool DIDs
+			if mempoolDIDs, ok := didStats["mempool_dids"].(int64); ok && mempoolDIDs > 0 {
+				didIndex.MempoolDIDs = mempoolDIDs
+			}
+
+			// Version and format
+			if s.manager.GetDIDIndex() != nil {
+				config := s.manager.GetDIDIndex().GetConfig()
+				didIndex.Version = config.Version
+				didIndex.Format = config.Format
+			}
+
+			// Hot shards
+			if cacheOrder, ok := didStats["cache_order"].([]int); ok && len(cacheOrder) > 0 {
+				maxShards := 10
+				if len(cacheOrder) < maxShards {
+					maxShards = len(cacheOrder)
+				}
+				didIndex.HotShards = cacheOrder[:maxShards]
+			}
+
+			// Cache performance
+			if cacheHitRate, ok := didStats["cache_hit_rate"].(float64); ok {
+				didIndex.CacheHitRate = cacheHitRate
+			}
+			if cacheHits, ok := didStats["cache_hits"].(int64); ok {
+				didIndex.CacheHits = cacheHits
+			}
+			if cacheMisses, ok := didStats["cache_misses"].(int64); ok {
+				didIndex.CacheMisses = cacheMisses
+			}
+			if totalLookups, ok := didStats["total_lookups"].(int64); ok {
+				didIndex.TotalLookups = totalLookups
+			}
+
+			// NEW: Lookup performance metrics
+			if avgTime, ok := didStats["avg_lookup_time_ms"].(float64); ok {
+				didIndex.AvgLookupTimeMs = avgTime
+			}
+			if recentAvg, ok := didStats["recent_avg_lookup_time_ms"].(float64); ok {
+				didIndex.RecentAvgLookupTimeMs = recentAvg
+			}
+			if minTime, ok := didStats["min_lookup_time_ms"].(float64); ok {
+				didIndex.MinLookupTimeMs = minTime
+			}
+			if maxTime, ok := didStats["max_lookup_time_ms"].(float64); ok {
+				didIndex.MaxLookupTimeMs = maxTime
+			}
+			if p50, ok := didStats["p50_lookup_time_ms"].(float64); ok {
+				didIndex.P50LookupTimeMs = p50
+			}
+			if p95, ok := didStats["p95_lookup_time_ms"].(float64); ok {
+				didIndex.P95LookupTimeMs = p95
+			}
+			if p99, ok := didStats["p99_lookup_time_ms"].(float64); ok {
+				didIndex.P99LookupTimeMs = p99
+			}
+			if sampleSize, ok := didStats["recent_sample_size"].(int); ok {
+				didIndex.RecentSampleSize = sampleSize
+			}
+
+			response.DIDIndex = didIndex
+		}
+
+		// Resolver performance stats
+		if s.config.EnableResolver {
+			resolverStats := s.manager.GetResolverStats()
+
+			if totalRes, ok := resolverStats["total_resolutions"].(int64); ok && totalRes > 0 {
+				resolver := &ResolverStatus{
+					Enabled:          true,
+					TotalResolutions: totalRes,
+				}
+
+				// Handle resolver URL
+				if hr := s.manager.GetHandleResolver(); hr != nil {
+					resolver.HandleResolver = hr.GetBaseURL()
+				}
+
+				// Counts
+				if v, ok := resolverStats["mempool_hits"].(int64); ok {
+					resolver.MempoolHits = v
+				}
+				if v, ok := resolverStats["bundle_hits"].(int64); ok {
+					resolver.BundleHits = v
+				}
+				if v, ok := resolverStats["errors"].(int64); ok {
+					resolver.Errors = v
+				}
+				if v, ok := resolverStats["success_rate"].(float64); ok {
+					resolver.SuccessRate = v
+				}
+				if v, ok := resolverStats["mempool_hit_rate"].(float64); ok {
+					resolver.MempoolHitRate = v
+				}
+
+				// Overall averages
+				if v, ok := resolverStats["avg_total_time_ms"].(float64); ok {
+					resolver.AvgTotalTimeMs = v
+				}
+				if v, ok := resolverStats["avg_mempool_time_ms"].(float64); ok {
+					resolver.AvgMempoolTimeMs = v
+				}
+				if v, ok := resolverStats["avg_index_time_ms"].(float64); ok {
+					resolver.AvgIndexTimeMs = v
+				}
+				if v, ok := resolverStats["avg_load_op_time_ms"].(float64); ok {
+					resolver.AvgLoadOpTimeMs = v
+				}
+
+				// Recent averages
+				if v, ok := resolverStats["recent_avg_total_time_ms"].(float64); ok {
+					resolver.RecentAvgTotalTimeMs = v
+				}
+				if v, ok := resolverStats["recent_avg_mempool_time_ms"].(float64); ok {
+					resolver.RecentAvgMempoolTimeMs = v
+				}
+				if v, ok := resolverStats["recent_avg_index_time_ms"].(float64); ok {
+					resolver.RecentAvgIndexTimeMs = v
+				}
+				if v, ok := resolverStats["recent_avg_load_time_ms"].(float64); ok {
+					resolver.RecentAvgLoadTimeMs = v
+				}
+				if v, ok := resolverStats["recent_sample_size"].(int); ok {
+					resolver.RecentSampleSize = v
+				}
+
+				// Percentiles
+				if v, ok := resolverStats["min_total_time_ms"].(float64); ok {
+					resolver.MinTotalTimeMs = v
+				}
+				if v, ok := resolverStats["max_total_time_ms"].(float64); ok {
+					resolver.MaxTotalTimeMs = v
+				}
+				if v, ok := resolverStats["p50_total_time_ms"].(float64); ok {
+					resolver.P50TotalTimeMs = v
+				}
+				if v, ok := resolverStats["p95_total_time_ms"].(float64); ok {
+					resolver.P95TotalTimeMs = v
+				}
+				if v, ok := resolverStats["p99_total_time_ms"].(float64); ok {
+					resolver.P99TotalTimeMs = v
+				}
+				if v, ok := resolverStats["p95_index_time_ms"].(float64); ok {
+					resolver.P95IndexTimeMs = v
+				}
+				if v, ok := resolverStats["p95_load_op_time_ms"].(float64); ok {
+					resolver.P95LoadOpTimeMs = v
+				}
+
+				response.Resolver = resolver
+			} else {
+				// No resolutions yet, but resolver is enabled
+				response.Resolver = &ResolverStatus{
+					Enabled:          true,
+					TotalResolutions: 0,
+				}
+
+				if hr := s.manager.GetHandleResolver(); hr != nil {
+					response.Resolver.HandleResolver = hr.GetBaseURL()
+				}
 			}
 		}
 
@@ -520,6 +704,12 @@ func (s *Server) handleDIDRouting(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDIDDocument(did string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// OPTIONS already handled by middleware, but extra safety check
+		if r.Method == "OPTIONS" {
+			return
+		}
+
+		// Track only actual GET requests
 		result, err := s.manager.ResolveDID(r.Context(), did)
 		if err != nil {
 			if strings.Contains(err.Error(), "deactivated") {
@@ -532,7 +722,7 @@ func (s *Server) handleDIDDocument(did string) http.HandlerFunc {
 			return
 		}
 
-		// Add timing headers in MILLISECONDS (float for precision)
+		// Add timing headers in MILLISECONDS
 		w.Header().Set("X-Resolution-Time-Ms", fmt.Sprintf("%.3f", float64(result.TotalTime.Microseconds())/1000.0))
 		w.Header().Set("X-Resolution-Source", result.Source)
 		w.Header().Set("X-Mempool-Time-Ms", fmt.Sprintf("%.3f", float64(result.MempoolTime.Microseconds())/1000.0))
@@ -758,4 +948,37 @@ func setOperationHeaders(
 	// Set cache control (operations are immutable once bundled)
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	w.Header().Set("ETag", op.CID) // CID is perfect for ETag
+}
+
+// handleDIDIndexStats returns detailed DID index performance metrics
+func (s *Server) handleDebugDIDIndex() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		didStats := s.manager.GetDIDIndexStats()
+
+		if !didStats["enabled"].(bool) || !didStats["exists"].(bool) {
+			sendJSON(w, 404, map[string]string{
+				"error": "DID index not available",
+			})
+			return
+		}
+
+		// Return all stats (more detailed than /status)
+		sendJSON(w, 200, didStats)
+	}
+}
+
+func (s *Server) handleDebugResolver() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		resolverStats := s.manager.GetResolverStats()
+
+		if resolverStats == nil {
+			sendJSON(w, 404, map[string]string{
+				"error": "Resolver not enabled",
+			})
+			return
+		}
+
+		// Return all stats (more detailed than /status)
+		sendJSON(w, 200, resolverStats)
+	}
 }

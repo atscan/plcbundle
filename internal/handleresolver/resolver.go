@@ -123,3 +123,8 @@ func NormalizeHandle(handle string) string {
 	handle = strings.TrimPrefix(handle, "@")
 	return handle
 }
+
+// GetBaseURL returns the PLC directory base URL
+func (c *Client) GetBaseURL() string {
+	return c.baseURL
+}

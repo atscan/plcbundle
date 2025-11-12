@@ -1217,7 +1217,7 @@ func outputLookupJSON(did string, opsWithLoc []PLCOperationWithLocation, mempool
 	return nil
 }
 
-func displayLookupResults(did string, opsWithLoc []PLCOperationWithLocation, mempoolOps []plcclient.PLCOperation, totalElapsed, lookupElapsed, mempoolElapsed time.Duration, verbose bool, stats map[string]interface{}) error {
+func displayLookupResults(did string, opsWithLoc []PLCOperationWithLocation, mempoolOps []plcclient.PLCOperation, totalElapsed, lookupElapsed, mempoolElapsed time.Duration, verbose bool, _ map[string]interface{}) error {
 	nullifiedCount := 0
 	for _, owl := range opsWithLoc {
 		if owl.Operation.IsNullified() {

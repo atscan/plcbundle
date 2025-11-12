@@ -71,7 +71,9 @@ func SyncOnce(ctx context.Context, mgr SyncManager, config *SyncLoopConfig, verb
 
 		// Success
 		fetchedCount++
-		totalIndexTime += stats.IndexTime
+		if stats != nil {
+			totalIndexTime += stats.IndexTime
+		}
 
 		// Callback if provided
 		if config.OnBundleSynced != nil {

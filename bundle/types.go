@@ -207,3 +207,11 @@ type ResolveDIDResult struct {
 	BundleNumber   int    // if from bundle
 	Position       int    // if from bundle
 }
+
+type resolverTiming struct {
+	totalTime   int64
+	mempoolTime int64
+	indexTime   int64
+	loadOpTime  int64
+	source      string // "mempool" or "bundle"
+}

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tangled.org/atscan.net/plcbundle/internal/bundleindex"
@@ -54,6 +55,26 @@ type Manager struct {
 	bundleCache  map[int]*Bundle
 	cacheMu      sync.RWMutex
 	maxCacheSize int
+
+	// NEW: Resolver performance tracking
+	resolverStats struct {
+		sync.Mutex
+		totalResolutions int64
+		mempoolHits      int64
+		bundleHits       int64
+		errors           int64
+
+		// Timing (in microseconds)
+		totalTime        int64
+		totalMempoolTime int64
+		totalIndexTime   int64
+		totalLoadOpTime  int64
+
+		// Recent timings (circular buffer)
+		recentTimes []resolverTiming
+		recentIdx   int
+		recentSize  int
+	}
 }
 
 // NewManager creates a new bundle manager
@@ -304,7 +325,7 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 		handleResolver = handleresolver.NewClient(config.HandleResolverURL)
 	}
 
-	return &Manager{
+	m := &Manager{
 		config:         config,
 		operations:     ops,
 		index:          index,
@@ -318,7 +339,12 @@ func NewManager(config *Config, plcClient *plcclient.Client) (*Manager, error) {
 		cloner:         cloner,
 		plcClient:      plcClient,
 		handleResolver: handleResolver,
-	}, nil
+	}
+	// Initialize resolver stats
+	m.resolverStats.recentSize = 1000
+	m.resolverStats.recentTimes = make([]resolverTiming, 1000)
+
+	return m, nil
 }
 
 // Close cleans up resources
@@ -1375,6 +1401,8 @@ func (m *Manager) CloneFromRemote(ctx context.Context, opts internalsync.CloneOp
 // ResolveDID resolves a DID to its current document with detailed timing metrics
 func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult, error) {
 	if err := plcclient.ValidateDIDFormat(did); err != nil {
+		// Track error
+		atomic.AddInt64(&m.resolverStats.errors, 1)
 		return nil, err
 	}
 
@@ -1386,7 +1414,6 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 
 	var latestMempoolOp *plcclient.PLCOperation
 	if m.mempool != nil {
-		// Fast backwards search with early exit
 		latestMempoolOp = m.mempool.FindLatestDIDOperation(did)
 	}
 	result.MempoolTime = time.Since(mempoolStart)
@@ -1395,17 +1422,23 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 	if latestMempoolOp != nil {
 		doc, err := plcclient.ResolveDIDDocument(did, []plcclient.PLCOperation{*latestMempoolOp})
 		if err != nil {
+			atomic.AddInt64(&m.resolverStats.errors, 1)
 			return nil, fmt.Errorf("resolution failed: %w", err)
 		}
 
 		result.Document = doc
 		result.Source = "mempool"
 		result.TotalTime = time.Since(totalStart)
+
+		// Record stats
+		m.recordResolverTiming(result, nil)
+
 		return result, nil
 	}
 
 	// STEP 2: Index lookup
 	if m.didIndex == nil || !m.didIndex.Exists() {
+		atomic.AddInt64(&m.resolverStats.errors, 1)
 		return nil, fmt.Errorf("DID index not available - run 'plcbundle index build' to enable DID resolution")
 	}
 
@@ -1414,10 +1447,12 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 	result.IndexTime = time.Since(indexStart)
 
 	if err != nil {
+		atomic.AddInt64(&m.resolverStats.errors, 1)
 		return nil, err
 	}
 
 	if len(locations) == 0 {
+		atomic.AddInt64(&m.resolverStats.errors, 1)
 		return nil, fmt.Errorf("DID not found")
 	}
 
@@ -1433,6 +1468,7 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 	}
 
 	if latestLoc == nil {
+		atomic.AddInt64(&m.resolverStats.errors, 1)
 		return nil, fmt.Errorf("no valid operations (all nullified)")
 	}
 
@@ -1442,6 +1478,7 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 	result.LoadOpTime = time.Since(opStart)
 
 	if err != nil {
+		atomic.AddInt64(&m.resolverStats.errors, 1)
 		return nil, fmt.Errorf("failed to load operation: %w", err)
 	}
 
@@ -1451,12 +1488,16 @@ func (m *Manager) ResolveDID(ctx context.Context, did string) (*ResolveDIDResult
 	// STEP 4: Resolve document
 	doc, err := plcclient.ResolveDIDDocument(did, []plcclient.PLCOperation{*op})
 	if err != nil {
+		atomic.AddInt64(&m.resolverStats.errors, 1)
 		return nil, fmt.Errorf("resolution failed: %w", err)
 	}
 
 	result.Document = doc
 	result.Source = "bundle"
 	result.TotalTime = time.Since(totalStart)
+
+	// Record stats
+	m.recordResolverTiming(result, nil)
 
 	return result, nil
 }
@@ -1630,4 +1671,174 @@ func (m *Manager) ResolveHandleOrDID(ctx context.Context, input string) (string,
 // GetHandleResolver returns the handle resolver (can be nil)
 func (m *Manager) GetHandleResolver() *handleresolver.Client {
 	return m.handleResolver
+}
+
+// recordResolverTiming records resolver performance metrics
+func (m *Manager) recordResolverTiming(result *ResolveDIDResult, _ error) {
+	m.resolverStats.Lock()
+	defer m.resolverStats.Unlock()
+
+	// Increment counters
+	atomic.AddInt64(&m.resolverStats.totalResolutions, 1)
+
+	switch result.Source {
+	case "mempool":
+		atomic.AddInt64(&m.resolverStats.mempoolHits, 1)
+	case "bundle":
+		atomic.AddInt64(&m.resolverStats.bundleHits, 1)
+	}
+
+	// Record timings
+	timing := resolverTiming{
+		totalTime:   result.TotalTime.Microseconds(),
+		mempoolTime: result.MempoolTime.Microseconds(),
+		indexTime:   result.IndexTime.Microseconds(),
+		loadOpTime:  result.LoadOpTime.Microseconds(),
+		source:      result.Source,
+	}
+
+	atomic.AddInt64(&m.resolverStats.totalTime, timing.totalTime)
+	atomic.AddInt64(&m.resolverStats.totalMempoolTime, timing.mempoolTime)
+	atomic.AddInt64(&m.resolverStats.totalIndexTime, timing.indexTime)
+	atomic.AddInt64(&m.resolverStats.totalLoadOpTime, timing.loadOpTime)
+
+	// Add to circular buffer
+	m.resolverStats.recentTimes[m.resolverStats.recentIdx] = timing
+	m.resolverStats.recentIdx = (m.resolverStats.recentIdx + 1) % m.resolverStats.recentSize
+}
+
+// GetResolverStats returns resolver performance statistics
+func (m *Manager) GetResolverStats() map[string]interface{} {
+	totalResolutions := atomic.LoadInt64(&m.resolverStats.totalResolutions)
+
+	if totalResolutions == 0 {
+		return map[string]interface{}{
+			"total_resolutions": 0,
+		}
+	}
+
+	mempoolHits := atomic.LoadInt64(&m.resolverStats.mempoolHits)
+	bundleHits := atomic.LoadInt64(&m.resolverStats.bundleHits)
+	errors := atomic.LoadInt64(&m.resolverStats.errors)
+
+	totalTime := atomic.LoadInt64(&m.resolverStats.totalTime)
+	totalMempoolTime := atomic.LoadInt64(&m.resolverStats.totalMempoolTime)
+	totalIndexTime := atomic.LoadInt64(&m.resolverStats.totalIndexTime)
+	totalLoadOpTime := atomic.LoadInt64(&m.resolverStats.totalLoadOpTime)
+
+	// Calculate overall averages
+	avgTotalMs := float64(totalTime) / float64(totalResolutions) / 1000.0
+	avgMempoolMs := float64(totalMempoolTime) / float64(totalResolutions) / 1000.0
+
+	stats := map[string]interface{}{
+		"total_resolutions": totalResolutions,
+		"mempool_hits":      mempoolHits,
+		"bundle_hits":       bundleHits,
+		"errors":            errors,
+		"success_rate":      float64(totalResolutions-errors) / float64(totalResolutions),
+		"mempool_hit_rate":  float64(mempoolHits) / float64(totalResolutions),
+
+		// Overall averages
+		"avg_total_time_ms":   avgTotalMs,
+		"avg_mempool_time_ms": avgMempoolMs,
+	}
+
+	// Only include bundle-specific stats if we have bundle hits
+	if bundleHits > 0 {
+		avgIndexMs := float64(totalIndexTime) / float64(bundleHits) / 1000.0
+		avgLoadMs := float64(totalLoadOpTime) / float64(bundleHits) / 1000.0
+
+		stats["avg_index_time_ms"] = avgIndexMs
+		stats["avg_load_op_time_ms"] = avgLoadMs
+	}
+
+	// Recent statistics
+	m.resolverStats.Lock()
+	recentCopy := make([]resolverTiming, m.resolverStats.recentSize)
+	copy(recentCopy, m.resolverStats.recentTimes)
+	m.resolverStats.Unlock()
+
+	// Filter valid entries
+	validRecent := make([]resolverTiming, 0)
+	for _, t := range recentCopy {
+		if t.totalTime > 0 {
+			validRecent = append(validRecent, t)
+		}
+	}
+
+	if len(validRecent) > 0 {
+		// Extract total times for percentiles
+		totalTimes := make([]int64, len(validRecent))
+		for i, t := range validRecent {
+			totalTimes[i] = t.totalTime
+		}
+		sort.Slice(totalTimes, func(i, j int) bool {
+			return totalTimes[i] < totalTimes[j]
+		})
+
+		// Calculate recent average
+		var recentSum int64
+		var recentMempoolSum int64
+		var recentIndexSum int64
+		var recentLoadSum int64
+		recentBundleCount := 0
+
+		for _, t := range validRecent {
+			recentSum += t.totalTime
+			recentMempoolSum += t.mempoolTime
+			if t.source == "bundle" {
+				recentIndexSum += t.indexTime
+				recentLoadSum += t.loadOpTime
+				recentBundleCount++
+			}
+		}
+
+		stats["recent_avg_total_time_ms"] = float64(recentSum) / float64(len(validRecent)) / 1000.0
+		stats["recent_avg_mempool_time_ms"] = float64(recentMempoolSum) / float64(len(validRecent)) / 1000.0
+
+		if recentBundleCount > 0 {
+			stats["recent_avg_index_time_ms"] = float64(recentIndexSum) / float64(recentBundleCount) / 1000.0
+			stats["recent_avg_load_time_ms"] = float64(recentLoadSum) / float64(recentBundleCount) / 1000.0
+		}
+
+		stats["recent_sample_size"] = len(validRecent)
+
+		// Percentiles
+		p50idx := len(totalTimes) * 50 / 100
+		p95idx := len(totalTimes) * 95 / 100
+		p99idx := len(totalTimes) * 99 / 100
+
+		stats["min_total_time_ms"] = float64(totalTimes[0]) / 1000.0
+		stats["max_total_time_ms"] = float64(totalTimes[len(totalTimes)-1]) / 1000.0
+
+		if p50idx < len(totalTimes) {
+			stats["p50_total_time_ms"] = float64(totalTimes[p50idx]) / 1000.0
+		}
+		if p95idx < len(totalTimes) {
+			stats["p95_total_time_ms"] = float64(totalTimes[p95idx]) / 1000.0
+		}
+		if p99idx < len(totalTimes) {
+			stats["p99_total_time_ms"] = float64(totalTimes[p99idx]) / 1000.0
+		}
+	}
+
+	return stats
+}
+
+// ResetResolverStats resets resolver performance statistics
+func (m *Manager) ResetResolverStats() {
+	m.resolverStats.Lock()
+	defer m.resolverStats.Unlock()
+
+	atomic.StoreInt64(&m.resolverStats.totalResolutions, 0)
+	atomic.StoreInt64(&m.resolverStats.mempoolHits, 0)
+	atomic.StoreInt64(&m.resolverStats.bundleHits, 0)
+	atomic.StoreInt64(&m.resolverStats.errors, 0)
+	atomic.StoreInt64(&m.resolverStats.totalTime, 0)
+	atomic.StoreInt64(&m.resolverStats.totalMempoolTime, 0)
+	atomic.StoreInt64(&m.resolverStats.totalIndexTime, 0)
+	atomic.StoreInt64(&m.resolverStats.totalLoadOpTime, 0)
+
+	m.resolverStats.recentTimes = make([]resolverTiming, m.resolverStats.recentSize)
+	m.resolverStats.recentIdx = 0
 }

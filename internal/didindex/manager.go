@@ -46,6 +46,8 @@ func NewManager(baseDir string, logger Logger) *Manager {
 		evictionThreshold: 5,
 		config:            config,
 		logger:            logger,
+		recentLookupSize:  1000, // Track last 100 lookups
+		recentLookups:     make([]int64, 1000),
 	}
 }
 
@@ -76,8 +78,14 @@ func (dim *Manager) SetVerbose(verbose bool) {
 	dim.verbose = verbose
 }
 
-// GetDIDLocations returns all bundle+position locations for a DID
+// GetDIDLocations returns all bundle+position locations for a DID (with timing)
 func (dim *Manager) GetDIDLocations(did string) ([]OpLocation, error) {
+	// Start timing
+	lookupStart := time.Now()
+	defer func() {
+		dim.recordLookupTime(time.Since(lookupStart))
+	}()
+
 	identifier, err := extractDIDIdentifier(did)
 	if err != nil {
 		return nil, err
@@ -96,7 +104,6 @@ func (dim *Manager) GetDIDLocations(did string) ([]OpLocation, error) {
 		return nil, fmt.Errorf("failed to load shard %02x: %w", shardNum, err)
 	}
 
-	// CRITICAL: Release shard when done
 	defer dim.releaseShard(shard)
 
 	if shard.data == nil {
@@ -110,7 +117,6 @@ func (dim *Manager) GetDIDLocations(did string) ([]OpLocation, error) {
 		dim.logger.Printf("DEBUG: Shard %02x loaded, size: %d bytes", shardNum, len(shard.data))
 	}
 
-	// Safe to read - refcount prevents eviction
 	locations := dim.searchShard(shard, identifier)
 
 	if dim.verbose {
@@ -141,9 +147,11 @@ func (dim *Manager) loadShard(shardNum uint8) (*mmapShard, error) {
 		atomic.AddInt64(&shard.refCount, 1)
 		atomic.StoreInt64(&shard.lastUsed, time.Now().Unix())
 		atomic.AddInt64(&shard.accessCount, 1)
+		atomic.AddInt64(&dim.cacheHits, 1)
 
 		return shard, nil
 	}
+	atomic.AddInt64(&dim.cacheMisses, 1)
 
 	// Cache miss - load from disk
 	shardPath := filepath.Join(dim.shardDir, fmt.Sprintf("%02x.idx", shardNum))
@@ -456,7 +464,7 @@ func (dim *Manager) unmapShard(shard *mmapShard) {
 	}
 }
 
-// GetStats returns index statistics
+// GetStats returns index statistics (updated)
 func (dim *Manager) GetStats() map[string]interface{} {
 	cachedShards := make([]int, 0)
 
@@ -467,15 +475,37 @@ func (dim *Manager) GetStats() map[string]interface{} {
 
 	sort.Ints(cachedShards)
 
-	return map[string]interface{}{
-		"total_dids":    dim.config.TotalDIDs,
-		"last_bundle":   dim.config.LastBundle,
-		"shard_count":   dim.config.ShardCount,
-		"cached_shards": len(cachedShards),
-		"cache_limit":   dim.maxCache,
-		"cache_order":   cachedShards,
-		"updated_at":    dim.config.UpdatedAt,
+	// Calculate cache hit rate
+	hits := atomic.LoadInt64(&dim.cacheHits)
+	misses := atomic.LoadInt64(&dim.cacheMisses)
+	total := hits + misses
+
+	cacheHitRate := 0.0
+	if total > 0 {
+		cacheHitRate = float64(hits) / float64(total)
 	}
+
+	baseStats := map[string]interface{}{
+		"total_dids":     dim.config.TotalDIDs,
+		"last_bundle":    dim.config.LastBundle,
+		"shard_count":    dim.config.ShardCount,
+		"cached_shards":  len(cachedShards),
+		"cache_limit":    dim.maxCache,
+		"cache_order":    cachedShards,
+		"updated_at":     dim.config.UpdatedAt,
+		"cache_hits":     hits,
+		"cache_misses":   misses,
+		"cache_hit_rate": cacheHitRate,
+		"total_lookups":  total,
+	}
+
+	// Merge with performance stats
+	perfStats := dim.calculateLookupStats()
+	for k, v := range perfStats {
+		baseStats[k] = v
+	}
+
+	return baseStats
 }
 
 // Exists checks if index exists
@@ -864,4 +894,108 @@ func (dim *Manager) releaseShard(shard *mmapShard) {
 	}
 
 	atomic.AddInt64(&shard.refCount, -1)
+}
+
+// ResetCacheStats resets cache statistics (useful for monitoring)
+func (dim *Manager) ResetCacheStats() {
+	atomic.StoreInt64(&dim.cacheHits, 0)
+	atomic.StoreInt64(&dim.cacheMisses, 0)
+}
+
+// recordLookupTime records a lookup time (thread-safe)
+func (dim *Manager) recordLookupTime(duration time.Duration) {
+	micros := duration.Microseconds()
+
+	// Update totals (atomic)
+	atomic.AddInt64(&dim.totalLookups, 1)
+	atomic.AddInt64(&dim.totalLookupTime, micros)
+
+	// Update circular buffer (with lock)
+	dim.lookupTimeLock.Lock()
+	dim.recentLookups[dim.recentLookupIdx] = micros
+	dim.recentLookupIdx = (dim.recentLookupIdx + 1) % dim.recentLookupSize
+	dim.lookupTimeLock.Unlock()
+}
+
+// calculateLookupStats calculates performance statistics
+func (dim *Manager) calculateLookupStats() map[string]interface{} {
+	totalLookups := atomic.LoadInt64(&dim.totalLookups)
+	totalTime := atomic.LoadInt64(&dim.totalLookupTime)
+
+	stats := make(map[string]interface{})
+
+	if totalLookups == 0 {
+		return stats
+	}
+
+	// Overall average (all time)
+	avgMicros := float64(totalTime) / float64(totalLookups)
+	stats["avg_lookup_time_ms"] = avgMicros / 1000.0
+	stats["total_lookups"] = totalLookups
+
+	// Recent statistics (last N lookups)
+	dim.lookupTimeLock.Lock()
+	recentCopy := make([]int64, dim.recentLookupSize)
+	copy(recentCopy, dim.recentLookups)
+	dim.lookupTimeLock.Unlock()
+
+	// Find valid entries (non-zero)
+	validRecent := make([]int64, 0, dim.recentLookupSize)
+	for _, t := range recentCopy {
+		if t > 0 {
+			validRecent = append(validRecent, t)
+		}
+	}
+
+	if len(validRecent) > 0 {
+		// Sort for percentiles
+		sortedRecent := make([]int64, len(validRecent))
+		copy(sortedRecent, validRecent)
+		sort.Slice(sortedRecent, func(i, j int) bool {
+			return sortedRecent[i] < sortedRecent[j]
+		})
+
+		// Calculate recent average
+		var recentSum int64
+		for _, t := range validRecent {
+			recentSum += t
+		}
+		recentAvg := float64(recentSum) / float64(len(validRecent))
+		stats["recent_avg_lookup_time_ms"] = recentAvg / 1000.0
+		stats["recent_sample_size"] = len(validRecent)
+
+		// Min/Max
+		stats["min_lookup_time_ms"] = float64(sortedRecent[0]) / 1000.0
+		stats["max_lookup_time_ms"] = float64(sortedRecent[len(sortedRecent)-1]) / 1000.0
+
+		// Percentiles (p50, p95, p99)
+		p50idx := len(sortedRecent) * 50 / 100
+		p95idx := len(sortedRecent) * 95 / 100
+		p99idx := len(sortedRecent) * 99 / 100
+
+		if p50idx < len(sortedRecent) {
+			stats["p50_lookup_time_ms"] = float64(sortedRecent[p50idx]) / 1000.0
+		}
+		if p95idx < len(sortedRecent) {
+			stats["p95_lookup_time_ms"] = float64(sortedRecent[p95idx]) / 1000.0
+		}
+		if p99idx < len(sortedRecent) {
+			stats["p99_lookup_time_ms"] = float64(sortedRecent[p99idx]) / 1000.0
+		}
+	}
+
+	return stats
+}
+
+// ResetPerformanceStats resets performance statistics (useful for monitoring periods)
+func (dim *Manager) ResetPerformanceStats() {
+	atomic.StoreInt64(&dim.cacheHits, 0)
+	atomic.StoreInt64(&dim.cacheMisses, 0)
+	atomic.StoreInt64(&dim.totalLookups, 0)
+	atomic.StoreInt64(&dim.totalLookupTime, 0)
+
+	dim.lookupTimeLock.Lock()
+	dim.recentLookups = make([]int64, dim.recentLookupSize)
+	dim.recentLookupIdx = 0
+	dim.lookupTimeLock.Unlock()
 }
