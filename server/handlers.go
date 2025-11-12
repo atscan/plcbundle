@@ -673,12 +673,15 @@ func (s *Server) handleDIDRouting(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 
 	parts := strings.SplitN(path, "/", 2)
-	input := parts[0] // Could be DID or handle
+	input := parts[0]
 
-	// Accept both DIDs and handles
-	// DIDs: did:plc:*, did:web:*
-	// Handles: tree.fail, ngerakines.me, etc.
+	// Quick validation: must be either a DID or a valid handle format
+	if !isValidDIDOrHandle(input) {
+		sendJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
 
+	// Route to appropriate handler
 	if len(parts) == 1 {
 		s.handleDIDDocument(input)(w, r)
 	} else if parts[1] == "data" {
@@ -688,6 +691,56 @@ func (s *Server) handleDIDRouting(w http.ResponseWriter, r *http.Request) {
 	} else {
 		sendJSON(w, 404, map[string]string{"error": "not found"})
 	}
+}
+
+// isValidDIDOrHandle does quick format check before expensive resolution
+func isValidDIDOrHandle(input string) bool {
+	// Empty input
+	if input == "" {
+		return false
+	}
+
+	// If it's a DID
+	if strings.HasPrefix(input, "did:") {
+		// Only accept did:plc: method (reject other methods at routing level)
+		if !strings.HasPrefix(input, "did:plc:") {
+			return false // Returns 404 for did:web:, did:key:, did:invalid:, etc
+		}
+
+		// Accept any did:plc:* - let handler validate exact format
+		// This allows invalid formats to reach handler and get proper 400 errors
+		return true
+	}
+
+	// Not a DID - validate as handle
+	// Must have at least one dot (domain.tld)
+	if !strings.Contains(input, ".") {
+		return false
+	}
+
+	// Must not have invalid characters for a domain
+	// Simple check: alphanumeric, dots, hyphens only
+	for _, c := range input {
+		if !((c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '.' || c == '-') {
+			return false
+		}
+	}
+
+	// Basic length check (DNS max is 253)
+	if len(input) > 253 {
+		return false
+	}
+
+	// Must not start or end with dot or hyphen
+	if strings.HasPrefix(input, ".") || strings.HasSuffix(input, ".") ||
+		strings.HasPrefix(input, "-") || strings.HasSuffix(input, "-") {
+		return false
+	}
+
+	return true
 }
 
 func (s *Server) handleDIDDocument(input string) http.HandlerFunc {
