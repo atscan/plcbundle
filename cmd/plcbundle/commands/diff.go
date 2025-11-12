@@ -288,33 +288,48 @@ func displayOperationComparison(localOps []plcclient.PLCOperation, remoteOps []p
 		remoteCIDs[op.CID] = i
 	}
 
-	// Find differences
-	var missingInLocal []string
-	var missingInRemote []string
-	var positionMismatches []string
+	// Find differences - store as position+CID pairs
+	type cidWithPos struct {
+		cid string
+		pos int
+	}
+
+	var missingInLocal []cidWithPos
+	var missingInRemote []cidWithPos
+	var positionMismatches []cidWithPos
 
 	for cid, remotePos := range remoteCIDs {
 		if localPos, exists := localCIDs[cid]; !exists {
-			missingInLocal = append(missingInLocal, cid)
+			missingInLocal = append(missingInLocal, cidWithPos{cid, remotePos})
 		} else if localPos != remotePos {
-			positionMismatches = append(positionMismatches, cid)
+			positionMismatches = append(positionMismatches, cidWithPos{cid, localPos})
 		}
 	}
 
-	for cid := range localCIDs {
+	for cid, localPos := range localCIDs {
 		if _, exists := remoteCIDs[cid]; !exists {
-			missingInRemote = append(missingInRemote, cid)
+			missingInRemote = append(missingInRemote, cidWithPos{cid, localPos})
 		}
 	}
+
+	// Sort by position
+	sort.Slice(missingInLocal, func(i, j int) bool {
+		return missingInLocal[i].pos < missingInLocal[j].pos
+	})
+	sort.Slice(missingInRemote, func(i, j int) bool {
+		return missingInRemote[i].pos < missingInRemote[j].pos
+	})
+	sort.Slice(positionMismatches, func(i, j int) bool {
+		return positionMismatches[i].pos < positionMismatches[j].pos
+	})
 
 	// Display differences
 	if len(missingInLocal) > 0 {
 		fmt.Printf("  Missing in Local (%d operations):\n", len(missingInLocal))
 		displaySample := min(sampleSize, len(missingInLocal))
 		for i := 0; i < displaySample; i++ {
-			cid := missingInLocal[i]
-			pos := remoteCIDs[cid]
-			fmt.Printf("    - [%04d] %s\n", pos, cid)
+			item := missingInLocal[i]
+			fmt.Printf("    - [%04d] %s\n", item.pos, item.cid)
 		}
 		if len(missingInLocal) > displaySample {
 			fmt.Printf("    ... and %d more\n", len(missingInLocal)-displaySample)
@@ -326,9 +341,8 @@ func displayOperationComparison(localOps []plcclient.PLCOperation, remoteOps []p
 		fmt.Printf("  Missing in Remote (%d operations):\n", len(missingInRemote))
 		displaySample := min(sampleSize, len(missingInRemote))
 		for i := 0; i < displaySample; i++ {
-			cid := missingInRemote[i]
-			pos := localCIDs[cid]
-			fmt.Printf("    + [%04d] %s\n", pos, cid)
+			item := missingInRemote[i]
+			fmt.Printf("    + [%04d] %s\n", item.pos, item.cid)
 		}
 		if len(missingInRemote) > displaySample {
 			fmt.Printf("    ... and %d more\n", len(missingInRemote)-displaySample)
@@ -340,11 +354,10 @@ func displayOperationComparison(localOps []plcclient.PLCOperation, remoteOps []p
 		fmt.Printf("  Position Mismatches (%d operations):\n", len(positionMismatches))
 		displaySample := min(sampleSize, len(positionMismatches))
 		for i := 0; i < displaySample; i++ {
-			cid := positionMismatches[i]
-			localPos := localCIDs[cid]
-			remotePos := remoteCIDs[cid]
-			fmt.Printf("    ~ %s\n", cid)
-			fmt.Printf("      Local:  position %04d\n", localPos)
+			item := positionMismatches[i]
+			remotePos := remoteCIDs[item.cid]
+			fmt.Printf("    ~ %s\n", item.cid)
+			fmt.Printf("      Local:  position %04d\n", item.pos)
 			fmt.Printf("      Remote: position %04d\n", remotePos)
 		}
 		if len(positionMismatches) > displaySample {
@@ -541,6 +554,14 @@ func compareIndexes(local, target *bundleindex.Index) *IndexComparison {
 			}
 		}
 	}
+
+	// ADD THIS: Sort mismatches by bundle number
+	sort.Slice(comparison.HashMismatches, func(i, j int) bool {
+		return comparison.HashMismatches[i].BundleNumber < comparison.HashMismatches[j].BundleNumber
+	})
+	sort.Slice(comparison.ContentMismatches, func(i, j int) bool {
+		return comparison.ContentMismatches[i].BundleNumber < comparison.ContentMismatches[j].BundleNumber
+	})
 
 	return comparison
 }
