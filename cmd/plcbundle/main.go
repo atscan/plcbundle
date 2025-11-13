@@ -60,6 +60,7 @@ Documentation: https://tangled.org/@atscan.net/plcbundle`,
 	cmd.AddCommand(commands.NewDiffCommand())
 	//cmd.AddCommand(commands.NewStatsCommand())
 	cmd.AddCommand(commands.NewInspectCommand())
+	cmd.AddCommand(commands.NewQueryCommand())
 
 	// Namespaced commands
 	cmd.AddCommand(commands.NewDIDCommand())

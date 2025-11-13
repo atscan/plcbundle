@@ -19,9 +19,11 @@ type ProgressBar struct {
 	width        int
 	lastPrint    time.Time
 	showBytes    bool
+	autoBytes    bool // Auto-calculate bytes from items
+	bytesPerItem int64
 }
 
-// NewProgressBar creates a new progress bar
+// NewProgressBar creates a simple progress bar
 func NewProgressBar(total int) *ProgressBar {
 	return &ProgressBar{
 		total:     total,
@@ -32,7 +34,7 @@ func NewProgressBar(total int) *ProgressBar {
 	}
 }
 
-// NewProgressBarWithBytes creates a new progress bar that tracks bytes
+// NewProgressBarWithBytes creates a progress bar that tracks bytes
 func NewProgressBarWithBytes(total int, totalBytes int64) *ProgressBar {
 	return &ProgressBar{
 		total:      total,
@@ -44,20 +46,51 @@ func NewProgressBarWithBytes(total int, totalBytes int64) *ProgressBar {
 	}
 }
 
-// Set sets the current progress
+// NewProgressBarWithBytesAuto creates a progress bar that auto-estimates bytes
+// avgBytesPerItem is the estimated bytes per item (e.g., avg bundle size)
+func NewProgressBarWithBytesAuto(total int, avgBytesPerItem int64) *ProgressBar {
+	return &ProgressBar{
+		total:        total,
+		totalBytes:   int64(total) * avgBytesPerItem,
+		startTime:    time.Now(),
+		width:        40,
+		lastPrint:    time.Now(),
+		showBytes:    true,
+		autoBytes:    true,
+		bytesPerItem: avgBytesPerItem,
+	}
+}
+
+// Set sets the current progress (auto-estimates bytes if enabled)
 func (pb *ProgressBar) Set(current int) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	pb.current = current
+
+	// Auto-calculate bytes if enabled
+	if pb.autoBytes && pb.bytesPerItem > 0 {
+		pb.currentBytes = int64(current) * pb.bytesPerItem
+	}
+
 	pb.print()
 }
 
-// SetWithBytes sets progress with byte tracking
+// SetWithBytes sets progress with exact byte tracking
 func (pb *ProgressBar) SetWithBytes(current int, bytesProcessed int64) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	pb.current = current
 	pb.currentBytes = bytesProcessed
+	pb.showBytes = true
+	pb.print()
+}
+
+// AddBytes increments current progress and adds bytes
+func (pb *ProgressBar) AddBytes(increment int, bytes int64) {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	pb.current += increment
+	pb.currentBytes += bytes
 	pb.showBytes = true
 	pb.print()
 }
@@ -106,15 +139,16 @@ func (pb *ProgressBar) print() {
 		eta = time.Duration(float64(remaining)/speed) * time.Second
 	}
 
-	// FIX: Check if complete
 	isComplete := pb.current >= pb.total
 
 	if pb.showBytes && pb.currentBytes > 0 {
 		mbProcessed := float64(pb.currentBytes) / (1000 * 1000)
-		mbPerSec := mbProcessed / elapsed.Seconds()
+		mbPerSec := 0.0
+		if elapsed.Seconds() > 0 {
+			mbPerSec = mbProcessed / elapsed.Seconds()
+		}
 
 		if isComplete {
-			// Don't show ETA when done
 			fmt.Fprintf(os.Stderr, "\r  [%s] %6.2f%% | %d/%d | %.1f/s | %.1f MB/s | Done    ",
 				bar, percent, pb.current, pb.total, speed, mbPerSec)
 		} else {
@@ -123,7 +157,6 @@ func (pb *ProgressBar) print() {
 		}
 	} else {
 		if isComplete {
-			// Don't show ETA when done
 			fmt.Fprintf(os.Stderr, "\r  [%s] %6.2f%% | %d/%d | %.1f/s | Done    ",
 				bar, percent, pb.current, pb.total, speed)
 		} else {
@@ -134,7 +167,6 @@ func (pb *ProgressBar) print() {
 }
 
 func formatETA(d time.Duration) string {
-	// This should never be called with 0 now, but keep as fallback
 	if d == 0 {
 		return "0s"
 	}
