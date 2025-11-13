@@ -675,6 +675,12 @@ func (s *Server) handleDIDRouting(w http.ResponseWriter, r *http.Request) {
 	parts := strings.SplitN(path, "/", 2)
 	input := parts[0]
 
+	// Ignore common browser files before any validation
+	if isCommonBrowserFile(input) {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
 	// Quick validation: must be either a DID or a valid handle format
 	if !isValidDIDOrHandle(input) {
 		sendJSON(w, 404, map[string]string{"error": "not found"})
@@ -691,6 +697,39 @@ func (s *Server) handleDIDRouting(w http.ResponseWriter, r *http.Request) {
 	} else {
 		sendJSON(w, 404, map[string]string{"error": "not found"})
 	}
+}
+
+func isCommonBrowserFile(path string) bool {
+	// Common files browsers request automatically
+	commonFiles := []string{
+		"favicon.ico",
+		"robots.txt",
+		"sitemap.xml",
+		"apple-touch-icon.png",
+		"apple-touch-icon-precomposed.png",
+		".well-known",
+	}
+
+	for _, file := range commonFiles {
+		if path == file || strings.HasPrefix(path, file) {
+			return true
+		}
+	}
+
+	// Common file extensions that are NOT DIDs/handles
+	commonExtensions := []string{
+		".ico", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+		".css", ".js", ".woff", ".woff2", ".ttf", ".eot",
+		".xml", ".txt", ".html", ".webmanifest",
+	}
+
+	for _, ext := range commonExtensions {
+		if strings.HasSuffix(path, ext) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // isValidDIDOrHandle does quick format check before expensive resolution
