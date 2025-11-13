@@ -815,7 +815,7 @@ func (s *Server) handleDIDData(input string) http.HandlerFunc {
 			return
 		}
 
-		operations, err := s.manager.GetDIDOperations(context.Background(), did, false)
+		operations, _, err := s.manager.GetDIDOperations(context.Background(), did, false)
 		if err != nil {
 			sendJSON(w, 500, map[string]string{"error": err.Error()})
 			return
@@ -842,14 +842,13 @@ func (s *Server) handleDIDData(input string) http.HandlerFunc {
 
 func (s *Server) handleDIDAuditLog(input string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Resolve handle to DID
 		did, _, err := s.manager.ResolveHandleOrDID(r.Context(), input)
 		if err != nil {
 			sendJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
 
-		operations, err := s.manager.GetDIDOperations(context.Background(), did, false)
+		operations, _, err := s.manager.GetDIDOperations(context.Background(), did, false)
 		if err != nil {
 			sendJSON(w, 500, map[string]string{"error": err.Error()})
 			return

@@ -1077,9 +1077,10 @@ func (m *Manager) GetDIDIndexStats() map[string]interface{} {
 }
 
 // GetDIDOperations retrieves all operations for a DID (bundles + mempool combined)
-func (m *Manager) GetDIDOperations(ctx context.Context, did string, verbose bool) ([]plcclient.PLCOperation, error) {
+// Returns: operations only, operations with locations, error
+func (m *Manager) GetDIDOperations(ctx context.Context, did string, verbose bool) ([]plcclient.PLCOperation, []PLCOperationWithLocation, error) {
 	if err := plcclient.ValidateDIDFormat(did); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Set verbose mode
@@ -1087,30 +1088,42 @@ func (m *Manager) GetDIDOperations(ctx context.Context, did string, verbose bool
 		m.didIndex.SetVerbose(verbose)
 	}
 
-	// Get bundled operations from DID index
-	bundledOps, err := m.didIndex.GetDIDOperations(ctx, did, m)
+	// Get bundled operations from DID index (includes nullified)
+	bundledOpsWithLoc, err := m.didIndex.GetDIDOperations(ctx, did, m)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+
+	// Convert to bundle types
+	opsWithLoc := make([]PLCOperationWithLocation, len(bundledOpsWithLoc))
+	bundledOps := make([]plcclient.PLCOperation, len(bundledOpsWithLoc))
+	for i, r := range bundledOpsWithLoc {
+		opsWithLoc[i] = PLCOperationWithLocation{
+			Operation: r.Operation,
+			Bundle:    r.Bundle,
+			Position:  r.Position,
+		}
+		bundledOps[i] = r.Operation
 	}
 
 	// Get mempool operations
 	mempoolOps, err := m.GetDIDOperationsFromMempool(did)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if len(mempoolOps) > 0 && verbose {
 		m.logger.Printf("DEBUG: Found %d operations in mempool", len(mempoolOps))
 	}
 
-	// Combine and sort
+	// Combine operations (for the slice return)
 	allOps := append(bundledOps, mempoolOps...)
 
 	sort.Slice(allOps, func(i, j int) bool {
 		return allOps[i].CreatedAt.Before(allOps[j].CreatedAt)
 	})
 
-	return allOps, nil
+	return allOps, opsWithLoc, nil
 }
 
 // GetDIDOperationsFromMempool retrieves operations for a DID from mempool only
@@ -1141,36 +1154,6 @@ func (m *Manager) GetLatestDIDOperation(ctx context.Context, did string) (*plccl
 
 	// Delegate to DID index for bundled operations
 	return m.didIndex.GetLatestDIDOperation(ctx, did, m)
-}
-
-// GetDIDOperationsWithLocations returns operations along with their bundle/position info
-func (m *Manager) GetDIDOperationsWithLocations(ctx context.Context, did string, verbose bool) ([]PLCOperationWithLocation, error) {
-	if err := plcclient.ValidateDIDFormat(did); err != nil {
-		return nil, err
-	}
-
-	// Set verbose mode
-	if m.didIndex != nil {
-		m.didIndex.SetVerbose(verbose)
-	}
-
-	// Delegate to DID index
-	results, err := m.didIndex.GetDIDOperationsWithLocations(ctx, did, m)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert to bundle's type
-	bundleResults := make([]PLCOperationWithLocation, len(results))
-	for i, r := range results {
-		bundleResults[i] = PLCOperationWithLocation{
-			Operation: r.Operation,
-			Bundle:    r.Bundle,
-			Position:  r.Position,
-		}
-	}
-
-	return bundleResults, nil
 }
 
 // VerifyChain verifies the entire bundle chain

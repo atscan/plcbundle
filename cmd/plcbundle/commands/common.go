@@ -36,8 +36,7 @@ type BundleManager interface {
 	GetDIDIndexStats() map[string]interface{}
 	GetDIDIndex() *didindex.Manager
 	BuildDIDIndex(ctx context.Context, progress func(int, int)) error
-	GetDIDOperations(ctx context.Context, did string, verbose bool) ([]plcclient.PLCOperation, error)
-	GetDIDOperationsWithLocations(ctx context.Context, did string, verbose bool) ([]bundle.PLCOperationWithLocation, error)
+	GetDIDOperations(ctx context.Context, did string, verbose bool) ([]plcclient.PLCOperation, []PLCOperationWithLocation, error)
 	GetDIDOperationsFromMempool(did string) ([]plcclient.PLCOperation, error)
 	GetLatestDIDOperation(ctx context.Context, did string) (*plcclient.PLCOperation, error)
 	LoadOperation(ctx context.Context, bundleNum, position int) (*plcclient.PLCOperation, error)

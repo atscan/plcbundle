@@ -73,13 +73,12 @@ Accepts either:
   • DID: did:plc:524tuhdhh3m7li5gycdn6boe
   • Handle: tree.fail (resolves via configured resolver)
 
-Requires DID index to be built. If not available, will fall back to
-full scan (slow).`,
+Requires DID index to be built.`,
 
 		Example: `  # Lookup by DID
   plcbundle did lookup did:plc:524tuhdhh3m7li5gycdn6boe
 
-  # Lookup by handle (requires --resolver-url)
+  # Lookup by handle
   plcbundle did lookup tree.fail
   plcbundle did lookup ngerakines.me
 
@@ -114,7 +113,7 @@ full scan (slow).`,
 
 			// Lookup operations
 			lookupStart := time.Now()
-			opsWithLoc, err := mgr.GetDIDOperationsWithLocations(ctx, did, verbose)
+			_, opsWithLoc, err := mgr.GetDIDOperations(ctx, did, verbose)
 			if err != nil {
 				return err
 			}
@@ -298,7 +297,7 @@ This provides a full audit trail of all changes to the DID.`,
 			ctx := context.Background()
 
 			// Get all operations with locations
-			opsWithLoc, err := mgr.GetDIDOperationsWithLocations(ctx, did, verbose)
+			_, opsWithLoc, err := mgr.GetDIDOperations(ctx, did, verbose)
 			if err != nil {
 				return err
 			}
@@ -629,7 +628,7 @@ func showDIDStats(mgr BundleManager, did string, showJSON bool) error {
 	ctx := context.Background()
 
 	// Get operations
-	opsWithLoc, err := mgr.GetDIDOperationsWithLocations(ctx, did, false)
+	_, opsWithLoc, err := mgr.GetDIDOperations(ctx, did, false)
 	if err != nil {
 		return err
 	}
@@ -822,7 +821,7 @@ func batchLookup(mgr BundleManager, dids []string, output *os.File, _ int) error
 	errorCount := 0
 
 	for i, did := range dids {
-		opsWithLoc, err := mgr.GetDIDOperationsWithLocations(ctx, did, false)
+		_, opsWithLoc, err := mgr.GetDIDOperations(ctx, did, false)
 		if err != nil {
 			errorCount++
 			fmt.Fprintf(output, "%s,error,0,0,0,0\n", did)
@@ -1110,7 +1109,7 @@ func batchExport(mgr BundleManager, dids []string, output *os.File, _ int) error
 	defer writer.Flush()
 
 	for i, did := range dids {
-		opsWithLoc, err := mgr.GetDIDOperationsWithLocations(ctx, did, false)
+		_, opsWithLoc, err := mgr.GetDIDOperations(ctx, did, false)
 		if err != nil {
 			errorCount++
 			if i < 10 { // Only log first few errors
